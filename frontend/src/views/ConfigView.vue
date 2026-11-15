@@ -10,7 +10,7 @@ import CdnImg from '@/components/CdnImg.vue'
 const form = reactive({
   host: '0.0.0.0',
   port: 8765,
-  auto_start: false,
+  auto_start: true,
   protover: 2,
   heartbeat_seconds: 30,
   stale_seconds: 120,

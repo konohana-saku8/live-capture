@@ -283,9 +283,9 @@ export async function selectSession(key: string) {
   await loadFeed()
 }
 
-/** 删除当前选中的场次 / 场间：后端按时间段删数据，返回各类删除条数。 */
-export async function deleteSession() {
-  const s = segmentOf(state.segs, state.sessSel)
+/** 删除一个场次 / 场间：后端按时间段删数据，返回各类删除条数。 */
+export async function deleteSession(seg?: Segment) {
+  const s = seg || segmentOf(state.segs, state.sessSel)
   if (!s || !state.roomId) throw new Error('没有选中场次')
   return postJson('/api/session/delete', {
     room_id: state.roomId,

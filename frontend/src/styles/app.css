@@ -15,3 +15,15 @@
 
 /* 动态卡片编辑态：textarea 占满卡片宽度 */
 .dyn-card .dyn-edit textarea{width:100%;min-height:78px}
+
+/* 场次条目：主体可点，右侧常驻一个 ✕ 删除按钮（窄屏也点得到）。 */
+.session-row{display:flex;align-items:flex-start;gap:4px;margin-bottom:5px}
+.session-row .session-item{margin-bottom:0;flex:1 1 auto;min-width:0}
+.session-row .st-del{flex:none;width:26px;min-height:26px;margin-top:1px;
+  border:1px solid var(--line);border-radius:8px;background:transparent;
+  color:var(--dim-2);font-size:11px;line-height:1;cursor:pointer;
+  transition:.15s;padding:0}
+.session-row .st-del:hover{color:#e07a4a;border-color:rgba(224,122,74,.5);
+  background:rgba(224,122,74,.1)}
+.session-row.on .session-item{border-color:rgba(255,122,69,.4);
+  background:rgba(255,122,69,.09)}

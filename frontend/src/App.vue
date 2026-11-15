@@ -8,6 +8,7 @@ import {
   loadAccounts, loadDashboard, loadLogs, loadRooms, loadSessions,
   loadStatus, loadSystem, state, uiLog,
 } from '@/stores/app'
+import CdnImg from '@/components/CdnImg.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,7 +16,6 @@ const router = useRouter()
 const gatePass = ref('')
 const gatePass2 = ref('')
 const gateErr = ref('')
-const tokenInput = ref(getToken())
 let timer: number | undefined
 
 const PAGES = [
@@ -104,7 +104,6 @@ async function submitGate() {
 
 function unlockApp(token: string) {
   setToken(token)
-  tokenInput.value = token
   state.gate.open = false
   state.ready = true
   document.body.classList.remove('gated')
@@ -167,10 +166,12 @@ function goTo(path: string) {
   router.push(path)
 }
 
-function onTokenChange() {
-  setToken(tokenInput.value)
-  uiLog('web', '访问口令已更新')
-  loadStatus()
+/** 清除本地记住的访问码：回门禁重新输入。 */
+function clearToken() {
+  setToken('')
+  state.ready = false
+  uiLog('web', '已清除本地访问码')
+  bootGate()
 }
 
 /* ---------------- 图片兜底 ---------------- */
@@ -274,6 +275,7 @@ onBeforeUnmount(() => {
               :title="activeAccount ? activeAccount.label + ' · 点击进入配置' : '匿名采集'"
               @click="goTo('/config')">
         <template v-if="activeAccount">
+          <CdnImg :src="activeAccount.profile?.face" alt="头像" size="26px" />
           <b>{{ activeAccount.profile?.uname || activeAccount.label }}</b>
         </template>
         <template v-else>匿名采集</template>
@@ -281,8 +283,8 @@ onBeforeUnmount(() => {
       <span class="badge" :class="state.running ? 'on' : 'off'">
         <i></i><span>{{ runLabel }}</span>
       </span>
-      <input v-model="tokenInput" type="password" placeholder="访问口令"
-             autocomplete="off" @change="onTokenChange">
+      <button v-if="getToken()" type="button" class="btn sm" title="清除本地记住的访问码，回门禁重新输入"
+              @click="clearToken">清除访问码</button>
     </div>
     <span class="navinfo">
       {{ serviceAddr }} · {{ state.svc?.websockets === false ? '缺依赖' : '服务正常' }}

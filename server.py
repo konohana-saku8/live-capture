@@ -28,7 +28,7 @@ DEFAULTS = {
     "host": "0.0.0.0",
     "port": 8765,
     "token": "",
-    "auto_start": False,
+    "auto_start": True,
     "dyn_mid": 0,              # 旧版全局动态 uid，仅在没有采集器时兜底
 }
 SECRET_KEYS = ("token",)

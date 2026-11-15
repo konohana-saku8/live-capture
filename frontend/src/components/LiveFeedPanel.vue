@@ -52,17 +52,15 @@ function reload() {
   loadSessions()
 }
 
-/** 删除当前选中的场次：确认一次再提交，删完刷新场次列表与内容。 */
-async function delSession() {
-  const s = currentSeg.value
-  if (!s) return
+/** 删除指定场次：确认一次再提交，删完刷新场次列表与内容。 */
+async function delSeg(s: Segment) {
   const label = segTitle(s) + ' · ' + segRange(s)
-  const detail = '弹幕 ' + (s.danmaku || 0) + '、SC ' + (s.sc || 0) +
-    '，含事件与开播 / 下播标记'
+  const marks = s.kind === 'live' ? '，含开播 / 下播标记' : '（保留开播 / 下播标记）'
+  const detail = '弹幕 ' + (s.danmaku || 0) + '、SC ' + (s.sc || 0) + marks
   if (!window.confirm('确认删除「' + label + '」？\n' + detail +
       '\n删除后不可恢复。')) return
   try {
-    const j: any = await deleteSession()
+    const j: any = await deleteSession(s)
     const d = (j && j.deleted) || {}
     hint('capture', '已删除：弹幕 ' + (d.danmaku || 0) + '、SC ' + (d.sc || 0) +
       '、事件 ' + (d.events || 0), 'ok')
@@ -121,19 +119,23 @@ async function exportData(fmt: 'json' | 'csv') {
       <aside class="session-pane">
         <h4>场次 / 场间</h4>
         <div>
-          <button v-for="s in segsDesc" :key="s.kind + '-' + s.index"
-                  class="session-item" :class="{ on: isOn(s) }"
-                  @click="selectSession(s.kind + '-' + s.index)">
-            <span class="st-t">
-              {{ segRange(s) }}
-              <i :class="s.kind === 'live' ? 'live' : 'gap'">{{ segBadge(s) }}</i>
-              <template v-if="!s.end"> ●</template>
-            </span>
-            <span class="st-m">
-              {{ segTitle(s) }} · 流水 ¥{{ s.sc_amount || 0 }}
-              · 观众 {{ s.viewers || 0 }} · 弹幕 {{ s.danmaku || 0 }}
-            </span>
-          </button>
+          <div v-for="s in segsDesc" :key="s.kind + '-' + s.index"
+               class="session-row">
+            <button class="session-item" :class="{ on: isOn(s) }"
+                    @click="selectSession(s.kind + '-' + s.index)">
+              <span class="st-t">
+                {{ segRange(s) }}
+                <i :class="s.kind === 'live' ? 'live' : 'gap'">{{ segBadge(s) }}</i>
+                <template v-if="!s.end"> ●</template>
+              </span>
+              <span class="st-m">
+                {{ segTitle(s) }} · 流水 ¥{{ s.sc_amount || 0 }}
+                · 观众 {{ s.viewers || 0 }} · 弹幕 {{ s.danmaku || 0 }}
+              </span>
+            </button>
+            <button class="st-del" title="删除这一段（含全部数据，不可恢复）"
+                    @click="delSeg(s)">✕</button>
+          </div>
           <div v-if="!state.segs.length" class="empty"
                style="font-size:11.5px;padding:6px 4px">
             暂无场次记录<br>（采集到开播 / 下播事件后自动分段）
@@ -143,15 +145,6 @@ async function exportData(fmt: 'json' | 'csv') {
                style="padding:6px 6px 0;color:var(--dim-2);font-size:10px">
             还没有开播记录，采集到的内容先归为一段，下次开播自动切开
           </div>
-        </div>
-        <div v-if="currentSeg" class="seg-del"
-             style="padding:8px 6px 0;border-top:1px solid var(--line);
-                    margin-top:8px">
-          <button class="btn sm" style="color:#c0392b"
-                  @click="delSession">删除这段…</button>
-          <span style="color:var(--dim-2);font-size:10px">
-            按时间段删数据，不可恢复
-          </span>
         </div>
       </aside>
 
