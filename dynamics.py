@@ -106,10 +106,21 @@ class DynamicsFetcher:
         return img, sub
 
     def fetch(self, mid, limit=20, offset=""):
-        """Fetch normalized dynamics for ``mid``. Returns (items, has_more)."""
+        """Fetch normalized dynamics for ``mid``. Returns (items, has_more).
+
+        B站对「同一签名短时间内重复请求」偶发返回 code=0 但 items=[]，
+        因此空结果时换新 wbi key + 新 wts 重试一次。
+        """
         mid = _as_int(mid)
         if not mid:
             return [], False
+        items, has_more = self._fetch_once(mid, offset)
+        if not items:
+            time.sleep(1.2)
+            items, has_more = self._fetch_once(mid, offset)
+        return items, has_more
+
+    def _fetch_once(self, mid, offset=""):
         self._warmup()
         img, sub = self.wbi_keys()
         if not img or not sub:
@@ -121,13 +132,17 @@ class DynamicsFetcher:
         query = wbi_sign(params, img, sub)
         url = ("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?"
                + query)
-        data = self._fetch_json(url,
-                                "https://space.bilibili.com/%d/dynamic" % mid)
+        try:
+            data = self._fetch_json(url,
+                                    "https://space.bilibili.com/%d/dynamic" % mid)
+        except Exception:
+            return [], False
         if data.get("code") != 0:
             return [], False
         payload = data.get("data") or {}
         raw_items = payload.get("items") or []
-        return [normalize(f, mid) for f in raw_items], bool(payload.get("has_more"))
+        return ([normalize(f, mid) for f in raw_items],
+                bool(payload.get("has_more")))
 
 
 def _first_text(node):

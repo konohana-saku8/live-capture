@@ -212,7 +212,7 @@ class DynamicScheduler:
         self._thread.start()
 
     def _startup_pull(self):
-        time.sleep(3)  # 让服务先起来
+        time.sleep(20)  # 等服务与手机网络就绪，避开启动瞬间的风控
         res = self.pull("启动补拉")
         if res.get("ok"):
             self.config.save({"dyn_last_ts": res["ts"]})

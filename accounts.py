@@ -176,6 +176,30 @@ class AccountStore:
                 "profile": item.get("profile") or None,
                 "created_at": item.get("created_at", 0)}
 
+    def _rebuild_raw(self, item):
+        """老账号没有原始文件时，用已存 cookie 重建一份 Netscape CSV。
+
+        文件名仍用 uid，满足「上传文件按 uid 保存」的约定；重建只补文件，
+        不改动 cookie 内容。
+        """
+        cookies = item.get("cookies") or {}
+        if not cookies:
+            return ""
+        uid = _uid(cookies)
+        if not uid:
+            try:
+                uid = int((item.get("profile") or {}).get("uid") or 0)
+            except (TypeError, ValueError):
+                uid = 0
+        if not uid:
+            return ""
+        lines = ["# Netscape HTTP Cookie File"]
+        for name, value in cookies.items():
+            prefix = "#HttpOnly_" if name == LOGIN_KEY else ""
+            lines.append("%s.bilibili.com\tTRUE\t/\tFALSE\t1893456000\t%s\t%s"
+                         % (prefix, name, value))
+        return self._save_raw(uid, "\n".join(lines) + "\n")
+
     def _refresh_profile(self, item):
         """尽力取一次账号昵称头像；失败静默（结果只影响展示）。"""
         if item.get("error"):
@@ -191,11 +215,20 @@ class AccountStore:
         with self.lock:
             # 历史账号（老版本添加的）没有 profile，补拉一次；带节流避免每次轮询都联网。
             now = time.time()
+            dirty = False
             for item in self.items:
                 if (not item.get("profile") and not item.get("error")
                         and now - float(item.get("_profile_try", 0)) > 60):
                     item["_profile_try"] = now
                     self._refresh_profile(item)
+                # 老账号没保存原始文件：用已存 cookie 重建，文件名用 uid
+                if not item.get("file_name"):
+                    saved = self._rebuild_raw(item)
+                    if saved:
+                        item["file_name"] = saved
+                        dirty = True
+            if dirty:
+                self._save()
             return {"ok": True, "active_id": self.active_id,
                     "items": [self.public(x) for x in self.items]}
 

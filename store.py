@@ -432,7 +432,8 @@ class Store:
         """按 LIVE 开播事件把数据切成一场场，返回每场时间边界与统计。
 
         每场 = 一次开播到下场开播前；最后一场 until=0（至今）。
-        若从未收到开播事件，返回空列表（此时前端用「全部」视图）。
+        旧版本采集的数据没有 LIVE 事件，此时退回按采集批次（runs）切分，
+        并在结果里标 approx=True，前端据此提示「按采集批次近似」。
         """
         rid = _as_int(room_id)
         if not rid:
@@ -442,11 +443,19 @@ class Store:
                 "SELECT received_at FROM room_event "
                 "WHERE room_id=? AND kind='live' AND detail='开播' "
                 "ORDER BY received_at ASC", (rid,))]
+        approx = False
+        if not starts:
+            with self.lock:
+                starts = [r[0] for r in self.db.execute(
+                    "SELECT started_at FROM runs WHERE room_id=? "
+                    "ORDER BY started_at ASC", (rid,))]
+            approx = bool(starts)
         out = []
         for i, start in enumerate(starts):
             end = starts[i + 1] if i + 1 < len(starts) else 0
             stat = self.range_stats(rid, start, end) or {}
             out.append({"index": i + 1, "start": start, "end": end,
+                        "approx": approx,
                         "danmaku": stat.get("danmaku", 0),
                         "sc": stat.get("sc", 0),
                         "sc_amount": stat.get("sc_amount", 0),

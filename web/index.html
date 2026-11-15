@@ -1043,17 +1043,20 @@ function renderSessions(list){
     return;
   }
   var items=S.sessions.slice().reverse();
+  var approx=!!(S.sessions[0]&&S.sessions[0].approx);
   box.innerHTML='<button class="session-item '+(S.sessSel==='all'?'on':'')+
     '" data-sess="all"><span class="st-t">全部数据</span>'+
-    '<span class="st-m">共 '+S.sessions.length+' 场</span></button>'+
+    '<span class="st-m">共 '+S.sessions.length+' 段</span></button>'+
     items.map(function(s){
       var on=(String(s.index)===String(S.sessSel));
-      var end=s.end?'':' · 进行中';
       return '<button class="session-item '+(on?'on':'')+'" data-sess="'+s.index+'">'+
-        '<span class="st-t">第 '+s.index+' 场'+(s.end?'':' ●')+'</span>'+
+        '<span class="st-t">'+(approx?'第 ':'第 ')+s.index+(approx?' 段':' 场')+
+        (s.end?'':' ●')+'</span>'+
         '<span class="st-m">'+(s.start?fmtFull(s.start):'—')+
         ' · 弹幕 '+num(s.danmaku)+'</span></button>';
-    }).join('');
+    }).join('')+
+    (approx?'<div class="st-m" style="padding:6px 6px 0;color:var(--dim-2);font-size:10px">'+
+      '历史数据无开播记录，按采集批次近似分段</div>':'');
 }
 async function loadSessions(){
   if(!S.roomId){renderSessions([]);return}

@@ -305,6 +305,19 @@ def main():
         check("向前翻页取更早数据", len(page) == 2 and
               all(x["received_at"] < t2ms + 1000 for x in page))
 
+        # 老数据无 LIVE 事件 → 按采集批次（runs）兜底分段
+        rstore = Store(os.path.join(tmp, "runs-only.db"))
+        rr = rstore.start_run(22748536, {"room_id": 22748536})
+        run_start = rstore.db.execute(
+            "SELECT started_at FROM runs WHERE id=?", (rr,)).fetchone()[0]
+        rstore.insert_danmaku([{"room_id": 22748536, "uid": 9, "uname": "老观众",
+                                "text": "老数据", "received_at": run_start + 500,
+                                "is_emoticon": 0}])
+        rstore.end_run(rr)
+        rsess = rstore.live_sessions(22748536)
+        check("无开播事件时按采集批次兜底分段", len(rsess) == 1 and
+              rsess[0].get("approx") is True and rsess[0]["danmaku"] == 1, rsess)
+
         # ---------- 动态存储（独立库） ----------
         dyn_rows = [
             {"id": "d1", "mid": 9, "pub_ts": now // 1000, "type": "DYNAMIC_TYPE_DRAW",
