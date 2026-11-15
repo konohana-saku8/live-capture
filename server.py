@@ -10,6 +10,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from accounts import AccountStore
+
 DEFAULTS = {
     "room_id": 22748536,
     "sessdata": "",
@@ -106,7 +108,7 @@ class Config:
 
 
 class LogBuffer:
-    def __init__(self, capacity=300):
+    def __init__(self, capacity=1000):
         self.capacity = capacity
         self.lock = threading.RLock()
         self.items = []
@@ -121,7 +123,7 @@ class LogBuffer:
 
     def tail(self, limit=100):
         with self.lock:
-            return list(self.items[-max(1, min(300, limit)):])
+            return list(self.items[-max(1, min(1000, limit)):])
 
 
 def _lan_ip():
@@ -185,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
-        if length > 65536:
+        if length > 512 * 1024:
             raise ValueError("请求体过大")
         raw = self.rfile.read(length)
         try:
@@ -260,8 +262,14 @@ class Handler(BaseHTTPRequestHandler):
                         "defaults": DEFAULTS})
             return
         if path == "/api/logs":
-            self._json({"ok": True, "items": self.server.logs.tail(
-                int(q.get("limit") or 100))})
+            try:
+                limit = int(q.get("limit") or 100)
+            except (TypeError, ValueError):
+                limit = 100
+            self._json({"ok": True, "items": self.server.logs.tail(limit)})
+            return
+        if path == "/api/accounts":
+            self._json(self.server.accounts.list())
             return
         kinds = {"/api/danmaku": "danmaku",
                  "/api/superchats": "sc",
@@ -293,6 +301,40 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_post(self, path, body):
         manager, config = self.server.manager, self.server.config
+        accounts = self.server.accounts
+        if path == "/api/accounts":
+            try:
+                item, created, error = accounts.add(
+                    body.get("name") or "", body.get("csv") or "",
+                    activate=body.get("activate", True) is not False)
+            except ValueError as exc:
+                self._fail(400, str(exc))
+                return
+            self.server.logs.add(
+                "info", "%s cookie 账号：%s%s" %
+                ("新增" if created else "更新", item["label"],
+                 "（%s）" % error if error else ""))
+            self._json({"ok": True, "item": item, "accounts": accounts.list(),
+                        "restart_required": manager.snapshot()["running"]})
+            return
+        if path == "/api/accounts/remove":
+            ok = accounts.remove(body.get("id") or "")
+            self.server.logs.add(
+                "info", "删除 cookie 账号：%s" % ("成功" if ok else "账号不存在"))
+            self._json({"ok": ok, "accounts": accounts.list(),
+                        "restart_required": manager.snapshot()["running"]})
+            return
+        if path == "/api/accounts/activate":
+            try:
+                out, label = accounts.activate(body.get("id") or "")
+            except ValueError as exc:
+                self._fail(400, str(exc))
+                return
+            self.server.logs.add("info", "启用 cookie 账号：%s" %
+                                 (label or "已停用（回退匿名 / 手填凭证）"))
+            self._json({"ok": True, "accounts": out,
+                        "restart_required": manager.snapshot()["running"]})
+            return
         if path == "/api/config":
             before = config.get()
             after = config.save(body)
@@ -307,11 +349,14 @@ class Handler(BaseHTTPRequestHandler):
             if body.get("room_id"):
                 config.save({"room_id": body["room_id"]})
             ok, message = manager.start()
-            self._json({"ok": ok, "message": message}, 200 if ok else 409)
+            # 响应直接带上状态，前端不必再等一次 /api/status
+            self._json({"ok": ok, "message": message,
+                        "capture": manager.snapshot()}, 200 if ok else 409)
             return
         if path == "/api/stop":
             ok, message = manager.stop()
-            self._json({"ok": ok, "message": message})
+            self._json({"ok": ok, "message": message,
+                        "capture": manager.snapshot()})
             return
         if path == "/api/clear":
             if body.get("confirm") != "yes":
@@ -329,13 +374,19 @@ class AppServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def create_server(host, port, data_dir, web_dir, store, manager, config, logs):
+def create_server(host, port, data_dir, web_dir, store, manager, config, logs,
+                  accounts=None):
     """Build the server without blocking; used by run.py and selftest.py."""
     srv = AppServer((host, port), Handler)
     srv.store = store
     srv.manager = manager
     srv.config = config
     srv.logs = logs
+    srv.accounts = accounts or AccountStore(
+        os.path.join(data_dir, "accounts.json"))
+    # 采集线程在用户点「启动」时才读账号，这里挂上即可，不必改 run.py 签名
+    if getattr(manager, "accounts", None) is None:
+        manager.accounts = srv.accounts
     srv.web_dir = web_dir
     srv.data_dir = data_dir
     srv.host = host

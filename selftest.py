@@ -17,6 +17,7 @@ import urllib.request
 import zlib
 
 import capture
+from accounts import AccountStore, parse_cookie_csv
 from capture import CaptureManager
 from server import Config, LogBuffer, create_server
 from store import Store
@@ -55,6 +56,31 @@ def main():
         list(capture.iter_packets(plain))[0]))[0]["cmd"] == payload["cmd"])
     pop = capture.Packet(3, 1, b"\x00\x00\x01\x00")
     check("人气值解析", capture.parse_popularity(pop) == 256)
+
+    # ---------- cookie CSV ----------
+    netscape = "\n".join([
+        "# Netscape HTTP Cookie File",
+        "#HttpOnly_.bilibili.com\tTRUE\t/\tTRUE\t1893456000\tSESSDATA\tsecret-token",
+        ".bilibili.com\tTRUE\t/\tFALSE\t1893456000\tDedeUserID\t31373462",
+        ".bilibili.com\tTRUE\t/\tFALSE\t1893456000\tbuvid3\tBUVID-XYZ",
+    ])
+    c1 = parse_cookie_csv(netscape)
+    check("Netscape cookie 解析",
+          c1.get("SESSDATA") == "secret-token" and
+          c1.get("DedeUserID") == "31373462" and
+          c1.get("buvid3") == "BUVID-XYZ", c1)
+    chrome = ("SESSDATA\tchrome-token\t.bilibili.com\t/\t1893456000\t0\t0\t0\t0\t0\t0\t0\t0\n"
+              "DedeUserID\t42\t.bilibili.com\t/\t1893456000\n")
+    c2 = parse_cookie_csv(chrome)
+    check("Chrome 13 列 cookie 解析",
+          c2.get("SESSDATA") == "chrome-token" and c2.get("DedeUserID") == "42", c2)
+    c3 = parse_cookie_csv("name,value\nSESSDATA,csv-token\nbuvid3,AAA\n")
+    check("逗号两列 cookie 解析", c3.get("SESSDATA") == "csv-token", c3)
+    try:
+        parse_cookie_csv("")
+        check("空 CSV 被拒", False)
+    except ValueError:
+        check("空 CSV 被拒", True)
 
     # ---------- field mapping ----------
     now = 1794672000000
@@ -164,7 +190,45 @@ def main():
         status, raw = get("/api/logs")
         check("日志接口", len(json.loads(raw)["items"]) >= 1)
         status, raw = post("/api/stop", {})
-        check("停止接口", json.loads(raw)["ok"] is True)
+        j = json.loads(raw)
+        check("停止接口立即返回 running=false",
+              j["ok"] is True and j["capture"]["running"] is False,
+              j.get("capture"))
+
+        # ---------- 账号 API ----------
+        csv_text = ("SESSDATA\ttest-sessdata\t.bilibili.com\t/\t1893456000\n"
+                    "DedeUserID\t31373462\t.bilibili.com\t/\t1893456000\n")
+        status, raw = get("/api/accounts")
+        j = json.loads(raw)
+        check("账号接口初始为空", status == 200 and j["items"] == [] and
+              not j["active_id"], j)
+        status, raw = post("/api/accounts", {"name": "main", "csv": csv_text})
+        j = json.loads(raw)
+        check("上传 CSV 新增账号并自动启用",
+              status == 200 and len(j["accounts"]["items"]) == 1 and
+              j["accounts"]["items"][0]["active"], j)
+        check("账号列表不泄露 cookie 明文",
+              b"test-sessdata" not in raw and
+              bool(j["accounts"]["items"][0]["sessdata_mask"]), raw[:200])
+        aid = j["accounts"]["items"][0]["id"]
+        status, raw = post("/api/accounts",
+                           {"name": "bad", "csv": "foo,bar\nbuvid3,AAA"})
+        j = json.loads(raw)
+        check("缺 SESSDATA 仍可保存但标错",
+              bool(j["item"]["error"]) and not j["item"]["active"], j["item"])
+        status, raw = post("/api/accounts/activate", {"id": ""})
+        check("停用账号", json.loads(raw)["accounts"]["active_id"] == "")
+        status, raw = post("/api/accounts/activate", {"id": aid})
+        check("启用账号", json.loads(raw)["accounts"]["active_id"] == aid)
+        status, raw = post("/api/accounts/remove", {"id": aid})
+        check("删除账号", len(json.loads(raw)["accounts"]["items"]) == 1)
+        status, raw = get("/api/logs?limit=500")
+        check("日志上限接口可用", status == 200 and "items" in json.loads(raw))
+        acc_path = os.path.join(tmp, "acc-persist.json")
+        AccountStore(acc_path).add("persist", csv_text)
+        check("账号持久化到 accounts.json",
+              AccountStore(acc_path).active()["cookies"]["SESSDATA"] ==
+              "test-sessdata")
         status, _ = get("/api/nope")
         check("未知接口 404", status == 404)
 
@@ -208,9 +272,10 @@ def main():
         class FakeApi:
             warning = ""
             user_agent = "selftest-ua"
+            seen = []
 
             def __init__(self, cfg):
-                pass
+                FakeApi.seen.append(cfg)
 
             def cookies(self):
                 return {}
@@ -251,8 +316,19 @@ def main():
         old_api, old_connect = capture.BiliApi, capture.connect
         capture.BiliApi, capture.connect = FakeApi, fake_connect
         try:
+            manager.accounts.add("main", csv_text)
             ok, message = manager.start()
             check("采集线程可启动", ok, message)
+            for _ in range(30):
+                if FakeApi.seen:
+                    break
+                time.sleep(0.05)
+            check("启用账号的 cookie 注入采集配置",
+                  bool(FakeApi.seen) and
+                  FakeApi.seen[-1].get("_cookies", {}).get("SESSDATA") ==
+                  "test-sessdata" and
+                  FakeApi.seen[-1].get("sessdata") == "test-sessdata",
+                  FakeApi.seen[-1] if FakeApi.seen else {})
             snap = manager.snapshot()
             for _ in range(40):
                 time.sleep(0.1)
@@ -280,6 +356,13 @@ def main():
         check("网页含配置/启停/导出控件",
               all(k in page for k in ("f_room", "btnStart", "btnStop",
                                      "btnJson", "btnCsv", "/api/export")))
+        check("网页拆成配置/数据/日志三页",
+              all(k in page for k in ('id="page-config"', 'id="page-data"',
+                                      'id="page-logs"', "acctFile", "btnUpload",
+                                      "logBox", "streamBox", "btnViewTable")))
+        check("网页含账号 API 与状态即时刷新",
+              all(k in page for k in ("/api/accounts", "refreshSoon",
+                                      "setRunningUI", "/api/accounts/activate")))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

@@ -175,6 +175,13 @@ class BiliApi:
                           ("buvid3", "buvid3")):
             if config.get(key):
                 self._set_cookie(name, str(config[key]))
+        # 网页上传的 cookie CSV 全量注入；账号优先于手填的三项，
+        # 与旧 sc_collector 里 sender.cookies() 交给采集连接的口径一致。
+        extra = config.get("_cookies") or {}
+        if isinstance(extra, dict):
+            for name, value in extra.items():
+                if name and value:
+                    self._set_cookie(str(name), str(value))
 
     def _request(self, url, referer="https://live.bilibili.com/"):
         req = urllib.request.Request(url, headers={
@@ -386,10 +393,11 @@ def _event_detail(kind, data):
 class CaptureManager:
     """Runs the collector in one background thread; HTTP side only reads state."""
 
-    def __init__(self, store, config_getter, log_fn):
+    def __init__(self, store, config_getter, log_fn, accounts=None):
         self.store = store
         self.config_getter = config_getter
         self.log = log_fn
+        self.accounts = accounts
         self.lock = threading.RLock()
         self._thread = None
         self._stop = None
@@ -429,6 +437,17 @@ class CaptureManager:
         if connect is None:
             return False, "缺少依赖 websockets：%s" % (WS_IMPORT_ERROR or "未安装")
         cfg = dict(self.config_getter())
+        if self.accounts:
+            acc = self.accounts.active()
+            if acc:
+                cookies = acc["cookies"]
+                cfg["_cookies"] = cookies
+                for name, key in (("SESSDATA", "sessdata"),
+                                  ("DedeUserID", "dede_user_id"),
+                                  ("buvid3", "buvid3")):
+                    if cookies.get(name):
+                        cfg[key] = cookies[name]
+                self.log("info", "使用 cookie 账号：%s" % acc["label"])
         if not _as_int(cfg.get("room_id")):
             return False, "请先在网页里填写房间号"
         self._stop = threading.Event()
@@ -447,9 +466,11 @@ class CaptureManager:
         event, thread = self._stop, self._thread
         if event:
             event.set()
+        # 先落状态再等线程收尾：网页/API 立刻就能读到「已停止」，
+        # 不用等 join 或下一次轮询。
+        self._set(running=False, stopped_at=int(time.time() * 1000))
         if thread and thread.is_alive():
             thread.join(timeout=6)
-        self._set(running=False, stopped_at=int(time.time() * 1000))
         self.log("info", "采集已停止")
         return True, "已停止"
 
@@ -461,7 +482,11 @@ class CaptureManager:
             self.log("error", "采集线程异常：%s" % exc)
         finally:
             self._flush_danmaku()
-            self._set(running=False, stopped_at=int(time.time() * 1000))
+            # 只有「当前这一场」才有权收尾；旧线程退出时不能把新一场打回未启动
+            with self.lock:
+                if self._thread is threading.current_thread():
+                    self.state["running"] = False
+                    self.state["stopped_at"] = int(time.time() * 1000)
 
     async def _main(self, cfg):
         room = _as_int(cfg.get("room_id"))
