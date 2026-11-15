@@ -563,6 +563,24 @@ def main():
                             st, manager, cfg, logs, rooms=rooms)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         base = "http://127.0.0.1:%s" % srv.server_address[1]
+        nx = srv.dynamics._next_run()
+        check("动态定时器算得出下一个时间点（mktime 要 9 元组）",
+              isinstance(nx, float) and 0 < nx - time.time() <= 86400 + 2,
+              (nx, time.time()))
+        pulled = []
+        real_pull = srv.dynamics.pull
+        srv.dynamics.pull = lambda *a, **k: pulled.append(1) or {"ok": True, "ts": 1}
+        try:
+            cfg.save({"dyn_auto": False, "dyn_hour": 0, "dyn_minute": 0,
+                      "dyn_last_ts": 0})
+            srv.dynamics._tick()
+            check("关掉「每天定时拉取」后定时器不拉", not pulled, pulled)
+            cfg.save({"dyn_auto": True})
+            srv.dynamics._tick()
+            check("开着定时且今天还没拉过就补拉一次", len(pulled) == 1, pulled)
+        finally:
+            srv.dynamics.pull = real_pull
+            cfg.save({"dyn_last_ts": int(time.time() * 1000)})
 
         def get(path, headers=None):
             req = urllib.request.Request(base + path, headers=headers or {})

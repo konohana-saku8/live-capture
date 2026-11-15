@@ -251,13 +251,17 @@ class DynamicScheduler:
             self.config.save({"dyn_last_ts": res["ts"]})
 
     def _next_run(self):
-        """下一个「时:分」的本地时间戳（今天过了就算明天）。"""
+        """下一个「时:分」的本地时间戳（今天过了就算明天）。
+
+        注意 `time.mktime` 要的是 9 元组（末尾 isdst），少一项会抛
+        「illegal time tuple argument」——定时线程会直接死掉。
+        """
         cfg = self.config.get()
         hour = _as_int(cfg.get("dyn_hour"), 8)
         minute = _as_int(cfg.get("dyn_minute"), 0)
         now = time.localtime()
         target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
-                              hour, minute, 0, 0, -1))
+                              hour, minute, 0, 0, 0, -1))
         if target <= time.time():
             target += 86400
         return target
@@ -271,25 +275,33 @@ class DynamicScheduler:
         while not self._stop.is_set():
             if self._stop.wait(30):
                 break
-            cfg = self.config.get()
-            hour = _as_int(cfg.get("dyn_hour"), 8)
-            minute = _as_int(cfg.get("dyn_minute"), 0)
-            now = time.localtime()
-            target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
-                                  hour, minute, 0, 0, -1))
-            if time.time() < target:
-                continue
-            last = _as_int(cfg.get("dyn_last_ts"))
-            if last and last >= int(target * 1000):
-                continue                       # 今天这个时间点已经拉过
-            if self._last_fail and time.time() - self._last_fail < 1800:
-                continue
-            res = self.pull("定时")
-            if res.get("ok"):
-                self.config.save({"dyn_last_ts": res["ts"]})
-                self._last_fail = 0
-            else:
-                self._last_fail = time.time()
+            try:
+                self._tick()
+            except Exception as exc:            # 定时线程不能因为一次异常就死
+                self.logs.add("error", "动态定时检查出错：%s" % exc)
+
+    def _tick(self):
+        cfg = self.config.get()
+        if not cfg.get("dyn_auto"):
+            return                             # 关掉「每天定时拉取」就不定时跑
+        hour = _as_int(cfg.get("dyn_hour"), 8)
+        minute = _as_int(cfg.get("dyn_minute"), 0)
+        now = time.localtime()
+        target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
+                              hour, minute, 0, 0, 0, -1))
+        if time.time() < target:
+            return
+        last = _as_int(cfg.get("dyn_last_ts"))
+        if last and last >= int(target * 1000):
+            return                             # 今天这个时间点已经拉过
+        if self._last_fail and time.time() - self._last_fail < 1800:
+            return
+        res = self.pull("定时")
+        if res.get("ok"):
+            self.config.save({"dyn_last_ts": res["ts"]})
+            self._last_fail = 0
+        else:
+            self._last_fail = time.time()
 
     def stop(self):
         self._stop.set()
