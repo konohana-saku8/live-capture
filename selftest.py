@@ -1171,6 +1171,34 @@ def main():
                     "AND kind='live' AND detail='开播'").fetchone()[0]
                 check("连上时不重复补记开播（同一场不被切两半）", opens == 1, opens)
                 manager.stop(1001)
+
+                # ---------- 探状态失败时不能补记幻影「开播」 ----------
+                class RaisingApi(FlippedApi):
+                    def resolve_room(self, room):
+                        raise RuntimeError("boom")
+
+                capture.BiliApi = RaisingApi
+                rooms.settings(1001, {"live_only": True})
+                opens = st.db.execute(
+                    "SELECT COUNT(*) FROM room_event WHERE room_id=1001 "
+                    "AND kind='live' AND detail='开播'").fetchone()[0]
+                ok, message = manager.start(1001)
+                for _ in range(50):
+                    if ok:
+                        break
+                    time.sleep(0.1)      # 等 stop 的异步回收完成
+                    ok, message = manager.start(1001)
+                check("探状态失败也能启动", ok, message)
+                time.sleep(2.5)          # WATCH_INTERVAL=1，至少空转两圈
+                opens2 = st.db.execute(
+                    "SELECT COUNT(*) FROM room_event WHERE room_id=1001 "
+                    "AND kind='live' AND detail='开播'").fetchone()[0]
+                check("探状态失败时不连弹幕、不补记幻影开播",
+                      opens2 == opens, (opens, opens2))
+                st1001 = {s["room_id"]: s
+                          for s in manager.snapshot()["rooms"]}[1001]
+                check("探状态失败时停在等待开播", st1001["waiting"], st1001)
+                manager.stop(1001)
             finally:
                 capture.BiliApi, capture.WATCH_INTERVAL = FakeApi, old_watch
                 rooms.settings(1001, {"live_only": False})
