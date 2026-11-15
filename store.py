@@ -2,12 +2,14 @@
 """SQLite storage for danmaku / Super Chat / room events / capture runs.
 
 Only the Python standard library is used. One connection is shared between the
-HTTP thread and the collector thread, guarded by an RLock.
+HTTP threads and the collector threads, guarded by an RLock. Every table has a
+room_id so a room's feed and events stay separate.
 """
 from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import sqlite3
 import threading
@@ -28,6 +30,9 @@ CREATE TABLE IF NOT EXISTS danmaku (
   guard_level  INTEGER,
   is_admin     INTEGER NOT NULL DEFAULT 0,
   is_emoticon  INTEGER NOT NULL DEFAULT 0,
+  emote_url    TEXT NOT NULL DEFAULT '',
+  emote_px     INTEGER NOT NULL DEFAULT 20,
+  emote_map    TEXT NOT NULL DEFAULT '{}',
   raw_json     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dm_time ON danmaku(received_at DESC);
@@ -67,6 +72,7 @@ CREATE TABLE IF NOT EXISTS room_event (
   raw_json    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ev_time ON room_event(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ev_room ON room_event(room_id, received_at DESC);
 
 CREATE TABLE IF NOT EXISTS runs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +83,13 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
+# 升级旧库：早期版本没有表情图片字段
+MIGRATIONS = {
+    "danmaku": {"emote_url": "TEXT NOT NULL DEFAULT ''",
+                "emote_px": "INTEGER NOT NULL DEFAULT 20",
+                "emote_map": "TEXT NOT NULL DEFAULT '{}'"},
+}
+
 TABLE_OF = {"danmaku": "danmaku", "sc": "sc_message", "events": "room_event"}
 SEARCH_OF = {
     "danmaku": ("text", "uname"),
@@ -85,7 +98,8 @@ SEARCH_OF = {
 }
 CSV_COLUMNS = {
     "danmaku": ("seq", "room_id", "received_at", "event_time", "uname", "uid",
-                "text", "medal_name", "medal_level", "guard_level", "is_admin"),
+                "text", "is_emoticon", "emote_url", "medal_name", "medal_level",
+                "guard_level", "is_admin"),
     "sc": ("sc_id", "room_id", "received_at", "start_time", "end_time", "uname",
            "uid", "price", "message", "message_trans", "guard_level", "deleted"),
     "events": ("seq", "room_id", "received_at", "event_time", "kind", "uname",
@@ -112,6 +126,13 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("PRAGMA busy_timeout=5000")
+        for table, columns in MIGRATIONS.items():
+            existing = {row[1] for row in
+                        self.db.execute("PRAGMA table_info(%s)" % table)}
+            for name, decl in columns.items():
+                if name not in existing:
+                    self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" %
+                                    (table, name, decl))
         self.db.commit()
 
     def _write(self, sql, args=()):
@@ -127,14 +148,22 @@ class Store:
             return 0
         sql = """INSERT INTO danmaku
             (run_id, room_id, uid, uname, text, event_time, received_at,
-             medal_name, medal_level, guard_level, is_admin, is_emoticon, raw_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
-        data = [(r.get("run_id"), r.get("room_id", 0), r.get("uid", 0),
-                 r.get("uname", ""), str(r.get("text") or ""),
-                 r.get("event_time", 0), r.get("received_at", 0),
-                 r.get("medal_name", ""), r.get("medal_level", 0),
-                 r.get("guard_level", 0), r.get("is_admin", 0),
-                 r.get("is_emoticon", 0), r.get("raw_json", "")) for r in rows]
+             medal_name, medal_level, guard_level, is_admin, is_emoticon,
+             emote_url, emote_px, emote_map, raw_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        data = []
+        for r in rows:
+            emote_map = r.get("emote_map") or {}
+            if not isinstance(emote_map, str):
+                emote_map = json.dumps(emote_map, ensure_ascii=False)
+            data.append((r.get("run_id"), r.get("room_id", 0), r.get("uid", 0),
+                         r.get("uname", ""), str(r.get("text") or ""),
+                         r.get("event_time", 0), r.get("received_at", 0),
+                         r.get("medal_name", ""), r.get("medal_level", 0),
+                         r.get("guard_level", 0), r.get("is_admin", 0),
+                         r.get("is_emoticon", 0), r.get("emote_url", ""),
+                         _as_int(r.get("emote_px"), 20), emote_map,
+                         r.get("raw_json", "")))
         with self.lock:
             self.db.executemany(sql, data)
             self.db.commit()
@@ -199,10 +228,15 @@ class Store:
             self._write("UPDATE runs SET stopped_at=? WHERE id=?",
                         (int(time.time() * 1000), run_id))
 
-    def clear(self):
+    def clear(self, room_id=None):
+        rid = _as_int(room_id)
         with self.lock:
             for table in ("danmaku", "sc_message", "room_event"):
-                self.db.execute("DELETE FROM " + table)
+                if rid:
+                    self.db.execute("DELETE FROM %s WHERE room_id=?" % table,
+                                    (rid,))
+                else:
+                    self.db.execute("DELETE FROM " + table)
             self.db.commit()
 
     # ---------------- reads ----------------
@@ -270,15 +304,106 @@ class Store:
                 writer.writerow([item.get(c, "") for c in cols])
             return "%s.csv" % kind, "text/csv; charset=utf-8", \
                 "\ufeff" + buf.getvalue()
-        body = __import__("json").dumps(
+        body = json.dumps(
             {"kind": kind, "count": len(items), "items": items},
             ensure_ascii=False, indent=2)
         return "%s.json" % kind, "application/json; charset=utf-8", body
 
+    # ---------------- dashboard ----------------
+
+    def dashboard(self):
+        """Aggregates used by the home page: totals, per-room, recent, timeline."""
+        with self.lock:
+            totals = {}
+            for key, table in TABLE_OF.items():
+                totals[key] = self.db.execute(
+                    "SELECT COUNT(*) FROM " + table).fetchone()[0]
+            sc = self.db.execute(
+                "SELECT COALESCE(SUM(price),0), COALESCE(MAX(price),0) "
+                "FROM sc_message WHERE deleted=0").fetchone()
+            totals["sc_amount"] = sc[0]
+            totals["sc_max"] = sc[1]
+            totals["rooms"] = self.db.execute(
+                "SELECT COUNT(DISTINCT room_id) FROM ("
+                "SELECT room_id FROM danmaku UNION "
+                "SELECT room_id FROM sc_message UNION "
+                "SELECT room_id FROM room_event)").fetchone()[0]
+
+            by_room = {}
+            for key, table in TABLE_OF.items():
+                for row in self.db.execute(
+                        "SELECT room_id, COUNT(*) AS n FROM %s GROUP BY room_id"
+                        % table):
+                    item = by_room.setdefault(row["room_id"], {"room_id": row["room_id"],
+                                                               "danmaku": 0, "sc": 0,
+                                                               "events": 0,
+                                                               "sc_amount": 0,
+                                                               "last_at": 0})
+                    item[key] = row["n"]
+                for row in self.db.execute(
+                        "SELECT room_id, MAX(received_at) AS t FROM %s GROUP BY room_id"
+                        % table):
+                    item = by_room.setdefault(row["room_id"], {"room_id": row["room_id"],
+                                                               "danmaku": 0, "sc": 0,
+                                                               "events": 0,
+                                                               "sc_amount": 0,
+                                                               "last_at": 0})
+                    item["last_at"] = max(item["last_at"], row["t"] or 0)
+            for row in self.db.execute(
+                    "SELECT room_id, COALESCE(SUM(price),0) AS s FROM sc_message "
+                    "WHERE deleted=0 GROUP BY room_id"):
+                item = by_room.setdefault(row["room_id"], {"room_id": row["room_id"],
+                                                           "danmaku": 0, "sc": 0,
+                                                           "events": 0,
+                                                           "sc_amount": 0,
+                                                           "last_at": 0})
+                item["sc_amount"] = row["s"]
+
+            top_sc = [dict(r) for r in self.db.execute(
+                "SELECT room_id, uname, price, message, message_trans, received_at "
+                "FROM sc_message WHERE deleted=0 ORDER BY price DESC, received_at DESC "
+                "LIMIT 5")]
+
+            recent = []
+            for kind, sql in (
+                ("sc", "SELECT 'sc' AS kind, room_id, received_at, uname, "
+                       "price, message AS text FROM sc_message WHERE deleted=0 "
+                       "ORDER BY received_at DESC LIMIT 8"),
+                ("events", "SELECT 'events' AS kind, room_id, received_at, uname, "
+                           "0 AS price, detail AS text FROM room_event "
+                           "ORDER BY received_at DESC LIMIT 8"),
+                ("danmaku", "SELECT 'danmaku' AS kind, room_id, received_at, uname, "
+                            "0 AS price, text FROM danmaku "
+                            "ORDER BY received_at DESC LIMIT 8")):
+                recent.extend(dict(r) for r in self.db.execute(sql))
+            recent.sort(key=lambda x: x["received_at"] or 0, reverse=True)
+            recent = recent[:15]
+
+            now = int(time.time() * 1000)
+            span = 3600 * 1000
+            start = now - 12 * span
+            timeline = {"danmaku": [0] * 12, "sc": [0] * 12, "events": [0] * 12}
+            for key, table in TABLE_OF.items():
+                for row in self.db.execute(
+                        "SELECT received_at FROM %s WHERE received_at>=?" % table,
+                        (start,)):
+                    idx = int((row[0] - start) / span)
+                    if 0 <= idx < 12:
+                        timeline[key][idx] += 1
+            labels = []
+            for i in range(12):
+                d = time.localtime((start + i * span) / 1000)
+                labels.append("%02d:00" % d.tm_hour)
+        return {"totals": totals,
+                "by_room": sorted(by_room.values(), key=lambda x: x["room_id"]),
+                "top_sc": top_sc, "recent": recent,
+                "timeline": {"labels": labels, **timeline},
+                "last_received_at": max(
+                    [x["last_at"] for x in by_room.values()] + [0])}
+
 
 def _safe_config(config):
     """Persist run settings without any credential."""
-    import json
     keep = ("room_id", "protover", "heartbeat_seconds", "record_danmaku",
             "record_sc", "record_events")
     return json.dumps({k: config.get(k) for k in keep}, ensure_ascii=False)

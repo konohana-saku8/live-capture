@@ -2,9 +2,12 @@
 """Bilibili live danmaku / Super Chat collector.
 
 Protocol details are ported from danmaku-it/collector (WBI signing, 16-byte
-packet header, zlib/brotli nesting, SUPER_CHAT_MESSAGE_JPN translation).
-The client asks for protover=2 (zlib) by default so Termux does not need to
-compile brotli.
+packet header, zlib/brotli nesting, SUPER_CHAT_MESSAGE_JPN translation,
+emoticon payload decoding). The client asks for protover=2 (zlib) by default
+so Termux does not need to compile brotli.
+
+One RoomWorker thread per live room: several rooms can be captured at the same
+time, each with its own state, buffers and reconnect loop.
 """
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ import asyncio
 import hashlib
 import http.cookiejar
 import json
+import re
 import struct
 import threading
 import time
@@ -55,6 +59,10 @@ OP_AUTH_REPLY = 8
 PROTO_ZLIB = 2
 PROTO_BROTLI = 3
 CLIENT_PROTO_VER = 1
+
+EMOTE_PX = 20
+EMOTE_BIG_PX = 40
+EMOTE_TOKEN_RE = re.compile(r"\[([^\[\]\s][^\[\]]{0,31})\]")
 
 
 def _as_int(value, default=0):
@@ -157,6 +165,69 @@ def parse_popularity(packet):
     return None
 
 
+# ---------------- emoticons (ported from danmaku-it/collector/collector.py) ----
+
+def _https(url):
+    url = str(url or "")
+    return url.replace("http://", "https://", 1) if url.startswith("http://") else url
+
+
+def _emote_key(name):
+    return str(name or "").strip().strip("[]").strip()
+
+
+def _emote_px(node):
+    try:
+        height = int(node.get("height") or 0)
+    except (TypeError, ValueError):
+        height = 0
+    return EMOTE_BIG_PX if height > 64 else EMOTE_PX
+
+
+def _emoticon_payload(head):
+    """Return (whole-message emoticon, name -> emoticon node)."""
+    single, table = {}, {}
+    if not isinstance(head, list):
+        return single, table
+    for index in (13, 12):
+        if len(head) <= index or not isinstance(head[index], dict):
+            continue
+        node = head[index]
+        if node.get("url") or node.get("emoticon_unique"):
+            single = single or node
+        for name, item in (node.get("emots") or {}).items():
+            if isinstance(item, dict) and item.get("url"):
+                table.setdefault(_emote_key(name), item)
+    for index in (15, 14):
+        node = head[index] if len(head) > index else None
+        if not isinstance(node, dict) or not node.get("extra"):
+            continue
+        try:
+            extra = json.loads(node["extra"])
+        except (TypeError, ValueError):
+            extra = None
+        if isinstance(extra, dict):
+            for name, item in (extra.get("emots") or {}).items():
+                if isinstance(item, dict) and item.get("url"):
+                    table.setdefault(_emote_key(name), item)
+        break
+    return single, table
+
+
+def _used_emotes(text, single, table):
+    """Only keep the emoticons that actually occur in the message."""
+    used = {}
+    for name, node in table.items():
+        if name and "[%s]" % name in text:
+            used[name] = [_https(node.get("url") or ""), _emote_px(node)]
+    if single:
+        url = _https(single.get("url") or "")
+        name = _emote_key(text)
+        if url and name and text.strip().startswith("[") and text.strip().endswith("]"):
+            used.setdefault(name, [url, _emote_px(single)])
+    return used
+
+
 class BiliApi:
     """Anonymous-capable HTTP client: buvid seeding, WBI signing, room/token info."""
 
@@ -175,8 +246,7 @@ class BiliApi:
                           ("buvid3", "buvid3")):
             if config.get(key):
                 self._set_cookie(name, str(config[key]))
-        # 网页上传的 cookie CSV 全量注入；账号优先于手填的三项，
-        # 与旧 sc_collector 里 sender.cookies() 交给采集连接的口径一致。
+        # 网页上传的 cookie CSV 全量注入；只接受 CSV 账号，不再手填凭证。
         extra = config.get("_cookies") or {}
         if isinstance(extra, dict):
             for name, value in extra.items():
@@ -321,8 +391,26 @@ class BiliApi:
         return urls
 
 
+def fetch_room_brief(room_id, timeout=3):
+    """Lightweight room info for the room list; no WBI signing required."""
+    url = ("https://api.live.bilibili.com/room/v1/Room/"
+           "get_info?room_id=%d" % _as_int(room_id))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": DEFAULT_UA, "Referer": "https://live.bilibili.com/"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if data.get("code") != 0:
+        raise RuntimeError("room info code=%s" % data.get("code"))
+    info = data.get("data") or {}
+    return {"title": str(info.get("title") or ""),
+            "uid": _as_int(info.get("uid")),
+            "short_id": _as_int(info.get("short_id")),
+            "live_status": _as_int(info.get("live_status")),
+            "online": _as_int(info.get("online"))}
+
+
 def build_danmaku(room_id, info, now_ms):
-    """Flatten one DANMU_MSG info array (no emoticon decoding)."""
+    """Flatten one DANMU_MSG info array, including emoticon image URLs."""
     try:
         head = info[0] if isinstance(info[0], list) else []
         profile = info[2] if len(info) > 2 and isinstance(info[2], list) else []
@@ -334,14 +422,20 @@ def build_danmaku(room_id, info, now_ms):
         uid = _as_int(user.get("uid")) or _as_int(profile[0] if profile else 0)
         uname = base.get("name") or (profile[1] if len(profile) > 1 else "") or ""
         event_time = _as_int(head[4]) // 1000 if len(head) > 4 else 0
+        text = str(info[1] or "")
+        single, table = _emoticon_payload(head)
+        emote_map = _used_emotes(text, single, table)
         return {"room_id": room_id, "uid": uid, "uname": uname,
-                "text": str(info[1] or ""), "event_time": event_time,
+                "text": text, "event_time": event_time,
                 "received_at": now_ms,
                 "medal_name": medal.get("name") or "",
                 "medal_level": _as_int(medal.get("level")),
                 "guard_level": _as_int(medal.get("guard_level")),
                 "is_admin": 1 if len(profile) > 2 and profile[2] else 0,
-                "is_emoticon": 1 if len(head) > 13 and isinstance(head[13], dict) else 0}
+                "is_emoticon": 1 if single else 0,
+                "emote_url": _https(single.get("url") or ""),
+                "emote_px": _emote_px(single),
+                "emote_map": emote_map}
     except (IndexError, TypeError, ValueError, AttributeError):
         return None
 
@@ -390,31 +484,41 @@ def _event_detail(kind, data):
     return kind
 
 
-class CaptureManager:
-    """Runs the collector in one background thread; HTTP side only reads state."""
+COUNT_KEYS = ("messages", "danmaku", "sc", "events", "duplicates", "sc_trans")
 
-    def __init__(self, store, config_getter, log_fn, accounts=None):
-        self.store = store
-        self.config_getter = config_getter
-        self.log = log_fn
-        self.accounts = accounts
-        self.lock = threading.RLock()
-        self._thread = None
-        self._stop = None
+
+def blank_state():
+    return {"running": False, "room_id": 0, "label": "", "real_room_id": 0,
+            "title": "", "uname": "", "live_status": 0, "online": 0,
+            "started_at": 0, "stopped_at": 0, "last_packet_at": 0,
+            "last_error": "", "warning": "", "reconnects": 0,
+            "popularity": 0, "configured": True,
+            "counts": {k: 0 for k in COUNT_KEYS}}
+
+
+class RoomWorker:
+    """One room's websocket loop, state and write buffer."""
+
+    def __init__(self, manager, room_id, label, cfg):
+        self.manager = manager
+        self.store = manager.store
+        self.lock = manager.lock
+        self.log = manager.log
+        self.room_id = room_id
+        self.label = label or ("房间 %s" % room_id)
+        self.cfg = cfg
+        self.tag = "[%s] " % self.label
+        self.state = blank_state()
+        self.state.update({"room_id": room_id, "label": self.label,
+                           "running": True,
+                           "started_at": int(time.time() * 1000)})
+        self._stop = threading.Event()
         self._dm_buf = []
         self._pending_trans = {}
-        self.state = self._blank_state()
+        self.run_id = 0
+        self.thread = None
 
-    @staticmethod
-    def _blank_state():
-        return {"running": False, "room_id": 0, "real_room_id": 0,
-                "title": "", "uname": "", "live_status": 0, "online": 0,
-                "started_at": 0, "stopped_at": 0, "last_packet_at": 0,
-                "last_error": "", "warning": "", "reconnects": 0,
-                "popularity": 0,
-                "counts": {"messages": 0, "danmaku": 0, "sc": 0,
-                           "events": 0, "duplicates": 0, "sc_trans": 0}}
-
+    # ---- state helpers ----
     def _set(self, **kwargs):
         with self.lock:
             self.state.update(kwargs)
@@ -423,75 +527,37 @@ class CaptureManager:
         with self.lock:
             self.state["counts"][key] += amount
 
-    def snapshot(self):
-        with self.lock:
-            out = dict(self.state)
-            out["counts"] = dict(self.state["counts"])
-        out["storage"] = self.store.counts()
-        return out
-
     def start(self):
-        with self.lock:
-            if self._thread and self._thread.is_alive():
-                return False, "采集已经在运行"
-        if connect is None:
-            return False, "缺少依赖 websockets：%s" % (WS_IMPORT_ERROR or "未安装")
-        cfg = dict(self.config_getter())
-        if self.accounts:
-            acc = self.accounts.active()
-            if acc:
-                cookies = acc["cookies"]
-                cfg["_cookies"] = cookies
-                for name, key in (("SESSDATA", "sessdata"),
-                                  ("DedeUserID", "dede_user_id"),
-                                  ("buvid3", "buvid3")):
-                    if cookies.get(name):
-                        cfg[key] = cookies[name]
-                self.log("info", "使用 cookie 账号：%s" % acc["label"])
-        if not _as_int(cfg.get("room_id")):
-            return False, "请先在网页里填写房间号"
-        self._stop = threading.Event()
-        self._dm_buf = []
-        self._pending_trans = {}
-        self.state = self._blank_state()
-        self._set(running=True, started_at=int(time.time() * 1000),
-                  room_id=_as_int(cfg.get("room_id")))
-        self._thread = threading.Thread(target=self._thread_main, args=(cfg,),
-                                        name="live-capture", daemon=True)
-        self._thread.start()
-        self.log("info", "采集已启动：房间 %s" % cfg.get("room_id"))
-        return True, "已启动"
+        self.thread = threading.Thread(
+            target=self._thread_main, name="capture-%s" % self.room_id,
+            daemon=True)
+        self.thread.start()
 
-    def stop(self):
-        event, thread = self._stop, self._thread
-        if event:
-            event.set()
-        # 先落状态再等线程收尾：网页/API 立刻就能读到「已停止」，
-        # 不用等 join 或下一次轮询。
+    def request_stop(self):
+        self._stop.set()
+        # 先落状态再等线程：网页与 API 立刻就能读到「已停止」。
         self._set(running=False, stopped_at=int(time.time() * 1000))
-        if thread and thread.is_alive():
-            thread.join(timeout=6)
-        self.log("info", "采集已停止")
-        return True, "已停止"
 
-    def _thread_main(self, cfg):
+    # ---- network loop ----
+    def _thread_main(self):
         try:
-            asyncio.run(self._main(cfg))
+            asyncio.run(self._main())
         except Exception as exc:
             self._set(last_error="采集线程异常：%s" % exc)
-            self.log("error", "采集线程异常：%s" % exc)
+            self.log("error", self.tag + "采集线程异常：%s" % exc)
         finally:
             self._flush_danmaku()
-            # 只有「当前这一场」才有权收尾；旧线程退出时不能把新一场打回未启动
+            if self.run_id:
+                self.store.end_run(self.run_id)
             with self.lock:
-                if self._thread is threading.current_thread():
+                if self.manager.workers.get(self.room_id) is self:
                     self.state["running"] = False
                     self.state["stopped_at"] = int(time.time() * 1000)
 
-    async def _main(self, cfg):
-        room = _as_int(cfg.get("room_id"))
+    async def _main(self):
+        room, cfg = self.room_id, self.cfg
         api = BiliApi(cfg)
-        run_id = self.store.start_run(room, cfg)
+        self.run_id = self.store.start_run(room, cfg)
         backoff = 1.0
         try:
             while not self._stop.is_set():
@@ -515,18 +581,20 @@ class CaptureManager:
                                              token, urls, cfg)
                     backoff = 1.0
                     self._set(last_error="")
-                    await self._serve(ws, info["real_room_id"], run_id, cfg)
+                    await self._serve(ws, info["real_room_id"], self.run_id, cfg)
                 except Exception as exc:
                     if self._stop.is_set():
                         break
                     with self.lock:
                         self.state["reconnects"] += 1
                     self._set(last_error=str(exc))
-                    self.log("warn", "连接中断：%s，%.0f 秒后重连" % (exc, backoff))
+                    self.log("warn", self.tag + "连接中断：%s，%.0f 秒后重连" %
+                             (exc, backoff))
                     await self._sleep(backoff)
                     backoff = min(60.0, backoff * 2)
         finally:
-            self.store.end_run(run_id)
+            if self.run_id:
+                self.store.end_run(self.run_id)
 
     async def _connect(self, api, room_id, token, urls, cfg):
         protover = _as_int(cfg.get("protover"), 2)
@@ -553,7 +621,8 @@ class CaptureManager:
                 await ws.send(pack_auth(room_id, token, uid, protover))
                 reply = await asyncio.wait_for(self._await_auth(ws), timeout=12)
                 if reply and _as_int(reply.get("code"), -1) == 0:
-                    self.log("info", "已连接 %s（protover=%s）" % (url, protover))
+                    self.log("info", self.tag + "已连接 %s（protover=%s）" %
+                             (url, protover))
                     return ws
                 last = "鉴权被拒：%s" % reply
             except Exception as exc:
@@ -563,7 +632,7 @@ class CaptureManager:
                     await ws.close()
                 except Exception:
                     pass
-            self.log("warn", "%s 连接失败：%s" % (url, last))
+            self.log("warn", self.tag + "%s 连接失败：%s" % (url, last))
         raise ConnectionError("所有弹幕服务器都连不上：%s" % last)
 
     async def _await_auth(self, ws):
@@ -590,7 +659,7 @@ class CaptureManager:
                     continue
                 last = time.time()
                 if isinstance(raw, (bytes, bytearray)):
-                    self._handle_frame(raw, room_id, run_id, cfg)
+                    self._handle_frame(raw, run_id)
         finally:
             heartbeat.cancel()
             self._flush_danmaku()
@@ -617,7 +686,8 @@ class CaptureManager:
         while time.time() < end and not self._stop.is_set():
             await asyncio.sleep(min(1.0, max(0.1, end - time.time())))
 
-    def _handle_frame(self, raw, room_id, run_id, cfg):
+    # ---- packet handling ----
+    def _handle_frame(self, raw, run_id):
         for packet in iter_packets(raw):
             if packet.operation == OP_HEARTBEAT_REPLY:
                 pop = parse_popularity(packet)
@@ -627,14 +697,16 @@ class CaptureManager:
             if packet.operation != OP_MESSAGE:
                 continue
             for message in load_messages(packet):
-                self._handle_message(message, room_id, run_id, cfg)
+                self._handle_message(message, run_id)
 
-    def _handle_message(self, message, room_id, run_id, cfg):
+    def _handle_message(self, message, run_id):
         self._inc("messages")
         cmd = (message.get("cmd") or "").split(":", 1)[0]
         data = message.get("data")
         now = int(time.time() * 1000)
         self._set(last_packet_at=now)
+        cfg = self.cfg
+        room_id = self.room_id
 
         if cmd == "DANMU_MSG":
             if not cfg.get("record_danmaku", True):
@@ -662,7 +734,7 @@ class CaptureManager:
             row["run_id"] = run_id
             if self.store.insert_sc(row):
                 self._inc("sc")
-                self.log("info", "SC ¥%s %s：%s" %
+                self.log("info", self.tag + "SC ¥%s %s：%s" %
                          (row["price"], row["uname"], (row["message"] or "")[:40]))
             else:
                 self._inc("duplicates")
@@ -706,4 +778,141 @@ class CaptureManager:
         try:
             self._inc("danmaku", self.store.insert_danmaku(rows))
         except Exception as exc:
-            self.log("error", "弹幕入库失败：%s" % exc)
+            self.log("error", self.tag + "弹幕入库失败：%s" % exc)
+
+
+class CaptureManager:
+    """Multi-room capture manager: one RoomWorker per room, HTTP reads state."""
+
+    def __init__(self, store, config_getter, log_fn, accounts=None, rooms=None):
+        self.store = store
+        self.config_getter = config_getter
+        self.log = log_fn
+        self.accounts = accounts
+        self.rooms = rooms
+        self.lock = threading.RLock()
+        self.workers = {}
+
+    @staticmethod
+    def blank_state():
+        return blank_state()
+
+    def snapshot(self):
+        configured = []
+        if self.rooms:
+            configured = self.rooms.list().get("items") or []
+        with self.lock:
+            workers = dict(self.workers)
+        states = []
+        seen = set()
+        for room in configured:
+            rid = _as_int(room.get("id"))
+            seen.add(rid)
+            worker = workers.get(rid)
+            st = dict(worker.state) if worker else blank_state()
+            if not worker:
+                st["room_id"] = rid
+                st["label"] = room.get("label") or ("房间 %s" % rid)
+                st["live_status"] = _as_int(room.get("live_status"))
+                st["title"] = room.get("title") or ""
+            st["counts"] = dict(st["counts"])
+            st["configured"] = True
+            states.append(st)
+        for rid, worker in workers.items():
+            if rid in seen:
+                continue
+            st = dict(worker.state)
+            st["counts"] = dict(st["counts"])
+            st["configured"] = False
+            states.append(st)
+        counts = {k: sum(st["counts"].get(k, 0) for st in states)
+                  for k in COUNT_KEYS}
+        problems = []
+        for st in states:
+            if st.get("last_error"):
+                problems.append("%s：%s" % (st.get("label"), st["last_error"]))
+            if st.get("warning"):
+                problems.append("%s：%s" % (st.get("label"), st["warning"]))
+        return {"running": any(st["running"] for st in states),
+                "active": sum(1 for st in states if st["running"]),
+                "rooms": states, "counts": counts,
+                "storage": self.store.counts(),
+                "reconnects": sum(st["reconnects"] for st in states),
+                "last_packet_at": max([st["last_packet_at"] for st in states] + [0]),
+                "problems": problems}
+
+    def _cookie_cfg(self, cfg):
+        if self.accounts:
+            acc = self.accounts.active()
+            if acc:
+                cookies = acc["cookies"]
+                cfg["_cookies"] = cookies
+                for name, key in (("SESSDATA", "sessdata"),
+                                  ("DedeUserID", "dede_user_id"),
+                                  ("buvid3", "buvid3")):
+                    if cookies.get(name):
+                        cfg[key] = cookies[name]
+                self.log("info", "使用 cookie 账号：%s" % acc["label"])
+        return cfg
+
+    def _room(self, room_id):
+        if not self.rooms:
+            return {"id": _as_int(room_id), "label": "房间 %s" % room_id}
+        return self.rooms.get(_as_int(room_id))
+
+    def start(self, room_id=None):
+        rid = _as_int(room_id)
+        if not rid and self.rooms:
+            items = self.rooms.list().get("items") or []
+            rid = _as_int(items[0]["id"]) if items else 0
+        if not rid:
+            return False, "请先在「直播间」页添加直播间"
+        room = self._room(rid)
+        if not room:
+            return False, "直播间 %s 不在列表里，请先添加" % rid
+        with self.lock:
+            worker = self.workers.get(rid)
+            if worker and worker.thread and worker.thread.is_alive():
+                return False, "该直播间已在采集"
+        if connect is None:
+            return False, "缺少依赖 websockets：%s" % (WS_IMPORT_ERROR or "未安装")
+        cfg = self._cookie_cfg(dict(self.config_getter()))
+        cfg["room_id"] = rid
+        label = room.get("label") or ("房间 %s" % rid)
+        worker = RoomWorker(self, rid, label, cfg)
+        with self.lock:
+            self.workers[rid] = worker
+        worker.start()
+        self.log("info", "开始采集：%s（%s）" % (label, rid))
+        return True, "已启动：%s" % label
+
+    def stop(self, room_id=None):
+        if room_id is None or not _as_int(room_id):
+            return self.stop_all()
+        rid = _as_int(room_id)
+        with self.lock:
+            worker = self.workers.get(rid)
+        if not worker:
+            return True, "该直播间未在运行"
+        worker.request_stop()
+        self.log("info", "停止采集：%s（%s）" % (worker.label, rid))
+        self._reap(worker)
+        return True, "已停止：%s" % worker.label
+
+    def stop_all(self):
+        with self.lock:
+            workers = [w for w in self.workers.values() if w.state["running"]]
+        for worker in workers:
+            worker.request_stop()
+            self._reap(worker)
+        if workers:
+            self.log("info", "已停止全部采集（%s 个直播间）" % len(workers))
+        return True, "已全部停止（%s 个）" % len(workers)
+
+    def _reap(self, worker):
+        def join():
+            if worker.thread and worker.thread.is_alive():
+                worker.thread.join(timeout=8)
+            self.log("info", "[%s] 采集线程已退出" % worker.label)
+        threading.Thread(target=join, name="reap-%s" % worker.room_id,
+                         daemon=True).start()

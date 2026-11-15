@@ -3,273 +3,434 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>直播弹幕 / SC 采集</title>
+<title>直播采集 · 火羽ひのめ</title>
 <style>
-:root{--bg:#12151a;--card:#1b2028;--line:#2b323d;--fg:#e7ebf0;--dim:#98a2b3;--accent:#6ea8fe;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--radius:12px}
+:root{
+  --bg:#0a0807;--bg-soft:#100d0b;--panel:#161210;--panel-2:#1c1714;
+  --line:rgba(255,255,255,.075);--line-strong:rgba(255,255,255,.14);
+  --ink:#f4eee6;--ink-2:#d8cec2;--dim:#9a8d80;--dim-2:#6f6459;
+  --fire:#ff7a45;--fire-soft:#ffa172;--gold:#e8c489;
+  --bad:#e0736b;--ok:#8fbf8b;
+  --jp:"Hiragino Mincho ProN","Yu Mincho","Songti SC","Noto Serif SC",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:"SF Mono",ui-monospace,"Cascadia Mono",Menlo,monospace;
+  --radius:14px;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC",sans-serif;padding:16px;max-width:1000px;margin:0 auto}
-h1{font-size:19px;margin:0;font-weight:600}
-h2{font-size:15px;margin:0 0 12px;font-weight:600;color:var(--fg)}
-header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
-header .sub{font-size:11px;color:var(--dim);letter-spacing:.12em}
-.pages{display:flex;gap:6px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:6;background:var(--bg);padding:8px 0 10px;margin-bottom:4px;border-bottom:1px solid var(--line)}
-.pages button.active{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
-.pages .navinfo{margin-left:auto;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}
-section[hidden]{display:none!important}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:14px;min-width:0}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
-.kv{background:#141920;border-radius:8px;padding:8px 10px;min-width:0}
-.kv span{display:block;font-size:11px;color:var(--dim)}
-.kv b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.badge{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:3px 10px;font-size:12px;border:1px solid var(--line)}
-.badge i{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block}
-.badge.on{border-color:#245c39;color:var(--ok)}.badge.on i{background:var(--ok)}
-.badge.off{color:var(--dim)}
-button{background:#232b36;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 13px;font-size:13px;cursor:pointer;font-family:inherit}
-button:hover{border-color:var(--accent)}
-button.primary{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
-button.danger{border-color:#5b2b2b;color:var(--bad)}
-button:disabled{opacity:.45;cursor:not-allowed}
-input,select{width:100%;min-width:0;background:#12171e;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit}
-input:focus,select:focus{outline:none;border-color:var(--accent)}
-label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
-.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
-.checks{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:13px;color:var(--dim)}
-.checks label{display:flex;align-items:center;gap:6px;margin:0;color:var(--fg)}
-.checks input{width:auto}
-.hint{font-size:12px;color:var(--dim);margin-top:10px;min-height:18px;overflow-wrap:anywhere}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.65 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;min-height:100vh}
+/* 静态暖光，不用逐帧动效，手机上更省电 */
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(900px 460px at 78% -10%,rgba(255,110,60,.14),transparent 62%),
+    radial-gradient(700px 420px at 8% 2%,rgba(232,196,137,.07),transparent 66%),
+    radial-gradient(1100px 700px at 50% 120%,rgba(255,122,69,.05),transparent 70%)}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,select,textarea{font-family:inherit}
+::selection{background:rgba(255,122,69,.32)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:99px}
+
+/* ---------- header ---------- */
+.top{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:14px;
+  padding:12px 22px;background:rgba(10,8,7,.93);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.brand-mark{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;
+  font-family:var(--jp);font-size:18px;font-weight:600;color:#1a0e08;
+  background:linear-gradient(150deg,var(--fire-soft),var(--fire) 60%,#d95a2a);
+  box-shadow:0 6px 18px -8px rgba(255,122,69,.9)}
+.brand-text{display:flex;flex-direction:column;line-height:1.15;white-space:nowrap}
+.brand-text strong{font-size:14px;letter-spacing:.14em;font-weight:600}
+.brand-text em{font-style:normal;font-size:9px;letter-spacing:.3em;color:var(--dim-2);margin-top:3px}
+.nav{display:flex;gap:3px;margin-left:auto;flex-wrap:wrap}
+.nav button{padding:7px 14px;border-radius:99px;font-size:12.5px;color:var(--dim);
+  transition:.2s;letter-spacing:.04em;white-space:nowrap}
+.nav button:hover{color:var(--ink);background:rgba(255,255,255,.05)}
+.nav button.on{color:#1a0d07;background:linear-gradient(140deg,var(--fire-soft),var(--fire));font-weight:600}
+.top-right{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.badge{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:5px 11px;
+  font-size:11.5px;border:1px solid var(--line-strong);color:var(--dim);white-space:nowrap}
+.badge i{width:7px;height:7px;border-radius:50%;background:var(--dim-2);display:inline-block}
+.badge.on{border-color:rgba(255,122,69,.45);color:var(--fire-soft);background:rgba(255,122,69,.07)}
+.badge.on i{background:var(--fire);box-shadow:0 0 0 3px rgba(255,122,69,.16)}
+#token{width:130px;background:rgba(255,255,255,.03);border:1px solid var(--line);
+  border-radius:99px;padding:6px 11px;font-size:11.5px;color:var(--ink)}
+#token:focus{outline:none;border-color:rgba(255,122,69,.45)}
+.navinfo{font:10.5px/1.4 var(--mono);color:var(--dim-2);white-space:nowrap}
+@media(max-width:720px){.navinfo{display:none}}
+
+main{position:relative;z-index:2;max-width:1080px;margin:0 auto;padding:22px 20px 70px}
+section[hidden],.page[hidden],.feed[hidden]{display:none!important}
+.page{animation:pageIn .28s ease-out}
+@keyframes pageIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.hero{padding:16px 0 8px}
+.eyebrow{font:10.5px/1.4 var(--mono);letter-spacing:.24em;color:var(--fire-soft);text-transform:uppercase}
+.hero h1{font:500 clamp(28px,4.4vw,44px)/1.25 var(--jp);margin:10px 0 8px;letter-spacing:.03em}
+.hero h1 .thin{color:var(--dim-2)}
+.hero p.lead{margin:0;color:var(--dim);font-size:13px;max-width:640px}
+.stats{display:flex;flex-wrap:wrap;margin:26px 0 24px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.stat{flex:1 1 130px;padding:16px 18px 16px 0;border-right:1px solid var(--line);min-width:0}
+.stat+.stat{padding-left:18px}
+.stat:last-child{border-right:none}
+.stat b{display:block;font:500 27px/1.2 var(--jp);letter-spacing:.02em;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat b i{font-style:normal;font-size:13px;color:var(--dim-2);margin-left:3px}
+.stat span{font-size:10.5px;letter-spacing:.16em;color:var(--dim-2)}
+.card{background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.008));
+  border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px;min-width:0;
+  box-shadow:0 24px 50px -44px rgba(0,0,0,.9)}
+.sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.sec-head h2{margin:0;font:500 16px/1.4 var(--jp);letter-spacing:.08em}
+.sec-head h2 i{font-style:normal;color:var(--fire);margin-right:8px;font-size:11px}
+.sec-head .more{font:11px/1.5 var(--mono);color:var(--dim-2)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:8px 16px;
+  border-radius:99px;font-size:12.5px;letter-spacing:.04em;border:1px solid var(--line-strong);
+  transition:.2s;white-space:nowrap}
+.btn:hover{border-color:rgba(255,122,69,.5);background:rgba(255,122,69,.07);transform:translateY(-1px)}
+.btn.primary{background:linear-gradient(140deg,var(--fire-soft),var(--fire));color:#1c0d06;border-color:transparent;font-weight:600}
+.btn.primary:hover{box-shadow:0 8px 24px -12px rgba(255,122,69,.9)}
+.btn.danger{border-color:rgba(224,115,107,.4);color:var(--bad)}
+.btn.danger:hover{background:rgba(224,115,107,.09);border-color:rgba(224,115,107,.7)}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.btn.sm{padding:5px 11px;font-size:11.5px}
+.row{display:flex;flex-wrap:wrap;gap:9px;align-items:center;min-width:0}
+.row>*{min-width:0}
+input[type=text],input[type=number],input[type=password],input[type=file],select,textarea{
+  background:#12100e;color:var(--ink);border:1px solid var(--line-strong);border-radius:9px;
+  padding:8px 11px;font-size:12.5px;width:100%;min-width:0}
+input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(255,122,69,.5)}
+input[type=file]{padding:7px 9px;font-size:11.5px}
+input[type=checkbox]{width:auto;accent-color:var(--fire);margin:0}
+label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.checkline{display:flex;flex-wrap:wrap;gap:16px;font-size:12.5px;color:var(--ink-2)}
+.checkline label{display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2)}
+.hint{font-size:11.5px;color:var(--dim);margin-top:10px;min-height:16px;overflow-wrap:anywhere}
 .hint.err{color:var(--bad)}.hint.ok{color:var(--ok)}
-.tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
-.tabs button.active{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
-.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:10px;max-height:420px}
-table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px}
-th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-th{position:sticky;top:0;background:#202732;color:var(--dim);font-weight:500;z-index:1}
-td.msg{white-space:pre-wrap;word-break:break-word;max-width:420px}
-td.time{white-space:nowrap;color:var(--dim)}
-.stream{height:420px;overflow:auto;background:#12171e;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:13px;margin-top:10px;overflow-wrap:anywhere}
-.stream .line{padding:2px 0;border-bottom:1px solid #1c222b}
-.stream .time{color:var(--dim);font-family:ui-monospace,monospace;margin-right:6px}
-.stream .tag{color:#c4a7f7;margin-right:4px}
-.stream .uname{color:var(--accent);text-decoration:none}
-.stream .sc-card{border-top:1px dashed #3a4350;margin-top:9px;padding-top:8px}
-.stream .sep{color:#39414d;letter-spacing:2px}
-.stream .price{color:var(--warn);font-weight:600;margin-right:6px}
-.stream .price.hi{color:var(--bad)}
-.stream .trans{display:block;color:var(--dim)}
-.stream .guard{color:#c4a7f7;margin-right:5px}
-.stream .msg{white-space:pre-wrap;display:block}
-.logbox{height:60vh;min-height:320px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
-.logbox .line{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid #1c222b}
-.logbox .ts{color:var(--dim);white-space:nowrap}
+.muted{color:var(--dim-2);font-size:11.5px}
+.mono{font-family:var(--mono);font-size:11px;color:var(--dim-2)}
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:14px}
+.kv{background:rgba(255,255,255,.022);border:1px solid var(--line);border-radius:10px;padding:9px 11px;min-width:0}
+.kv span{display:block;font-size:10.5px;color:var(--dim-2);letter-spacing:.06em}
+.kv b{display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.room-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.room-card{border:1px solid var(--line);border-radius:12px;padding:14px 15px;
+  background:radial-gradient(130% 160% at 0% 0%,rgba(255,122,69,.09),transparent 60%),rgba(255,255,255,.018);
+  min-width:0}
+.room-card.on{border-color:rgba(255,122,69,.36)}
+.room-card h3{margin:0 0 3px;font:500 15px/1.4 var(--jp);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.room-card .sub{font:10.5px/1.5 var(--mono);color:var(--dim-2)}
+.room-card .nums{display:flex;gap:14px;flex-wrap:wrap;margin:11px 0;font-size:11.5px;color:var(--dim)}
+.room-card .nums b{color:var(--ink-2);font-weight:500;font-variant-numeric:tabular-nums}
+.room-card .foot{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.dot{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--dim-2)}
+.dot i{width:6px;height:6px;border-radius:50%;background:var(--dim-2)}
+.dot.on{color:var(--fire-soft)}.dot.on i{background:var(--fire)}
+.bars{display:flex;align-items:flex-end;gap:5px;height:92px;margin-top:8px}
+.bars .col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;height:100%;gap:3px}
+.bars .bar{display:flex;align-items:flex-end;gap:2px;height:74px}
+.bars .bar i{flex:1 1 0;min-width:0;display:block;border-radius:3px 3px 0 0;background:linear-gradient(180deg,var(--fire),rgba(255,122,69,.28));min-height:2px}
+.bars .bar i.sc{background:linear-gradient(180deg,var(--gold),rgba(232,196,137,.25))}
+.bars .bar i.ev{background:linear-gradient(180deg,#8fbf8b,rgba(143,191,139,.22))}
+.bars .col span{font:9px/1 var(--mono);color:var(--dim-2);text-align:center;white-space:nowrap;overflow:hidden}
+.recent{display:flex;flex-direction:column}
+.recent .line{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--line);min-width:0}
+.recent .line:last-child{border-bottom:none}
+.recent .t{font:10.5px/1.4 var(--mono);color:var(--dim-2);white-space:nowrap}
+.recent .rk{font-size:10px;color:var(--fire-soft);border:1px solid rgba(255,122,69,.28);border-radius:99px;padding:1px 7px;white-space:nowrap}
+.recent .rx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--ink-2);min-width:0}
+.recent .rx b{color:var(--ink);font-weight:500}
+
+/* ---------- rooms ---------- */
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:99px;
+  font-size:12px;border:1px solid var(--line);color:var(--dim);transition:.2s;max-width:100%}
+.chip span.n{font:10px/1 var(--mono);color:var(--dim-2)}
+.chip:hover{color:var(--ink);border-color:var(--line-strong)}
+.chip.on{color:#1a0d07;background:linear-gradient(140deg,var(--fire-soft),var(--fire));border-color:transparent;font-weight:600}
+.chip.on span.n{color:rgba(26,13,7,.6)}
+.chip.add{border-style:dashed}
+.add-form{display:grid;grid-template-columns:1fr 1.4fr auto;gap:9px;margin:12px 0 4px;align-items:center}
+.room-title{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.room-title h2{margin:0;font:500 20px/1.4 var(--jp)}
+.filters{display:flex;flex-wrap:wrap;gap:18px;margin:4px 0 12px;font-size:12.5px;color:var(--ink-2)}
+.filters label{display:flex;align-items:center;gap:7px;margin:0}
+.feeds{display:flex;flex-direction:column;gap:14px;margin-top:14px}
+.feed{border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.16);overflow:hidden}
+.feed>h3{display:flex;align-items:baseline;gap:9px;margin:0;padding:10px 14px;
+  border-bottom:1px solid var(--line);font:500 13px/1.4 var(--jp);letter-spacing:.1em;color:var(--ink-2)}
+.feed>h3 .n{font:10.5px/1 var(--mono);color:var(--dim-2);letter-spacing:0}
+.feed>h3::before{content:"";display:inline-block;width:2px;height:12px;border-radius:2px;
+  background:linear-gradient(180deg,var(--fire),rgba(255,122,69,.15))}
+.feed-body{max-height:360px;overflow:auto;padding:6px 14px 10px}
+.feed-body .line{padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12.5px;overflow-wrap:anywhere}
+.feed-body .line:last-child{border-bottom:none}
+.feed-body .t{font:10.5px/1.4 var(--mono);color:var(--dim-2);margin-right:7px}
+.feed-body .tag{color:var(--gold);margin-right:5px;font-size:11px}
+.feed-body .guard{color:#c4a7f7;margin-right:5px;font-size:11px}
+.feed-body .uname{color:var(--fire-soft);text-decoration:none}
+.feed-body .msg{white-space:pre-wrap;word-break:break-word}
+.feed-body .sc-card{border-left:2px solid rgba(255,122,69,.5);padding:8px 0 9px 11px;margin:7px 0}
+.feed-body .price{color:var(--fire-soft);font-weight:600;margin-right:7px;font-variant-numeric:tabular-nums}
+.feed-body .trans{display:block;color:var(--dim);margin-top:3px}
+.emote{display:inline-block;vertical-align:middle;max-width:180px;max-height:80px;margin:0 2px;object-fit:contain}
+.empty{padding:18px 4px;color:var(--dim-2);font-size:12px;text-align:center}
+
+/* ---------- accounts / logs ---------- */
+.acct{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border:1px solid var(--line);
+  border-radius:10px;padding:10px 12px;margin-top:8px;background:rgba(255,255,255,.02);min-width:0}
+.acct .who{flex:1 1 150px;min-width:0}
+.acct .who b{display:block;font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct .who span{font:10.5px/1.5 var(--mono);color:var(--dim-2)}
+.acct.on{border-color:rgba(255,122,69,.38)}
+.pill{font-size:10.5px;border-radius:99px;padding:2px 9px;border:1px solid var(--line);color:var(--dim)}
+.pill.ok{color:var(--ok);border-color:rgba(143,191,139,.35)}
+.pill.bad{color:var(--bad);border-color:rgba(224,115,107,.35)}
+.logbox{height:58vh;min-height:300px;overflow:auto;font:11.5px/1.6 var(--mono);
+  background:rgba(0,0,0,.22);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:12px}
+.logbox .line{display:flex;gap:9px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.035)}
+.logbox .ts{color:var(--dim-2);white-space:nowrap}
 .logbox .lv{width:44px;flex:none;text-transform:uppercase}
-.logbox .error .lv{color:var(--bad)}.logbox .warn .lv{color:var(--warn)}.logbox .info .lv{color:var(--ok)}.logbox .web .lv{color:var(--accent)}
-.logbox .txt{white-space:pre-wrap;word-break:break-word}
-.acct{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:9px 10px;margin-top:8px;background:#141920}
-.acct .who{flex:1 1 160px;min-width:0}
-.acct .who b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.acct .who span{font-size:11px;color:var(--dim)}
-.acct.on{border-color:#245c39}
-.acct .pill{font-size:11px;border-radius:99px;padding:2px 8px;border:1px solid var(--line);color:var(--dim)}
-.acct .pill.ok{color:var(--ok);border-color:#245c39}
-.acct .pill.bad{color:var(--bad);border-color:#5b2b2b}
-.acct button{padding:5px 9px;font-size:12px}
-details{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
-summary{cursor:pointer;font-size:13px;color:var(--dim)}
-textarea{width:100%;min-height:100px;background:#12171e;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:12px/1.5 ui-monospace,monospace}
-.muted{color:var(--dim);font-size:12px}
-.foot{color:var(--dim);font-size:11px;margin:18px 0 4px;text-align:center}
-@media(max-width:520px){
-  body{padding:10px}
-  .card{padding:12px}
-  .kv b{font-size:13px}
-  header .row{flex:1 1 100%}
-  header .row input{flex:1;width:auto}
-  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .fields{grid-template-columns:1fr}
-  .tablewrap{max-height:340px}
-  .stream{height:340px}
-  .pages .navinfo{display:none}
+.logbox .error .lv{color:var(--bad)}.logbox .warn .lv{color:var(--gold)}.logbox .info .lv{color:var(--ok)}.logbox .web .lv{color:var(--fire-soft)}
+.logbox .txt{white-space:pre-wrap;word-break:break-word;min-width:0}
+footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-size:10.5px;
+  letter-spacing:.08em;padding:10px 20px 26px}
+
+@media(max-width:700px){
+  .top{padding:10px 12px;gap:9px}
+  .nav{order:3;width:100%;margin-left:0;justify-content:space-between}
+  .nav button{flex:1 1 0;padding:7px 4px;font-size:12px;text-align:center}
+  #token{width:104px}
+  main{padding:16px 12px 56px}
+  .card{padding:14px 14px}
+  .stat{flex:1 1 33.33%;padding:12px 10px 12px 0}
+  .stat+.stat{padding-left:10px}
+  .stat b{font-size:21px}
+  .add-form{grid-template-columns:1fr}
+  .bars{height:78px}.bars .bar{height:60px}
+  .feed-body{max-height:300px}
 }
 </style>
 </head>
 <body>
-<header>
-  <div><h1>直播弹幕 / SC 采集</h1><div class="sub">LIVE CAPTURE · 手机端服务</div></div>
-  <div class="row">
+<header class="top">
+  <div class="brand"><div class="brand-mark">採</div>
+    <div class="brand-text"><strong>直播采集</strong><em>LIVE CAPTURE</em></div></div>
+  <nav class="nav">
+    <button data-page="home" class="on">仪表盘</button>
+    <button data-page="rooms">直播间</button>
+    <button data-page="config">配置</button>
+    <button data-page="logs">日志</button>
+  </nav>
+  <div class="top-right">
     <span class="badge off" id="runBadge"><i></i><span>未启动</span></span>
-    <input id="token" type="password" placeholder="访问口令（如已设置）" style="width:170px">
+    <input id="token" type="password" placeholder="访问口令" autocomplete="off">
   </div>
+  <span class="navinfo" id="navInfo"></span>
 </header>
 
-<nav class="pages">
-  <button data-page="config" class="active">配置</button>
-  <button data-page="data">数据</button>
-  <button data-page="logs">日志</button>
-  <span class="navinfo" id="navInfo"></span>
-</nav>
+<main>
+<!-- ============ 仪表盘 ============ -->
+<div class="page" id="page-home">
+  <div class="hero">
+    <div class="eyebrow">Overview · 仪表盘</div>
+    <h1>采集总览<span class="thin">。</span></h1>
+    <p class="lead">弹幕、Super Chat 与直播间事件都留在手机本机。切到「直播间」添加房间并启动采集，可以同时采集多个直播间。</p>
+    <div class="stats" id="statRow"></div>
+  </div>
 
-<!-- ============ 配置页 ============ -->
-<div id="page-config">
   <section class="card">
-    <h2>采集控制</h2>
-    <div class="grid" id="statGrid"></div>
-    <div class="row" style="margin-top:12px">
-      <button class="primary" id="btnStart">启动采集</button>
-      <button id="btnStop">停止</button>
-      <button id="btnRefresh">刷新状态</button>
-      <span class="muted" id="svcInfo"></span>
-    </div>
-    <div class="hint" id="ctrlHint"></div>
-    <div class="hint" id="runHint"></div>
+    <div class="sec-head"><h2><i>◆</i>直播间</h2>
+      <span class="more" id="roomSummary">—</span></div>
+    <div class="room-grid" id="roomGrid"></div>
   </section>
 
   <section class="card">
-    <h2>账号（上传 cookie CSV）</h2>
+    <div class="sec-head"><h2><i>◆</i>近 12 小时</h2>
+      <span class="more">弹幕 / SC / 事件</span></div>
+    <div class="bars" id="timeline"></div>
+  </section>
+
+  <section class="card">
+    <div class="sec-head"><h2><i>◆</i>高额 SC</h2><span class="more">按金额 · 前 5</span></div>
+    <div class="recent" id="topSc"></div>
+  </section>
+
+  <section class="card">
+    <div class="sec-head"><h2><i>◆</i>最近动态</h2><span class="more" id="recentInfo"></span></div>
+    <div class="recent" id="recentList"></div>
+  </section>
+
+  <section class="card">
+    <div class="sec-head"><h2><i>◆</i>服务</h2><span class="more" id="svcAddr"></span></div>
+    <div class="kv-grid" id="svcGrid"></div>
+  </section>
+</div>
+
+<!-- ============ 直播间 ============ -->
+<div class="page" id="page-rooms" hidden>
+  <section class="card">
+    <div class="sec-head"><h2><i>◆</i>直播间</h2>
+      <button class="btn sm" id="btnAddToggle">＋ 添加直播间</button></div>
+    <div class="chips" id="roomChips"></div>
+    <div class="add-form" id="addForm" hidden>
+      <input id="newRoomId" type="number" min="1" placeholder="房间号，如 22748536">
+      <input id="newRoomName" type="text" placeholder="备注名（留空自动取直播间标题）">
+      <div class="row"><button class="btn primary" id="btnAddRoom">添加</button>
+        <button class="btn" id="btnCancelAdd">取消</button></div>
+    </div>
+    <div class="hint" id="roomHint"></div>
+  </section>
+
+  <section class="card">
+    <div class="room-title"><h2 id="curRoomTitle">还没有直播间</h2>
+      <span class="mono" id="curRoomId"></span></div>
+    <div class="kv-grid" id="curStats"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn primary" id="btnCapture">开始采集</button>
+      <button class="btn" id="btnStopAll">全部停止</button>
+      <button class="btn" id="btnRefreshRooms">刷新直播间信息</button>
+      <button class="btn danger" id="btnDelRoom">删除直播间</button>
+    </div>
+    <div class="hint" id="captureHint"></div>
+  </section>
+
+  <section class="card">
+    <div class="sec-head"><h2><i>◆</i>内容</h2><span class="more" id="feedInfo">—</span></div>
+    <div class="filters">
+      <label><input type="checkbox" data-k="danmaku" checked> 弹幕</label>
+      <label><input type="checkbox" data-k="sc" checked> Super Chat</label>
+      <label><input type="checkbox" data-k="events" checked> 直播间事件</label>
+      <label><input type="checkbox" id="autoRefresh" checked> 自动刷新</label>
+    </div>
     <div class="row">
-      <input type="file" id="acctFile" accept=".csv,.txt,text/csv" style="flex:1 1 210px;min-width:0">
-      <input id="acctName" placeholder="名称（留空用文件名）" style="flex:1 1 160px;min-width:0">
-      <button class="primary" id="btnUpload">上传并启用</button>
+      <input id="q" type="text" placeholder="搜索内容 / 昵称" style="flex:1 1 160px">
+      <select id="limit" style="width:112px"><option value="30">最近 30 条</option><option value="60">最近 60 条</option><option value="120">最近 120 条</option></select>
+      <select id="expType" style="width:112px"><option value="danmaku">弹幕</option><option value="sc">SC</option><option value="events">事件</option></select>
+      <button class="btn sm" id="btnLoad">刷新</button>
+      <button class="btn sm" id="btnJson">导出 JSON</button>
+      <button class="btn sm" id="btnCsv">导出 CSV</button>
     </div>
-    <div class="hint">和 sc collector 一样：一个 CSV 一个账号，支持 Netscape / Chrome 扩展导出（Tab 分隔）或 name,value 两列表。含 SESSDATA 才可用；上传即自动启用。采集运行中换账号需停止后重新启动。</div>
+    <div class="feeds">
+      <section class="feed" data-k="danmaku"><h3>弹幕 <span class="n" id="cnt-danmaku">0</span></h3><div class="feed-body" id="feed-danmaku"></div></section>
+      <section class="feed" data-k="sc"><h3>Super Chat <span class="n" id="cnt-sc">0</span></h3><div class="feed-body" id="feed-sc"></div></section>
+      <section class="feed" data-k="events"><h3>直播间事件 <span class="n" id="cnt-events">0</span></h3><div class="feed-body" id="feed-events"></div></section>
+    </div>
+    <div class="hint">三类内容按房间分开纵向展示，勾选即可只看某一类；表情包会直接显示成图片。</div>
+  </section>
+</div>
+
+<!-- ============ 配置 ============ -->
+<div class="page" id="page-config" hidden>
+  <section class="card">
+    <div class="sec-head"><h2><i>◆</i>账号</h2><span class="more">只接收 cookie CSV</span></div>
+    <div class="row">
+      <input type="file" id="acctFile" accept=".csv,.txt,text/csv" style="flex:1 1 200px">
+      <input id="acctName" type="text" placeholder="名称（留空用文件名）" style="flex:1 1 170px">
+      <button class="btn primary" id="btnUpload">上传并启用</button>
+    </div>
+    <div class="hint">和 sc collector 一样：一个 CSV 一个账号，支持 Netscape / Chrome 扩展导出（Tab 分隔）或 name,value 两列。含 SESSDATA 才可用；上传即自动启用。不上传则匿名采集。采集运行中换账号需停止后重新启动。</div>
     <div id="acctList"></div>
-    <div class="row" style="margin-top:10px"><button id="btnNoAccount">停用账号（用匿名 / 手填凭证）</button></div>
+    <div class="row" style="margin-top:10px"><button class="btn sm" id="btnNoAccount">停用账号（匿名采集）</button></div>
     <div class="hint" id="acctHint"></div>
-    <details>
-      <summary>手动粘贴添加（没有文件时）</summary>
-      <div style="margin-top:10px">
-        <label>名称</label><input id="pasteName" placeholder="例如：小号">
-        <label style="margin-top:8px">cookie 内容（直接粘贴导出的文本）</label>
-        <textarea id="pasteCsv" placeholder="SESSDATA&#9;xxxx&#10;DedeUserID&#9;12345&#10;buvid3&#9;xxxx"></textarea>
-        <div class="row" style="margin-top:8px"><button id="btnPaste">添加并启用</button></div>
-      </div>
-    </details>
   </section>
 
   <section class="card">
-    <h2>采集参数</h2>
+    <div class="sec-head"><h2><i>◆</i>采集参数</h2><span class="more">房间号在「直播间」页管理</span></div>
     <form id="cfgForm">
       <div class="fields">
-        <div><label>直播间号</label><input id="f_room" type="number" min="1" required></div>
         <div><label>压缩协议</label><select id="f_proto"><option value="2">2 · zlib（推荐，无额外依赖）</option><option value="3">3 · brotli（需装 brotli）</option></select></div>
         <div><label>心跳间隔（秒）</label><input id="f_heartbeat" type="number" min="10" max="120"></div>
         <div><label>静默重连（秒）</label><input id="f_stale" type="number" min="30" max="600"></div>
-        <div><label>监听地址</label><input id="f_host"></div>
+        <div><label>监听地址</label><input id="f_host" type="text"></div>
         <div><label>端口</label><input id="f_port" type="number" min="1" max="65535"></div>
-        <div><label>API 访问口令（可选）</label><input id="f_token" type="password" autocomplete="off"></div>
+        <div><label>API 访问口令</label><input id="f_token" type="password" autocomplete="off"></div>
       </div>
-      <div class="checks">
+      <div class="checkline" style="margin-top:14px">
         <label><input type="checkbox" id="f_dm" checked>记录弹幕</label>
         <label><input type="checkbox" id="f_sc" checked>记录 SC</label>
         <label><input type="checkbox" id="f_ev" checked>记录礼物/上舰</label>
-        <label><input type="checkbox" id="f_auto">启动服务时自动开始采集</label>
+        <label><input type="checkbox" id="f_auto">启动服务时自动采集所有直播间</label>
       </div>
-      <details>
-        <summary>手动填凭证（已上传账号时不必填）</summary>
-        <div class="fields" style="margin-top:10px">
-          <div><label>SESSDATA</label><input id="f_sessdata" type="password" autocomplete="off"></div>
-          <div><label>DedeUserID</label><input id="f_dede" autocomplete="off"></div>
-          <div><label>buvid3（留空自动领取）</label><input id="f_buvid" autocomplete="off"></div>
-        </div>
-      </details>
       <div class="row" style="margin-top:14px">
-        <button class="primary" type="submit">保存配置</button>
-        <button type="button" id="btnClearSecret">清除已存凭证</button>
-        <span class="muted">敏感项留空表示不修改</span>
+        <button class="btn primary" type="submit">保存配置</button>
+        <button class="btn" type="button" id="btnClearToken">清除访问口令</button>
+        <span class="muted">口令留空表示不修改</span>
       </div>
     </form>
     <div class="hint" id="cfgHint"></div>
   </section>
-</div>
 
-<!-- ============ 数据页 ============ -->
-<div id="page-data" hidden>
   <section class="card">
-    <h2>采集数据</h2>
-    <div class="tabs">
-      <button data-tab="danmaku" class="active">弹幕</button>
-      <button data-tab="sc">Super Chat</button>
-      <button data-tab="events">事件</button>
-      <button data-view="table" id="btnViewTable">切到表格</button>
-    </div>
-    <div class="row">
-      <input id="q" placeholder="搜索内容 / 昵称" style="flex:1;min-width:150px">
-      <select id="limit" style="width:100px"><option>50</option><option>100</option><option>200</option></select>
-      <button id="btnLoad">查询</button>
-      <button id="btnJson">导出 JSON</button>
-      <button id="btnCsv">导出 CSV</button>
-      <label style="display:flex;align-items:center;gap:5px;margin:0;color:var(--fg)"><input id="autoRefresh" type="checkbox" checked style="width:auto">自动刷新</label>
-    </div>
-    <div class="stream" id="streamBox"></div>
-    <div class="tablewrap" id="tableBox" hidden><table id="tbl"><thead></thead><tbody></tbody></table></div>
-    <div class="row" style="margin-top:10px;justify-content:space-between">
-      <span class="muted" id="tableInfo">—</span>
-      <div class="row"><button id="btnPrev">上一页</button><button id="btnNext">下一页</button></div>
-    </div>
-  </section>
-  <section class="card">
-    <h2>数据管理</h2>
-    <div class="row">
-      <button class="danger" id="btnClear">清空采集数据</button>
-      <span class="muted">需要二次确认；不会删除配置与账号</span>
-    </div>
+    <div class="sec-head"><h2><i>◆</i>数据管理</h2></div>
+    <div class="row"><button class="btn danger" id="btnClear">清空全部采集数据</button>
+      <span class="muted">需要二次确认；不会删除直播间列表、配置与账号</span></div>
   </section>
 </div>
 
-<!-- ============ 日志页 ============ -->
-<div id="page-logs" hidden>
+<!-- ============ 日志 ============ -->
+<div class="page" id="page-logs" hidden>
   <section class="card">
-    <h2>全部日志</h2>
+    <div class="sec-head"><h2><i>◆</i>全部日志</h2><span class="more" id="logCount"></span></div>
     <div class="row">
-      <select id="logLevel" style="width:130px">
+      <select id="logLevel" style="width:132px">
         <option value="all">全部级别</option><option value="info">info</option>
         <option value="warn">warn</option><option value="error">error</option>
         <option value="web">网页操作</option>
       </select>
-      <button id="btnLogs">刷新日志</button>
-      <label style="display:flex;align-items:center;gap:5px;margin:0;color:var(--fg)"><input id="logFollow" type="checkbox" checked style="width:auto">自动滚动</label>
-      <span class="muted" id="logCount"></span>
+      <button class="btn sm" id="btnLogs">刷新日志</button>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px"><input id="logFollow" type="checkbox" checked>自动滚动</label>
     </div>
-    <div class="stream logbox" id="logBox"></div>
+    <div class="logbox" id="logBox"></div>
     <div class="hint">服务端运行日志 + 网页上的操作结果都集中在这里，最新 1000 条。</div>
   </section>
   <section class="card">
-    <h2>服务信息</h2>
-    <div class="grid" id="svcGrid"></div>
+    <div class="sec-head"><h2><i>◆</i>服务信息</h2></div>
+    <div class="kv-grid" id="logSvcGrid"></div>
   </section>
 </div>
 
-<div class="foot">数据仅保存在本机 data/ · API 见 /api/status、/api/accounts、/api/danmaku、/api/superchats、/api/export</div>
+<footer>LIVE CAPTURE · 数据仅保存在本机 · 弹幕 / SC / 事件</footer>
+</main>
 
 <script>
 (function(){
 'use strict';
-var S={page:'config',tab:'danmaku',view:'stream',offset:0,limit:50,q:'',total:0,
-       cfg:null,svc:null,running:false,accounts:[],serverLogs:[],webLogs:[],busy:false};
+var S={page:'home',rooms:[],roomId:0,active:0,running:false,
+       filters:{danmaku:true,sc:true,events:true},limit:30,q:'',
+       cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
 var $=function(id){return document.getElementById(id)};
+var GUARD={1:'总督',2:'提督',3:'舰长'};
+var KIND={danmaku:'弹幕',sc:'SC',events:'事件',guard:'上舰',gift:'礼物',sc_delete:'删 SC'};
 var tokenInput=$('token');
 tokenInput.value=localStorage.getItem('lc-token')||'';
 tokenInput.addEventListener('change',function(){
   localStorage.setItem('lc-token',tokenInput.value.trim());
   uiLog('web','访问口令已更新');loadStatus();
 });
-S.page=localStorage.getItem('lc-page')||'config';
-if(['config','data','logs'].indexOf(S.page)<0)S.page='config';
+var validPages=['home','rooms','config','logs'];
+S.page=localStorage.getItem('lc-page')||'home';
+if(validPages.indexOf(S.page)<0)S.page='home';
+S.roomId=parseInt(localStorage.getItem('lc-room')||'0',10)||0;
+S.limit=parseInt(localStorage.getItem('lc-limit')||'30',10)||30;
+try{var f=JSON.parse(localStorage.getItem('lc-filters')||'null');
+  if(f&&typeof f==='object')S.filters=Object.assign(S.filters,f);}catch(e){}
 
 function headers(){var h={'Content-Type':'application/json'};var t=tokenInput.value.trim();if(t)h['X-Access-Token']=t;return h}
 async function api(path,opts){
   opts=opts||{};
   var r=await fetch(path,Object.assign({headers:headers()},opts));
   var j=await r.json().catch(function(){return {ok:false,error:'返回不是 JSON'}});
-  if(r.status===401){say('ctrlHint','需要访问口令：请在右上角填写','err');throw new Error('401')}
+  if(r.status===401){say('captureHint','需要访问口令：请在右上角填写','err');throw new Error('401')}
   if(!j.ok&&j.error)throw new Error(j.error);
   return j;
 }
 function say(id,msg,kind){
-  var e=$(id);e.textContent=msg||'';e.className='hint'+(kind?' '+kind:'');
-  if(msg)uiLog(kind==='err'?'error':(kind==='ok'?'info':'info'),
-               id.replace('Hint','')+'：'+msg);
+  var e=$(id);if(!e)return;e.textContent=msg||'';e.className='hint'+(kind?' '+kind:'');
+  if(msg)uiLog(kind==='err'?'error':'info',id.replace('Hint','')+'：'+msg);
 }
 function uiLog(level,msg){
   S.webLogs.push({ts:Date.now(),level:'web',msg:'['+level+'] '+String(msg)});
@@ -286,107 +447,263 @@ function fmtFull(ms){
   var d=new Date(ms);
   return ('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)+' '+fmt(ms);
 }
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){
-  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function num(n){return String(n==null?0:n).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
 function dur(ms){
   if(!ms)return '—';
   var s=Math.floor((Date.now()-ms)/1000);
+  if(s<0)return '—';
   if(s<60)return s+' 秒';
   if(s<3600)return Math.floor(s/60)+' 分';
   return Math.floor(s/3600)+' 时 '+Math.floor(s%3600/60)+' 分';
 }
 function kv(k,v){return '<div class="kv"><span>'+esc(k)+'</span><b>'+esc(v)+'</b></div>'}
-
-/* ---------- 状态 ---------- */
-function setRunningUI(running,label){
-  var badge=$('runBadge');
-  badge.className='badge '+(running?'on':'off');
-  badge.querySelector('span').textContent=label||(running?'采集中':'未启动');
-  $('btnStart').disabled=running;
-  $('btnStop').disabled=!running;
+function who(r){
+  var name=esc(r.uname||'—');
+  return r.uid?'<a class="uname" href="https://space.bilibili.com/'+esc(r.uid)+
+    '" target="_blank" rel="noopener">'+name+'</a>':name;
 }
-function renderStatus(j){
-  var c=j.capture,cfg=j.config||S.cfg||{},st=j.service||S.svc||{};
-  S.running=c.running;S.cfg=cfg;S.svc=st;
-  setRunningUI(c.running);
-  var live={0:'未开播',1:'直播中',2:'轮播'}[c.live_status]||'未知';
-  $('statGrid').innerHTML=
-    kv('房间',c.real_room_id||c.room_id||'—')+kv('主播',c.uname||'—')+
-    kv('直播状态',live)+kv('人气',c.popularity||'—')+
-    kv('运行时长',c.started_at?dur(c.started_at):'—')+
-    kv('最后收包',c.last_packet_at?fmt(c.last_packet_at):'—')+
-    kv('本次弹幕',c.counts.danmaku)+kv('本次 SC',c.counts.sc)+
-    kv('本次事件',c.counts.events)+kv('收到消息',c.counts.messages)+
-    kv('库内弹幕',c.storage.danmaku)+kv('库内 SC',c.storage.sc)+
-    kv('重连次数',c.reconnects);
+function roomLabel(id){
+  for(var i=0;i<S.rooms.length;i++)if(S.rooms[i].id===id)return S.rooms[i].label||('房间 '+id);
+  return '房间 '+id;
+}
+function setBadge(active,running){
+  var b=$('runBadge');
+  b.className='badge '+(running?'on':'off');
+  b.querySelector('span').textContent=running?('采集中 '+(active||0)):'未启动';
+  var addr='http://'+(S.svc&&S.svc.lan_ip||'127.0.0.1')+':'+(S.svc&&S.svc.port||8765);
+  $('navInfo').textContent=addr+' · '+(S.svc&&S.svc.websockets===false?'缺依赖':'服务正常');
+}
+function currentRoom(){
+  for(var i=0;i<S.rooms.length;i++)if(S.rooms[i].id===S.roomId)return S.rooms[i];
+  return null;
+}
+
+/* ---------- 仪表盘 ---------- */
+function renderDashboard(j){
+  S.svc=j.service;S.cfg=j.config;S.rooms=(j.rooms&&j.rooms.items)||[];
+  S.active=j.capture.active;S.running=j.capture.running;
+  setBadge(S.active,S.running);
+  var t=j.totals||{};
+  $('statRow').innerHTML=
+    '<div class="stat"><b>'+num(t.danmaku)+'</b><span>弹幕</span></div>'+
+    '<div class="stat"><b>'+num(t.sc)+'</b><span>SUPER CHAT</span></div>'+
+    '<div class="stat"><b>¥'+num(t.sc_amount)+'</b><span>SC 总额</span></div>'+
+    '<div class="stat"><b>'+num(t.events)+'</b><span>直播间事件</span></div>'+
+    '<div class="stat"><b>'+num(S.rooms.length)+'</b><span>直播间</span></div>'+
+    '<div class="stat"><b>'+num(S.active)+'</b><span>采集中</span></div>';
+  $('roomSummary').textContent=S.rooms.length+' 间 · '+S.active+' 间正在采集';
+  $('roomGrid').innerHTML=S.rooms.length?S.rooms.map(function(r){
+    var c=r.totals||{},live={0:'未开播',1:'直播中',2:'轮播'}[r.live_status]||'未知';
+    return '<div class="room-card '+(r.running?'on':'')+'">'+
+      '<h3>'+esc(r.label)+'</h3><div class="sub">ROOM '+esc(r.id)+' · '+esc(live)+'</div>'+
+      '<div class="nums"><span>弹幕 <b>'+num(c.danmaku)+'</b></span>'+
+      '<span>SC <b>'+num(c.sc)+'</b></span><span>事件 <b>'+num(c.events)+'</b></span>'+
+      '<span>¥<b>'+num(c.sc_amount)+'</b></span></div>'+
+      '<div class="foot"><span class="dot '+(r.running?'on':'')+'"><i></i>'+
+      (r.running?'采集中':'未采集')+'</span>'+
+      '<button class="btn sm" data-view="'+esc(r.id)+'">查看内容 →</button></div></div>';
+  }).join(''):'<div class="empty">还没有直播间。切到「直播间」页添加一个房间号即可开始。</div>';
+
+  var tl=j.timeline||{labels:[],danmaku:[],sc:[],events:[]};
+  var peak=1;
+  ['danmaku','sc','events'].forEach(function(k){
+    (tl[k]||[]).forEach(function(v){if(v>peak)peak=v});
+  });
+  $('timeline').innerHTML=(tl.labels||[]).map(function(label,i){
+    var vals=['danmaku','sc','events'].map(function(k){
+      var v=(tl[k]||[])[i]||0,h=Math.max(2,Math.round(v/peak*100));
+      return '<i class="'+(k==='danmaku'?'':k)+'" style="height:'+h+'%" title="'+esc(k)+' '+v+'"></i>';
+    }).join('');
+    return '<div class="col"><div class="bar">'+vals+'</div><span>'+esc(label)+'</span></div>';
+  }).join('');
+
+  $('topSc').innerHTML=(j.top_sc||[]).length?(j.top_sc||[]).map(function(r){
+    return '<div class="line"><span class="t">'+fmt(r.received_at)+'</span>'+
+      '<span class="rk">¥'+esc(r.price)+'</span>'+
+      '<span class="rx"><b>'+esc(roomLabel(r.room_id))+'</b> · '+esc(r.uname||'—')+
+      '：'+esc(r.message||'')+'</span></div>';
+  }).join(''):'<div class="empty">还没有 Super Chat</div>';
+  $('recentInfo').textContent='最近 '+((j.recent||[]).length)+' 条';
+  $('recentList').innerHTML=(j.recent||[]).length?(j.recent||[]).map(function(r){
+    return '<div class="line"><span class="t">'+fmt(r.received_at)+'</span>'+
+      '<span class="rk">'+esc(roomLabel(r.room_id))+'</span>'+
+      '<span class="rx"><b>'+esc(KIND[r.kind]||r.kind)+'</b> '+
+      esc(r.uname||'')+(r.price?' ¥'+esc(r.price):'')+'　'+esc(r.text||'')+'</span></div>';
+  }).join(''):'<div class="empty">还没有采集到内容</div>';
+  var addr='http://'+(S.svc.lan_ip||'127.0.0.1')+':'+S.svc.port;
+  $('svcAddr').textContent=addr;
+  var grid=kv('局域网',addr)+kv('监听',S.svc.host+':'+S.svc.port)+
+    kv('服务已运行',dur(S.svc.started_at))+kv('websockets',S.svc.websockets?'已安装':'缺失')+
+    kv('最后收包',j.last_received_at?fmtFull(j.last_received_at):'—')+
+    kv('数据目录',S.svc.data_dir)+kv('访问口令',S.cfg&&S.cfg.token_set?'已设置':'无');
+  $('svcGrid').innerHTML=grid;$('logSvcGrid').innerHTML=grid;
+}
+async function loadDashboard(){
+  try{renderDashboard(await api('/api/dashboard'))}catch(e){}
+}
+
+/* ---------- 直播间 ---------- */
+function renderRooms(j){
+  S.rooms=(j&&j.items)||[];
+  S.active=j&&j.active||0;S.running=!!(j&&j.running);
+  setBadge(S.active,S.running);
+  var prevRoom=S.roomId;
+  var ids=S.rooms.map(function(r){return r.id});
+  if(ids.indexOf(S.roomId)<0){S.roomId=ids.length?ids[0]:0;localStorage.setItem('lc-room',String(S.roomId))}
+  $('roomChips').innerHTML=S.rooms.map(function(r){
+    return '<button class="chip '+(r.id===S.roomId?'on':'')+'" data-room="'+esc(r.id)+'">'+
+      (r.running?'● ':'')+esc(r.label)+'<span class="n">'+esc(r.id)+'</span></button>';
+  }).join('')+'<button class="chip add" id="chipAdd">＋ 添加</button>';
+  var r=currentRoom();
+  $('curRoomTitle').textContent=r?r.label:'还没有直播间';
+  $('curRoomId').textContent=r?('ROOM '+r.id+(r.real_room_id&&r.real_room_id!==r.id?' · 真实 '+r.real_room_id:'')):'—';
+  var live={0:'未开播',1:'直播中',2:'轮播'}[r&&r.live_status]||'未知';
+  var c=(r&&r.counts)||{},t=(r&&r.totals)||{};
+  $('curStats').innerHTML=
+    kv('状态',r&&r.running?'采集中':'未采集')+kv('直播状态',live)+
+    kv('主播',r&&r.uname||'—')+kv('人气',r&&r.popularity||r&&r.online||'—')+
+    kv('本次运行时长',r&&r.started_at?dur(r.started_at):'—')+
+    kv('最后收包',r&&r.last_packet_at?fmt(r.last_packet_at):'—')+
+    kv('本次弹幕',c.danmaku||0)+kv('本次 SC',c.sc||0)+
+    kv('库内弹幕',t.danmaku||0)+kv('库内 SC',t.sc||0)+
+    kv('库内事件',t.events||0)+kv('SC 总额','¥'+num(t.sc_amount||0));
+  setCaptureUI(r&&r.running);
+  $('btnDelRoom').disabled=!r;
+  $('btnCapture').disabled=!r;
   var problems=[];
-  if(!st.websockets)problems.push('缺少依赖 websockets，请在 Termux 里执行 pip install -r requirements.txt');
-  if(c.last_error)problems.push('最近错误：'+c.last_error);
-  if(c.warning)problems.push(c.warning);
-  var h=$('runHint');h.textContent=problems.join('　|　');h.className='hint'+(problems.length?' err':'');
-  var addr='http://'+(st.lan_ip||'127.0.0.1')+':'+st.port;
-  $('svcInfo').textContent=addr+' · 数据 '+st.data_dir;
-  $('navInfo').textContent=addr+' · '+(c.running?'采集中':'未启动');
-  $('svcGrid').innerHTML=
-    kv('局域网',addr)+kv('监听',st.host+':'+st.port)+
-    kv('服务已运行',dur(st.started_at))+kv('websockets',st.websockets?'已安装':'缺失')+
-    kv('数据目录',st.data_dir)+kv('访问口令',cfg.token_set?'已设置':'无');
-  fillConfig(cfg);
+  if(r&&r.last_error)problems.push('最近错误：'+r.last_error);
+  if(r&&r.warning)problems.push(r.warning);
+  if(S.svc&&S.svc.websockets===false)problems.push('缺少依赖 websockets');
+  var h=$('captureHint');h.textContent=problems.join('　|　');h.className='hint'+(problems.length?' err':'');
+  // 首次进入或切换房间时，选中项刚由列表推导出来，这里补一次内容加载
+  if(prevRoom!==S.roomId&&S.page==='rooms')loadFeed();
 }
-function fillConfig(cfg){
-  if(document.activeElement&&document.activeElement.tagName==='INPUT')return;
-  $('f_room').value=cfg.room_id||'';
-  $('f_proto').value=String(cfg.protover||2);
-  $('f_heartbeat').value=cfg.heartbeat_seconds||30;
-  $('f_stale').value=cfg.stale_seconds||120;
-  $('f_host').value=cfg.host||'0.0.0.0';
-  $('f_port').value=cfg.port||8765;
-  $('f_dm').checked=!!cfg.record_danmaku;
-  $('f_sc').checked=!!cfg.record_sc;
-  $('f_ev').checked=!!cfg.record_events;
-  $('f_auto').checked=!!cfg.auto_start;
-  [['f_sessdata','sessdata'],['f_dede','dede_user_id'],['f_buvid','buvid3'],['f_token','token']].forEach(function(p){
-    var e=$(p[0]);e.placeholder=cfg[p[1]+'_set']?'已配置 · 留空不修改':'可选';
-  });
+function setCaptureUI(running,label){
+  var b=$('btnCapture');
+  b.textContent=label||(running?'停止采集':'开始采集');
+  b.className='btn '+(running?'danger':'primary');
 }
-function patchFromForm(){
-  var p={room_id:parseInt($('f_room').value,10),protover:parseInt($('f_proto').value,10),
-    heartbeat_seconds:parseInt($('f_heartbeat').value,10),stale_seconds:parseInt($('f_stale').value,10),
-    host:$('f_host').value.trim(),port:parseInt($('f_port').value,10),
-    record_danmaku:$('f_dm').checked,record_sc:$('f_sc').checked,
-    record_events:$('f_ev').checked,auto_start:$('f_auto').checked};
-  [['f_sessdata','sessdata'],['f_dede','dede_user_id'],['f_buvid','buvid3'],['f_token','token']].forEach(function(x){
-    var v=$(x[0]).value.trim();if(v)p[x[1]]=v;
-  });
-  return p;
+async function loadRooms(){
+  try{renderRooms(await api('/api/rooms'))}catch(e){}
 }
-async function loadStatus(){
-  try{renderStatus(await api('/api/status'))}catch(e){}
+function selectRoom(id){
+  S.roomId=parseInt(id,10)||0;
+  localStorage.setItem('lc-room',String(S.roomId));
+  loadRooms();loadFeed();
 }
-function refreshSoon(){setTimeout(loadStatus,350);setTimeout(loadStatus,1600)}
-
-async function control(kind){
+async function controlCapture(kind){
+  if(!S.roomId){say('captureHint','请先添加直播间','err');return}
   if(S.busy)return;
   S.busy=true;
-  setRunningUI(kind==='start',kind==='start'?'启动中…':'停止中…');
+  var starting=kind==='start';
+  setCaptureUI(!starting,starting?'启动中…':'停止中…');
   try{
-    var j=await api('/api/'+kind,{method:'POST',body:'{}'});
-    if(j.capture)renderStatus({capture:j.capture,config:S.cfg,service:S.svc});
-    say('ctrlHint',j.message,j.ok?'ok':'err');
-    if(!j.ok)await loadStatus();
-    refreshSoon();
+    var j=await api('/api/capture/'+kind,{method:'POST',
+      body:JSON.stringify({room_id:S.roomId})});
+    if(j.rooms)renderRooms(j.rooms);
+    say('captureHint',j.message,j.ok?'ok':'err');
+    if(!j.ok)await loadRooms();
+    setTimeout(loadRooms,350);setTimeout(loadRooms,1600);
   }catch(e){
-    say('ctrlHint',kind+' 失败：'+e.message,'err');
-    await loadStatus();
+    say('captureHint','操作失败：'+e.message,'err');await loadRooms();
   }finally{S.busy=false}
 }
+async function addRoom(){
+  var rid=parseInt($('newRoomId').value,10);
+  if(!rid||rid<1){say('roomHint','请填写有效的房间号','err');return}
+  $('btnAddRoom').disabled=true;
+  say('roomHint','正在添加并读取直播间信息…');
+  try{
+    var j=await api('/api/rooms',{method:'POST',body:JSON.stringify({
+      room_id:rid,label:$('newRoomName').value.trim()})});
+    S.roomId=j.room.id;localStorage.setItem('lc-room',String(S.roomId));
+    $('newRoomId').value='';$('newRoomName').value='';$('addForm').hidden=true;
+    say('roomHint','已添加：'+j.room.label+(j.warning?'（'+j.warning+'）':''),'ok');
+    await loadRooms();loadFeed();
+  }catch(e){say('roomHint','添加失败：'+e.message,'err')}
+  finally{$('btnAddRoom').disabled=false}
+}
 
-/* ---------- 账号 ---------- */
+/* ---------- 内容（纵向分区，无分页、无表格） ---------- */
+function emoteImg(url,px,alt){
+  url=String(url||'');
+  if(!/^(https?:\/\/|\/\/)/i.test(url))return '';
+  var h=Math.max(16,Math.min(80,parseInt(px,10)||20));
+  return '<img class="emote" src="'+esc(url)+'" style="height:'+h+'px" alt="'+esc(alt||'表情')+'" loading="lazy">';
+}
+function rich(text,row){
+  text=String(text==null?'':text);
+  var map={};
+  try{map=JSON.parse(row&&row.emote_map||'{}')||{}}catch(e){map={}}
+  var keys=Object.keys(map);
+  if(row&&row.is_emoticon&&row.emote_url&&!keys.length)
+    return emoteImg(row.emote_url,row.emote_px,text||'表情');
+  var out='',last=0,re=/\[([^\[\]\s][^\[\]]{0,31})\]/g,m;
+  while((m=re.exec(text))!==null){
+    out+=esc(text.slice(last,m.index));
+    var hit=map[m[1]];
+    var img=hit?emoteImg(hit[0],hit[1],m[1]):'';
+    out+=img||esc(m[0]);
+    last=re.lastIndex;
+  }
+  out+=esc(text.slice(last));
+  return out;
+}
+function feedRow(kind,r){
+  var t='<span class="t">'+fmt(r.received_at||r.start_time)+'</span>';
+  if(kind==='sc'){
+    var price=Number(r.price||0);
+    var guard=r.guard_level?'<span class="guard">['+esc(GUARD[r.guard_level]||'舰长')+']</span>':'';
+    return '<div class="sc-card">'+t+'<span class="price">¥'+esc(r.price)+'</span>'+
+      guard+who(r)+(price>=100?' ★':'')+
+      '<div class="msg">'+rich(r.message,r)+'</div>'+
+      (r.message_trans?'<span class="trans">译：'+esc(r.message_trans)+'</span>':'')+'</div>';
+  }
+  if(kind==='danmaku'){
+    var tags='';
+    if(r.medal_name)tags+='<span class="tag">['+esc(r.medal_name)+' '+esc(r.medal_level||0)+']</span>';
+    if(r.guard_level)tags+='<span class="guard">['+esc(GUARD[r.guard_level]||'舰长')+']</span>';
+    if(r.is_admin)tags+='<span class="tag">[房管]</span>';
+    return '<div class="line">'+t+tags+who(r)+'：<span class="msg">'+
+      rich(r.text,r)+'</span></div>';
+  }
+  return '<div class="line">'+t+'<span class="tag">['+esc(KIND[r.kind]||r.kind||'事件')+']</span>'+
+    who(r)+'　'+esc(r.detail||'')+'</div>';
+}
+function renderFeed(j){
+  var kinds=['danmaku','sc','events'];
+  kinds.forEach(function(k){
+    var sec=document.querySelector('.feed[data-k="'+k+'"]');
+    sec.hidden=!S.filters[k];
+    var rows=(j.items&&j.items[k])||[];
+    $('cnt-'+k).textContent=num((j.counts&&j.counts[k])||0);
+    var box=$('feed-'+k),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
+    box.innerHTML=rows.length?rows.slice().reverse().map(function(r){return feedRow(k,r)}).join(''):
+      '<div class="empty">这一类暂时没有数据</div>';
+    if(atBottom)box.scrollTop=box.scrollHeight;
+  });
+  var r=currentRoom();
+  $('feedInfo').textContent=(r?r.label+' · ':'')+'每栏最近 '+S.limit+' 条 · 无分页';
+}
+async function loadFeed(){
+  if(!S.roomId){
+    ['danmaku','sc','events'].forEach(function(k){$('feed-'+k).innerHTML='<div class="empty">请先添加直播间</div>'});
+    return;
+  }
+  var types=Object.keys(S.filters).filter(function(k){return S.filters[k]});
+  var qs='/api/feed?room_id='+S.roomId+'&limit='+S.limit+'&types='+types.join(',')+
+         '&q='+encodeURIComponent(S.q);
+  try{renderFeed(await api(qs))}catch(e){say('captureHint','读取内容失败：'+e.message,'err')}
+}
+
+/* ---------- 配置 ---------- */
 function renderAccounts(data){
-  S.accounts=data.items||[];
+  S.accounts=(data&&data.items)||[];
   var box=$('acctList');
   if(!S.accounts.length){
-    box.innerHTML='<div class="hint">还没有账号。上传一个 cookie CSV 即可启用登录态；不上传则匿名采集（用户名可能显示成 ***，弹幕也少）。</div>';
+    box.innerHTML='<div class="hint">还没有账号。上传一个 cookie CSV 即可启用登录态；不上传则匿名采集（昵称可能显示成 ***）。</div>';
     return;
   }
   box.innerHTML=S.accounts.map(function(a){
@@ -396,126 +713,71 @@ function renderAccounts(data){
       ' · '+a.cookie_count+' 条 cookie';
     return '<div class="acct '+(a.active?'on':'')+'">'+
       '<div class="who"><b>'+esc(a.label)+'</b><span>'+meta+'</span></div>'+pills+
-      (a.active?'':'<button data-act="on" data-id="'+esc(a.id)+'">启用</button>')+
-      '<button class="danger" data-act="del" data-id="'+esc(a.id)+'">删除</button></div>';
+      (a.active?'':'<button class="btn sm" data-act="on" data-id="'+esc(a.id)+'">启用</button>')+
+      '<button class="btn sm danger" data-act="del" data-id="'+esc(a.id)+'">删除</button></div>';
   }).join('');
 }
 async function loadAccounts(){
   try{renderAccounts(await api('/api/accounts'))}catch(e){say('acctHint','读取账号失败：'+e.message,'err')}
 }
-async function uploadAccount(name,text,from){
+async function uploadAccount(){
+  var f=$('acctFile').files[0];
+  if(!f){say('acctHint','请先选择一个 cookie CSV 文件','err');return}
+  var reader=new FileReader();
+  reader.onload=async function(){
+    try{
+      var j=await api('/api/accounts',{method:'POST',body:JSON.stringify({
+        name:$('acctName').value.trim()||f.name,csv:reader.result,activate:true})});
+      renderAccounts(j.accounts);
+      say('acctHint','已保存 '+j.item.label+(j.item.error?'（'+j.item.error+'）':'，已启用')+
+        (j.restart_required?'；采集运行中，需停止后重新启动才生效':''),j.item.error?'err':'ok');
+      $('acctFile').value='';$('acctName').value='';
+      await loadStatus();
+    }catch(e){say('acctHint','上传失败：'+e.message,'err')}
+  };
+  reader.onerror=function(){say('acctHint','文件读取失败','err')};
+  reader.readAsText(f,'utf-8');
+}
+function fillConfig(cfg){
+  if(!cfg)return;
+  if(document.activeElement&&document.activeElement.tagName==='INPUT')return;
+  $('f_proto').value=String(cfg.protover||2);
+  $('f_heartbeat').value=cfg.heartbeat_seconds||30;
+  $('f_stale').value=cfg.stale_seconds||120;
+  $('f_host').value=cfg.host||'0.0.0.0';
+  $('f_port').value=cfg.port||8765;
+  $('f_dm').checked=!!cfg.record_danmaku;
+  $('f_sc').checked=!!cfg.record_sc;
+  $('f_ev').checked=!!cfg.record_events;
+  $('f_auto').checked=!!cfg.auto_start;
+  $('f_token').placeholder=cfg.token_set?'已设置 · 留空不修改':'可选';
+}
+async function loadStatus(){
   try{
-    var j=await api('/api/accounts',{method:'POST',
-      body:JSON.stringify({name:name,csv:text,activate:true})});
-    renderAccounts(j.accounts);
-    var msg=(from||'账号')+'已保存：'+j.item.label+
-      (j.item.error?'（'+j.item.error+'）':'，已启用')+
-      (j.restart_required?'；采集正在运行，需停止后重新启动才生效':'');
-    say('acctHint',msg,j.item.error?'err':'ok');
-    $('acctFile').value='';$('acctName').value='';$('pasteCsv').value='';
-    await loadStatus();
-  }catch(e){say('acctHint','上传失败：'+e.message,'err')}
-}
-
-/* ---------- 数据 ---------- */
-var COLS={
-  danmaku:[['时间',function(r){return fmt(r.received_at)}],['昵称',function(r){return esc(r.uname)}],
-           ['内容',function(r){return '<div class="msg">'+esc(r.text)+'</div>'}],
-           ['牌子',function(r){return esc(r.medal_name||'')+(r.medal_level?' '+r.medal_level:'')}]],
-  sc:[['时间',function(r){return fmt(r.received_at)}],['昵称',function(r){return esc(r.uname)}],
-      ['金额',function(r){return '¥'+esc(r.price)}],
-      ['原文',function(r){return '<div class="msg">'+esc(r.message)+'</div>'}],
-      ['日译',function(r){return '<div class="msg">'+esc(r.message_trans||'—')+'</div>'}]],
-  events:[['时间',function(r){return fmt(r.received_at)}],['类型',function(r){return esc(r.kind)}],
-          ['昵称',function(r){return esc(r.uname)}],
-          ['详情',function(r){return '<div class="msg">'+esc(r.detail)+'</div>'}]]
-};
-var PATH={danmaku:'/api/danmaku',sc:'/api/superchats',events:'/api/events'};
-var GUARD={1:'总督',2:'提督',3:'舰长'};
-function who(r){
-  var name=esc(r.uname||'—');
-  return r.uid?'<a class="uname" href="https://space.bilibili.com/'+esc(r.uid)+
-    '" target="_blank" rel="noopener">'+name+'</a>':name;
-}
-function streamLine(r){
-  var t='<span class="time">'+fmt(r.received_at||r.start_time)+'</span>';
-  if(S.tab==='sc'){
-    var price=Number(r.price||0);
-    var p='<span class="price'+(price>=100?' hi':'')+'">¥'+esc(r.price)+'</span>';
-    var guard=r.guard_level?'<span class="guard">['+esc(GUARD[r.guard_level]||'舰长')+']</span>':'';
-    return '<div class="sc-card"><span class="sep">━━━━━━━━━━━━━━━━━━━━</span><br>'+
-      t+p+guard+who(r)+'<br><span class="msg">'+esc(r.message||'')+'</span>'+
-      (r.message_trans?'<span class="trans">译：'+esc(r.message_trans)+'</span>':'')+'</div>';
-  }
-  if(S.tab==='danmaku'){
-    var tags='';
-    if(r.medal_name)tags+='<span class="tag">['+esc(r.medal_name)+' '+esc(r.medal_level||0)+']</span>';
-    if(r.guard_level)tags+='<span class="guard">['+esc(GUARD[r.guard_level]||'舰长')+']</span>';
-    if(r.is_admin)tags+='<span class="tag">[房管]</span>';
-    return '<div class="line">'+t+tags+who(r)+'：<span class="msg" style="display:inline">'+
-      esc(r.text||'')+'</span></div>';
-  }
-  return '<div class="line">'+t+'<span class="tag">['+esc(r.kind||'')+']</span>'+
-    who(r)+' '+esc(r.detail||'')+'</div>';
-}
-function renderTable(items){
-  var cols=COLS[S.tab];
-  $('tbl').tHead.innerHTML='<tr>'+cols.map(function(c){return '<th>'+c[0]+'</th>'}).join('')+'</tr>';
-  $('tbl').tBodies[0].innerHTML=items.length?items.map(function(r){
-    return '<tr>'+cols.map(function(c){return '<td>'+c[1](r)+'</td>'}).join('')+'</tr>';
-  }).join(''):'<tr><td colspan="'+cols.length+'" class="muted">还没有数据</td></tr>';
-}
-async function loadTable(){
-  var qs='?limit='+S.limit+'&offset='+S.offset+'&q='+encodeURIComponent(S.q);
-  try{
-    var j=await api(PATH[S.tab]+qs);S.total=j.total;
-    if(S.view==='table')renderTable(j.items);
-    else{
-      var box=$('streamBox'),atBottom=
-        box.scrollHeight-box.scrollTop-box.clientHeight<40;
-      // 接口按时间倒序，流视图翻成「旧 → 新」，底部是最新
-      box.innerHTML=j.items.length?j.items.slice().reverse().map(streamLine).join(''):
-        '<div class="muted">还没有数据</div>';
-      if(atBottom)box.scrollTop=box.scrollHeight;
-    }
-    $('tableInfo').textContent='共 '+S.total+' 条 · 第 '+(Math.floor(S.offset/S.limit)+1)+
-      ' 页 · '+(S.view==='stream'?'流式':'表格');
-  }catch(e){say('ctrlHint','查询失败：'+e.message,'err')}
-}
-async function exportData(fmtType){
-  var url='/api/export?type='+S.tab+'&format='+fmtType+'&q='+encodeURIComponent(S.q);
-  try{
-    var r=await fetch(url,{headers:headers()});
-    if(!r.ok)throw new Error('HTTP '+r.status);
-    var blob=await r.blob(),a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download=S.tab+'.'+fmtType;
-    a.click();
-    setTimeout(function(){URL.revokeObjectURL(a.href)},2000);
-    uiLog('info','导出 '+S.tab+' 为 '+fmtType.toUpperCase());
-  }catch(e){say('ctrlHint','导出失败：'+e.message,'err')}
+    var j=await api('/api/status');
+    S.cfg=j.config;S.svc=j.service;
+    setBadge(j.capture.active,j.capture.running);
+    fillConfig(j.config);
+  }catch(e){}
 }
 
 /* ---------- 日志 ---------- */
 async function loadLogs(){
-  try{var j=await api('/api/logs?limit=500');S.serverLogs=j.items||[];renderLogs()}
-  catch(e){}
+  try{var j=await api('/api/logs?limit=500');S.serverLogs=j.items||[];renderLogs()}catch(e){}
 }
 function renderLogs(){
   var filter=$('logLevel').value;
-  var all=S.serverLogs.map(function(x){return {ts:x.ts,level:x.level,msg:x.msg,src:'server'}})
-    .concat(S.webLogs.map(function(x){return {ts:x.ts,level:'web',msg:x.msg,src:'web'}}));
+  var all=S.serverLogs.map(function(x){return {ts:x.ts,level:x.level,msg:x.msg}})
+    .concat(S.webLogs.map(function(x){return {ts:x.ts,level:'web',msg:x.msg}}));
   all.sort(function(a,b){return a.ts-b.ts});
-  var rows=all.filter(function(x){
-    return filter==='all'||x.level===filter;
-  }).slice(-600);
+  var rows=all.filter(function(x){return filter==='all'||x.level===filter}).slice(-600);
   var box=$('logBox'),follow=$('logFollow').checked,
       atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
   box.innerHTML=rows.length?rows.map(function(x){
     return '<div class="line '+esc(x.level)+'"><span class="ts">'+fmtFull(x.ts)+
       '</span><span class="lv">'+esc(x.level)+'</span><span class="txt">'+
       esc(x.msg)+'</span></div>';
-  }).join(''):'<div class="muted">暂无日志</div>';
+  }).join(''):'<div class="empty">暂无日志</div>';
   if(follow&&atBottom)box.scrollTop=box.scrollHeight;
   $('logCount').textContent='共 '+rows.length+' 条（服务端 '+S.serverLogs.length+
     ' / 网页 '+S.webLogs.length+'）';
@@ -523,54 +785,96 @@ function renderLogs(){
 
 /* ---------- 页面切换 ---------- */
 function showPage(name){
-  S.page=name;
-  localStorage.setItem('lc-page',name);
-  ['config','data','logs'].forEach(function(p){$('page-'+p).hidden=p!==name});
-  document.querySelectorAll('.pages button[data-page]').forEach(function(b){
-    b.classList.toggle('active',b.dataset.page===name);
+  S.page=name;localStorage.setItem('lc-page',name);
+  validPages.forEach(function(p){$('page-'+p).hidden=p!==name});
+  document.querySelectorAll('.nav button[data-page]').forEach(function(b){
+    b.classList.toggle('on',b.dataset.page===name);
   });
-  if(name==='data')loadTable();
-  if(name==='logs'){loadLogs();renderLogs()}
+  if(name==='home')loadDashboard();
+  if(name==='rooms'){loadRooms();loadFeed()}
   if(name==='config'){loadStatus();loadAccounts()}
+  if(name==='logs'){loadLogs();renderLogs()}
 }
 
 /* ---------- 事件绑定 ---------- */
-$('btnStart').onclick=function(){control('start')};
-$('btnStop').onclick=function(){control('stop')};
-$('btnRefresh').onclick=function(){loadStatus();loadTable();loadLogs();uiLog('info','手动刷新状态')};
-document.querySelectorAll('.pages button[data-page]').forEach(function(b){
+document.querySelectorAll('.nav button[data-page]').forEach(function(b){
   b.onclick=function(){showPage(b.dataset.page)};
 });
-$('cfgForm').onsubmit=async function(e){
-  e.preventDefault();
-  try{
-    var j=await api('/api/config',{method:'POST',body:JSON.stringify(patchFromForm())});
-    say('cfgHint','配置已保存'+(j.restart_required?'；采集正在运行，需停止后重新启动才生效':''),'ok');
-    ['f_sessdata','f_dede','f_buvid','f_token'].forEach(function(id){$(id).value=''});
-    await loadStatus();
-  }catch(err){say('cfgHint','保存失败：'+err.message,'err')}
+$('roomGrid').addEventListener('click',function(e){
+  var b=e.target.closest('button[data-view]');if(!b)return;
+  S.roomId=parseInt(b.dataset.view,10);localStorage.setItem('lc-room',String(S.roomId));
+  showPage('rooms');
+});
+$('roomChips').addEventListener('click',function(e){
+  var b=e.target.closest('button[data-room]');
+  if(b){selectRoom(b.dataset.room);return}
+  if(e.target.closest('#chipAdd'))$('addForm').hidden=false;
+});
+$('btnAddToggle').onclick=function(){$('addForm').hidden=!$('addForm').hidden};
+$('btnCancelAdd').onclick=function(){$('addForm').hidden=true};
+$('btnAddRoom').onclick=addRoom;
+$('newRoomId').addEventListener('keydown',function(e){if(e.key==='Enter')addRoom()});
+$('btnCapture').onclick=function(){
+  var r=currentRoom();controlCapture(r&&r.running?'stop':'start');
 };
-$('btnClearSecret').onclick=async function(){
+$('btnStopAll').onclick=async function(){
   try{
-    await api('/api/config',{method:'POST',
-      body:JSON.stringify({sessdata:'',dede_user_id:'',buvid3:'',token:''})});
-    say('cfgHint','已清除凭证与访问口令','ok');await loadStatus();
-  }catch(e){say('cfgHint',e.message,'err')}
+    var j=await api('/api/capture/stop_all',{method:'POST',body:'{}'});
+    renderRooms(j.rooms);say('captureHint',j.message,'ok');
+  }catch(e){say('captureHint','停止失败：'+e.message,'err')}
 };
+$('btnRefreshRooms').onclick=async function(){
+  say('roomHint','正在刷新直播间信息…');
+  try{
+    var j=await api('/api/rooms/refresh',{method:'POST',body:'{}'});
+    renderRooms(j.rooms);say('roomHint','已刷新 '+j.updated+' 个直播间','ok');
+  }catch(e){say('roomHint','刷新失败：'+e.message,'err')}
+};
+$('btnDelRoom').onclick=async function(){
+  var r=currentRoom();if(!r)return;
+  if(!confirm('从列表删除「'+r.label+'」？采集到的历史数据会保留。'))return;
+  try{
+    var j=await api('/api/rooms/remove',{method:'POST',body:JSON.stringify({room_id:r.id})});
+    S.roomId=0;localStorage.setItem('lc-room','0');
+    renderRooms(j.rooms);loadFeed();say('roomHint','已删除直播间','ok');
+  }catch(e){say('roomHint','删除失败：'+e.message,'err')}
+};
+document.querySelectorAll('.filters input[data-k]').forEach(function(cb){
+  cb.checked=!!S.filters[cb.dataset.k];
+  cb.onchange=function(){
+    S.filters[cb.dataset.k]=cb.checked;
+    localStorage.setItem('lc-filters',JSON.stringify(S.filters));
+    loadFeed();
+  };
+});
+$('limit').value=String(S.limit);
+$('limit').onchange=function(){S.limit=parseInt(this.value,10)||30;
+  localStorage.setItem('lc-limit',String(S.limit));loadFeed()};
+var qTimer=null;
+$('q').addEventListener('input',function(e){
+  S.q=e.target.value;clearTimeout(qTimer);qTimer=setTimeout(loadFeed,300);
+});
+$('q').addEventListener('keydown',function(e){if(e.key==='Enter'){clearTimeout(qTimer);loadFeed()}});
+$('btnLoad').onclick=function(){loadRooms();loadFeed()};
+async function exportData(fmt){
+  if(!S.roomId){say('captureHint','请先选择直播间','err');return}
+  var url='/api/export?type='+$('expType').value+'&format='+fmt+
+    '&room_id='+S.roomId+'&q='+encodeURIComponent(S.q);
+  try{
+    var r=await fetch(url,{headers:headers()});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    var blob=await r.blob(),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='room-'+S.roomId+'-'+$('expType').value+'.'+fmt;
+    a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href)},2000);
+    uiLog('info','导出 '+$('expType').value+' 为 '+fmt.toUpperCase());
+  }catch(e){say('captureHint','导出失败：'+e.message,'err')}
+}
+$('btnJson').onclick=function(){exportData('json')};
+$('btnCsv').onclick=function(){exportData('csv')};
 
-$('btnUpload').onclick=function(){
-  var f=$('acctFile').files[0];
-  if(!f){say('acctHint','请先选择一个 cookie CSV 文件','err');return}
-  var reader=new FileReader();
-  reader.onload=function(){uploadAccount($('acctName').value.trim()||f.name,reader.result,f.name)};
-  reader.onerror=function(){say('acctHint','文件读取失败','err')};
-  reader.readAsText(f,'utf-8');
-};
-$('btnPaste').onclick=function(){
-  var text=$('pasteCsv').value.trim();
-  if(!text){say('acctHint','请先粘贴 cookie 内容','err');return}
-  uploadAccount($('pasteName').value.trim()||'手动添加',text,'粘贴内容');
-};
+$('btnUpload').onclick=uploadAccount;
 $('acctList').addEventListener('click',async function(e){
   var b=e.target.closest('button[data-act]');if(!b)return;
   var id=b.dataset.id;
@@ -580,64 +884,61 @@ $('acctList').addEventListener('click',async function(e){
     try{
       var j=await api('/api/accounts/remove',{method:'POST',body:JSON.stringify({id:id})});
       renderAccounts(j.accounts);
-      say('acctHint','账号已删除'+(j.restart_required?'；采集正在运行，需停止后重新启动才生效':''),'ok');
-      await loadStatus();
+      say('acctHint','账号已删除'+(j.restart_required?'；采集运行中，需停止后重新启动才生效':''),'ok');
     }catch(err){say('acctHint','删除失败：'+err.message,'err')}
   }else{
     try{
       var k=await api('/api/accounts/activate',{method:'POST',body:JSON.stringify({id:id})});
-      renderAccounts(k.accounts);
-      say('acctHint','账号已启用'+(k.restart_required?'；采集正在运行，需停止后重新启动才生效':''),'ok');
+      renderAccounts(k.accounts);say('acctHint','账号已启用','ok');
     }catch(err){say('acctHint','启用失败：'+err.message,'err')}
   }
 });
 $('btnNoAccount').onclick=async function(){
   try{
     var j=await api('/api/accounts/activate',{method:'POST',body:JSON.stringify({id:''})});
-    renderAccounts(j.accounts);
-    say('acctHint','已停用账号，之后用匿名 / 手填凭证连接','ok');
+    renderAccounts(j.accounts);say('acctHint','已停用账号，之后匿名采集','ok');
   }catch(e){say('acctHint',e.message,'err')}
 };
-
-document.querySelectorAll('.tabs button[data-tab]').forEach(function(b){
-  b.onclick=function(){
-    document.querySelectorAll('.tabs button[data-tab]').forEach(function(x){x.classList.remove('active')});
-    b.classList.add('active');S.tab=b.dataset.tab;S.offset=0;loadTable();
-  };
-});
-$('btnViewTable').onclick=function(){
-  S.view=S.view==='stream'?'table':'stream';
-  $('streamBox').hidden=S.view!=='stream';
-  $('tableBox').hidden=S.view!=='table';
-  this.textContent=S.view==='stream'?'切到表格':'切到流';
-  loadTable();
+$('cfgForm').onsubmit=async function(e){
+  e.preventDefault();
+  var p={protover:parseInt($('f_proto').value,10),
+    heartbeat_seconds:parseInt($('f_heartbeat').value,10),
+    stale_seconds:parseInt($('f_stale').value,10),
+    host:$('f_host').value.trim(),port:parseInt($('f_port').value,10),
+    record_danmaku:$('f_dm').checked,record_sc:$('f_sc').checked,
+    record_events:$('f_ev').checked,auto_start:$('f_auto').checked};
+  var t=$('f_token').value.trim();if(t)p.token=t;
+  try{
+    var j=await api('/api/config',{method:'POST',body:JSON.stringify(p)});
+    say('cfgHint','配置已保存'+(j.restart_required?'；采集运行中，需停止后重新启动才生效':''),'ok');
+    $('f_token').value='';await loadStatus();
+  }catch(err){say('cfgHint','保存失败：'+err.message,'err')}
 };
-$('q').addEventListener('input',function(e){S.q=e.target.value;S.offset=0});
-$('q').addEventListener('keydown',function(e){if(e.key==='Enter')loadTable()});
-$('limit').onchange=function(e){S.limit=parseInt(e.target.value,10);S.offset=0;loadTable()};
-$('btnLoad').onclick=loadTable;
-$('btnJson').onclick=function(){exportData('json')};
-$('btnCsv').onclick=function(){exportData('csv')};
-$('btnPrev').onclick=function(){S.offset=Math.max(0,S.offset-S.limit);loadTable()};
-$('btnNext').onclick=function(){if(S.offset+S.limit<S.total){S.offset+=S.limit;loadTable()}};
+$('btnClearToken').onclick=async function(){
+  try{
+    await api('/api/config',{method:'POST',body:JSON.stringify({token:''})});
+    say('cfgHint','已清除访问口令','ok');await loadStatus();
+  }catch(e){say('cfgHint',e.message,'err')}
+};
 $('btnClear').onclick=async function(){
   if(!confirm('确定清空全部弹幕 / SC / 事件记录？此操作不可撤销。'))return;
   try{
     await api('/api/clear',{method:'POST',body:JSON.stringify({confirm:'yes'})});
-    say('ctrlHint','数据已清空','ok');await loadStatus();loadTable();loadLogs();
-  }catch(e){say('ctrlHint',e.message,'err')}
+    say('cfgHint','数据已清空','ok');loadDashboard();loadFeed();loadLogs();
+  }catch(e){say('cfgHint',e.message,'err')}
 };
 $('btnLogs').onclick=function(){loadLogs();uiLog('info','手动刷新日志')};
 $('logLevel').onchange=renderLogs;
 
 setInterval(function(){
   if(document.hidden)return;
-  loadStatus();
-  if(S.page==='data'&&$('autoRefresh').checked)loadTable();
-  if(S.page==='logs')loadLogs();
-},3000);
+  if(S.page==='home')loadDashboard();
+  else if(S.page==='rooms'){loadRooms();if($('autoRefresh').checked)loadFeed()}
+  else if(S.page==='config')loadStatus();
+  else if(S.page==='logs')loadLogs();
+},4000);
 document.addEventListener('visibilitychange',function(){
-  if(!document.hidden){loadStatus();if(S.page==='logs')loadLogs();if(S.page==='data')loadTable()}
+  if(!document.hidden){loadStatus();showPage(S.page)}
 });
 showPage(S.page);
 })();

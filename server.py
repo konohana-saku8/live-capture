@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""HTTP server: one web page for config/control + a small read-only REST API."""
+"""HTTP server: dashboard / rooms / config / logs web UI + REST API."""
 from __future__ import annotations
 
 import json
@@ -11,12 +11,10 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from accounts import AccountStore
+from capture import WS_IMPORT_ERROR, fetch_room_brief
+from rooms import RoomStore
 
 DEFAULTS = {
-    "room_id": 22748536,
-    "sessdata": "",
-    "dede_user_id": "",
-    "buvid3": "",
     "protover": 2,                 # 2=zlib (no extra deps), 3=brotli
     "heartbeat_seconds": 30,
     "stale_seconds": 120,
@@ -29,16 +27,23 @@ DEFAULTS = {
     "token": "",
     "auto_start": False,
 }
-SECRET_KEYS = ("sessdata", "dede_user_id", "buvid3", "token")
+SECRET_KEYS = ("token",)
 BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "auto_start")
 INT_BOUNDS = {
-    "room_id": (1, 999999999),
     "protover": (2, 3),
     "heartbeat_seconds": (10, 120),
     "stale_seconds": (30, 600),
     "http_timeout": (3, 60),
     "port": (1, 65535),
 }
+VALID_KINDS = ("danmaku", "sc", "events")
+
+
+def _as_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class Config:
@@ -82,7 +87,7 @@ class Config:
                 if not low <= num <= high:
                     raise ValueError("%s 需要在 %s–%s 之间" % (key, low, high))
                 clean[key] = num
-            elif key in ("host", "sessdata", "dede_user_id", "buvid3", "token"):
+            elif key in ("host", "token"):
                 clean[key] = str(value).strip()
             else:
                 clean[key] = value
@@ -138,7 +143,7 @@ def _lan_ip():
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LiveCapture/1.0"
+    server_version = "LiveCapture/2.0"
 
     def log_message(self, fmt, *args):
         return
@@ -242,20 +247,95 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._fail(500, str(exc))
 
-    # ---------- api ----------
+    # ---------- helpers ----------
+
+    def _service(self):
+        return {"started_at": self.server.started_at,
+                "host": self.server.host, "port": self.server.port,
+                "lan_ip": self.server.lan_ip,
+                "data_dir": self.server.data_dir,
+                "websockets": self.server.ws_ok}
+
+    def _rooms_payload(self):
+        rooms = self.server.rooms.list().get("items") or []
+        snap = self.server.manager.snapshot()
+        states = {s["room_id"]: s for s in snap["rooms"]}
+        totals = {x["room_id"]: x for x in
+                  self.server.store.dashboard().get("by_room") or []}
+        items = []
+        for room in rooms:
+            st = states.get(room["id"]) or {}
+            agg = totals.get(room["id"]) or {}
+            items.append(dict(
+                room,
+                running=bool(st.get("running")),
+                configured=True,
+                real_room_id=st.get("real_room_id") or room["id"],
+                live_status=st.get("live_status") or room.get("live_status", 0),
+                uname=st.get("uname", ""),
+                online=st.get("online") or room.get("online", 0),
+                popularity=st.get("popularity", 0),
+                last_packet_at=st.get("last_packet_at", 0),
+                started_at=st.get("started_at", 0),
+                last_error=st.get("last_error", ""),
+                warning=st.get("warning", ""),
+                counts=st.get("counts", {}),
+                totals={"danmaku": agg.get("danmaku", 0),
+                        "sc": agg.get("sc", 0),
+                        "events": agg.get("events", 0),
+                        "sc_amount": agg.get("sc_amount", 0),
+                        "last_at": agg.get("last_at", 0)}))
+        return {"ok": True, "items": items, "active": snap["active"],
+                "running": snap["running"]}
+
+    def _capture_payload(self, ok, message, code=200):
+        self._json({"ok": ok, "message": message,
+                    "capture": self.server.manager.snapshot(),
+                    "rooms": self._rooms_payload()}, code)
+
+    def _first_room_id(self):
+        items = self.server.rooms.list().get("items") or []
+        return _as_int(items[0]["id"]) if items else 0
+
+    # ---------- api GET ----------
 
     def _api_get(self, path, q):
-        store, manager, config = self.server.store, self.server.manager, self.server.config
+        store, manager, config = (self.server.store, self.server.manager,
+                                  self.server.config)
         if path == "/api/status":
-            self._json({"ok": True,
-                        "service": {"started_at": self.server.started_at,
-                                    "host": self.server.host,
-                                    "port": self.server.port,
-                                    "lan_ip": self.server.lan_ip,
-                                    "data_dir": self.server.data_dir,
-                                    "websockets": self.server.ws_ok},
+            self._json({"ok": True, "service": self._service(),
                         "capture": manager.snapshot(),
+                        "rooms": self._rooms_payload(),
                         "config": Config.masked(config.get())})
+            return
+        if path == "/api/dashboard":
+            data = store.dashboard()
+            self._json({"ok": True,
+                        "totals": data["totals"], "by_room": data["by_room"],
+                        "top_sc": data["top_sc"], "recent": data["recent"],
+                        "timeline": data["timeline"],
+                        "last_received_at": data["last_received_at"],
+                        "rooms": self._rooms_payload(),
+                        "capture": manager.snapshot(),
+                        "service": self._service(),
+                        "config": Config.masked(config.get())})
+            return
+        if path == "/api/rooms":
+            self._json(self._rooms_payload())
+            return
+        if path == "/api/feed":
+            rid = _as_int(q.get("room_id")) or self._first_room_id()
+            kinds = [k for k in (q.get("types") or "danmaku,sc,events").split(",")
+                     if k in VALID_KINDS]
+            limit = max(1, min(300, _as_int(q.get("limit"), 40)))
+            items, counts = {}, {}
+            for kind in kinds:
+                total, rows = store.query(kind, limit=limit, q=q.get("q") or "",
+                                          room_id=rid or None)
+                items[kind] = rows
+                counts[kind] = total
+            self._json({"ok": True, "room_id": rid, "items": items,
+                        "counts": counts})
             return
         if path == "/api/config":
             self._json({"ok": True, "config": Config.masked(config.get()),
@@ -288,7 +368,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/export":
             kind = q.get("type") or "danmaku"
             fmt = q.get("format") or "json"
-            if kind not in ("danmaku", "sc", "events") or fmt not in ("json", "csv"):
+            if kind not in VALID_KINDS or fmt not in ("json", "csv"):
                 self._fail(400, "type/format 不合法")
                 return
             name, ctype, body = store.export(
@@ -299,9 +379,78 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._fail(404, "没有这个接口")
 
+    # ---------- api POST ----------
+
     def _api_post(self, path, body):
         manager, config = self.server.manager, self.server.config
-        accounts = self.server.accounts
+        rooms, accounts = self.server.rooms, self.server.accounts
+
+        # ---- room management ----
+        if path == "/api/rooms":
+            rid = _as_int(body.get("room_id"))
+            if rid <= 0:
+                self._fail(400, "房间号必须是正整数")
+                return
+            label = str(body.get("label") or "")[:80]
+            warning = ""
+            try:
+                brief = fetch_room_brief(rid, timeout=3)
+            except Exception as exc:
+                brief, warning = {}, "直播间信息获取失败，先用房间号：%s" % exc
+            try:
+                item, created = rooms.add(rid, label, brief)
+            except ValueError as exc:
+                self._fail(400, str(exc))
+                return
+            self.server.logs.add(
+                "info", "%s直播间：%s（%s）" %
+                ("新增" if created else "更新", item["label"], rid))
+            self._json({"ok": True, "room": item, "created": created,
+                        "warning": warning, "rooms": self._rooms_payload()})
+            return
+        if path == "/api/rooms/remove":
+            rid = _as_int(body.get("room_id"))
+            if manager.snapshot()["running"] and any(
+                    s["room_id"] == rid and s["running"]
+                    for s in manager.snapshot()["rooms"]):
+                manager.stop(rid)
+            ok = rooms.remove(rid)
+            self.server.logs.add("info", "删除直播间：%s（%s）" %
+                                 ("成功" if ok else "不存在", rid))
+            self._json({"ok": ok, "rooms": self._rooms_payload(),
+                        "capture": manager.snapshot()})
+            return
+        if path == "/api/rooms/refresh":
+            updated = 0
+            for room in (rooms.list().get("items") or [])[:20]:
+                try:
+                    brief = fetch_room_brief(room["id"], timeout=3)
+                except Exception:
+                    continue
+                if rooms.refresh(room["id"], brief):
+                    updated += 1
+            self.server.logs.add("info", "刷新直播间信息：%s 个" % updated)
+            self._json({"ok": True, "updated": updated,
+                        "rooms": self._rooms_payload()})
+            return
+
+        # ---- capture control ----
+        if path in ("/api/capture/start", "/api/start"):
+            rid = _as_int(body.get("room_id")) or self._first_room_id()
+            ok, message = manager.start(rid)
+            self._capture_payload(ok, message, 200 if ok else 409)
+            return
+        if path in ("/api/capture/stop", "/api/stop"):
+            rid = _as_int(body.get("room_id"))
+            ok, message = manager.stop(rid or None)
+            self._capture_payload(ok, message)
+            return
+        if path == "/api/capture/stop_all":
+            ok, message = manager.stop_all()
+            self._capture_payload(ok, message)
+            return
+
+        # ---- accounts (CSV only) ----
         if path == "/api/accounts":
             try:
                 item, created, error = accounts.add(
@@ -331,39 +480,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._fail(400, str(exc))
                 return
             self.server.logs.add("info", "启用 cookie 账号：%s" %
-                                 (label or "已停用（回退匿名 / 手填凭证）"))
+                                 (label or "已停用（回退匿名采集）"))
             self._json({"ok": True, "accounts": out,
                         "restart_required": manager.snapshot()["running"]})
             return
+
+        # ---- config / data ----
         if path == "/api/config":
             before = config.get()
             after = config.save(body)
             self.server.logs.add("info", "配置已保存")
-            changed = any(before.get(k) != after.get(k) for k in
-                          ("room_id", "sessdata", "dede_user_id", "buvid3",
-                           "protover", "heartbeat_seconds", "stale_seconds"))
+            changed = any(before.get(k) != after.get(k) for k in DEFAULTS)
             self._json({"ok": True, "config": Config.masked(after),
                         "restart_required": changed and manager.snapshot()["running"]})
             return
-        if path == "/api/start":
-            if body.get("room_id"):
-                config.save({"room_id": body["room_id"]})
-            ok, message = manager.start()
-            # 响应直接带上状态，前端不必再等一次 /api/status
-            self._json({"ok": ok, "message": message,
-                        "capture": manager.snapshot()}, 200 if ok else 409)
-            return
-        if path == "/api/stop":
-            ok, message = manager.stop()
-            self._json({"ok": ok, "message": message,
-                        "capture": manager.snapshot()})
-            return
         if path == "/api/clear":
             if body.get("confirm") != "yes":
-                self._fail(400, "需要 {\"confirm\":\"yes\"}")
+                self._fail(400, '需要 {"confirm":"yes"}')
                 return
-            self.server.store.clear()
-            self.server.logs.add("warn", "数据已清空")
+            rid = _as_int(body.get("room_id"))
+            self.server.store.clear(rid or None)
+            self.server.logs.add("warn", "数据已清空：%s" %
+                                 ("房间 %s" % rid if rid else "全部"))
             self._json({"ok": True})
             return
         self._fail(404, "没有这个接口")
@@ -375,7 +513,7 @@ class AppServer(ThreadingHTTPServer):
 
 
 def create_server(host, port, data_dir, web_dir, store, manager, config, logs,
-                  accounts=None):
+                  accounts=None, rooms=None):
     """Build the server without blocking; used by run.py and selftest.py."""
     srv = AppServer((host, port), Handler)
     srv.store = store
@@ -384,24 +522,26 @@ def create_server(host, port, data_dir, web_dir, store, manager, config, logs,
     srv.logs = logs
     srv.accounts = accounts or AccountStore(
         os.path.join(data_dir, "accounts.json"))
-    # 采集线程在用户点「启动」时才读账号，这里挂上即可，不必改 run.py 签名
+    srv.rooms = rooms or RoomStore(os.path.join(data_dir, "rooms.json"))
+    # 采集线程在用户点「启动」时才读账号与房间列表，这里挂上即可
     if getattr(manager, "accounts", None) is None:
         manager.accounts = srv.accounts
+    if getattr(manager, "rooms", None) is None:
+        manager.rooms = srv.rooms
     srv.web_dir = web_dir
     srv.data_dir = data_dir
     srv.host = host
     srv.port = port
     srv.started_at = int(time.time() * 1000)
     srv.lan_ip = _lan_ip()
-    from capture import WS_IMPORT_ERROR
     srv.ws_ok = not bool(WS_IMPORT_ERROR)
     return srv
 
 
 def serve(host, port, data_dir, web_dir, store, manager, config, logs,
-          auto_start=False):
+          rooms=None, auto_start=False):
     srv = create_server(host, port, data_dir, web_dir, store, manager,
-                        config, logs)
+                        config, logs, rooms=rooms)
     ip = srv.lan_ip
     print("=" * 52, flush=True)
     print("  直播弹幕 / SC 采集服务已启动", flush=True)
@@ -409,14 +549,17 @@ def serve(host, port, data_dir, web_dir, store, manager, config, logs,
     if host not in ("127.0.0.1", "localhost"):
         print("  局域网：http://%s:%s/" % (ip, port), flush=True)
     print("  数据：%s" % os.path.abspath(data_dir), flush=True)
+    print("  直播间：%s 个" % len(srv.rooms.list().get("items") or []), flush=True)
     print("=" * 52, flush=True)
     if auto_start:
-        ok, message = manager.start()
-        logs.add("info" if ok else "error", "自动启动采集：%s" % message)
+        for room in (srv.rooms.list().get("items") or []):
+            ok, message = manager.start(room["id"])
+            logs.add("info" if ok else "error",
+                     "自动开始采集 %s：%s" % (room["id"], message))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        manager.stop()
+        manager.stop_all()
         srv.server_close()
