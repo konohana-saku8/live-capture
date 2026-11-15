@@ -81,6 +81,20 @@ CREATE TABLE IF NOT EXISTS runs (
   stopped_at  INTEGER,
   config_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS dynamics (
+  dyn_id      TEXT PRIMARY KEY,
+  mid         INTEGER NOT NULL DEFAULT 0,
+  pub_ts      INTEGER NOT NULL DEFAULT 0,
+  dyn_type    TEXT NOT NULL DEFAULT '',
+  text        TEXT NOT NULL DEFAULT '',
+  text_trans  TEXT NOT NULL DEFAULT '',
+  pics        TEXT NOT NULL DEFAULT '[]',
+  jump_url    TEXT NOT NULL DEFAULT '',
+  raw_json    TEXT NOT NULL DEFAULT '',
+  fetched_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dyn_time ON dynamics(pub_ts DESC);
 """
 
 # 升级旧库：早期版本没有表情图片字段
@@ -252,7 +266,7 @@ class Store:
         out["last_received_at"] = row[0] or 0
         return out
 
-    def _where(self, kind, q, room_id, since, run_id):
+    def _where(self, kind, q, room_id, since, run_id, until=None):
         clauses, args = [], []
         if q:
             cols = SEARCH_OF[kind]
@@ -265,16 +279,19 @@ class Store:
         if since:
             clauses.append("received_at>=?")
             args.append(_as_int(since))
+        if until:
+            clauses.append("received_at<?")
+            args.append(_as_int(until))
         if run_id:
             clauses.append("run_id=?")
             args.append(_as_int(run_id))
         return (" WHERE " + " AND ".join(clauses)) if clauses else "", args
 
     def query(self, kind, limit=100, offset=0, q="", room_id=None,
-              since=None, run_id=None):
+              since=None, run_id=None, until=None):
         kind = kind if kind in TABLE_OF else "danmaku"
         table = TABLE_OF[kind]
-        where, args = self._where(kind, q, room_id, since, run_id)
+        where, args = self._where(kind, q, room_id, since, run_id, until)
         limit = max(1, min(1000, _as_int(limit, 100)))
         offset = max(0, _as_int(offset))
         second = "sc_id" if kind == "sc" else "seq"
@@ -286,6 +303,47 @@ class Store:
                 "SELECT COUNT(*) FROM " + table + where, args).fetchone()[0]
             rows = self.db.execute(sql, args + [limit, offset]).fetchall()
         return total, [dict(r) for r in rows]
+
+    def query_all(self, kind, q="", room_id=None, since=None, until=None,
+                  cap=20000):
+        """Fetch up to ``cap`` rows in chronological order (no truncation UI).
+
+        query() caps at 1000 for interactive paging; a selected live session
+        wants the full transcript, so use a separate high-cap path here.
+        """
+        kind = kind if kind in TABLE_OF else "danmaku"
+        where, args = self._where(kind, q, room_id, since, None, until)
+        second = "sc_id" if kind == "sc" else "seq"
+        sql = ("SELECT * FROM " + TABLE_OF[kind] + where +
+               " ORDER BY received_at ASC, " + second + " ASC LIMIT ?")
+        with self.lock:
+            rows = self.db.execute(sql, args + [cap]).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_page_before(self, kind, before_ms, count=200, room_id=None,
+                          since=None, until=None):
+        """Return the newest ``count`` rows strictly older than ``before_ms``.
+
+        Used by progressive rendering: start with the tail, page backwards on
+        scroll so a long session never freezes the browser with one huge DOM
+        write. Rows come back chronological (old → new).
+        """
+        kind = kind if kind in TABLE_OF else "danmaku"
+        clauses, args = [], []
+        if room_id:
+            clauses.append("room_id=?"); args.append(_as_int(room_id))
+        if since:
+            clauses.append("received_at>=?"); args.append(_as_int(since))
+        if until:
+            clauses.append("received_at<?"); args.append(_as_int(until))
+        clauses.append("received_at<?"); args.append(_as_int(before_ms))
+        where = " WHERE " + " AND ".join(clauses)
+        second = "sc_id" if kind == "sc" else "seq"
+        sql = ("SELECT * FROM " + TABLE_OF[kind] + where +
+               " ORDER BY received_at DESC, " + second + " DESC LIMIT ?")
+        with self.lock:
+            rows = self.db.execute(sql, args + [count]).fetchall()
+        return [dict(r) for r in reversed(rows)]
 
     def export(self, kind, fmt="json", q="", room_id=None, since=None):
         kind = kind if kind in TABLE_OF else "danmaku"
@@ -331,6 +389,128 @@ class Store:
                 (rid, since)).fetchone()[0]
         return {"danmaku": dm, "sc": sc[0], "events": ev,
                 "sc_amount": sc[1], "since": since}
+
+    def range_stats(self, room_id, since_ms, until_ms=0):
+        """区间统计（左闭右开）[since, until)；until=0 表示至今。含去重观众数。"""
+        rid = _as_int(room_id)
+        since = _as_int(since_ms)
+        until = _as_int(until_ms)
+        if not rid or since <= 0:
+            return None
+        with self.lock:
+            dm = self.db.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT uid) FROM danmaku "
+                "WHERE room_id=? AND received_at>=?" +
+                (" AND received_at<?" if until else ""),
+                ((rid, since, until) if until else (rid, since))).fetchone()
+            sc = self.db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(price),0), COUNT(DISTINCT uid) "
+                "FROM sc_message WHERE room_id=? AND received_at>=? AND deleted=0" +
+                (" AND received_at<?" if until else ""),
+                ((rid, since, until) if until else (rid, since))).fetchone()
+            ev = self.db.execute(
+                "SELECT COUNT(*) FROM room_event "
+                "WHERE room_id=? AND received_at>=? AND kind<>'live'" +
+                (" AND received_at<?" if until else ""),
+                ((rid, since, until) if until else (rid, since))).fetchone()[0]
+            # 观众数：弹幕与 SC 发送者 uid 的并集（SQL 去重）
+            extra = " AND received_at<?" if until else ""
+            vargs = (rid, since, until) if until else (rid, since)
+            viewers = self.db.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT uid FROM danmaku WHERE uid>0 AND room_id=? "
+                "AND received_at>=?" + extra + " UNION "
+                "SELECT uid FROM sc_message WHERE uid>0 AND room_id=? "
+                "AND received_at>=?" + extra + ")",
+                vargs + vargs).fetchone()[0]
+        return {"danmaku": dm[0], "sc": sc[0], "events": ev,
+                "sc_amount": sc[1], "viewers": viewers,
+                "interactions": dm[0] + sc[0] + ev,
+                "since": since, "until": until}
+
+    def live_sessions(self, room_id):
+        """按 LIVE 开播事件把数据切成一场场，返回每场时间边界与统计。
+
+        每场 = 一次开播到下场开播前；最后一场 until=0（至今）。
+        若从未收到开播事件，返回空列表（此时前端用「全部」视图）。
+        """
+        rid = _as_int(room_id)
+        if not rid:
+            return []
+        with self.lock:
+            starts = [r[0] for r in self.db.execute(
+                "SELECT received_at FROM room_event "
+                "WHERE room_id=? AND kind='live' AND detail='开播' "
+                "ORDER BY received_at ASC", (rid,))]
+        out = []
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else 0
+            stat = self.range_stats(rid, start, end) or {}
+            out.append({"index": i + 1, "start": start, "end": end,
+                        "danmaku": stat.get("danmaku", 0),
+                        "sc": stat.get("sc", 0),
+                        "sc_amount": stat.get("sc_amount", 0),
+                        "viewers": stat.get("viewers", 0),
+                        "interactions": stat.get("interactions", 0)})
+        return out
+
+    # ---------------- dynamics ----------------
+
+    def upsert_dynamics(self, rows):
+        """Insert or refresh dynamics; translation is never overwritten."""
+        if not rows:
+            return 0
+        sql = """INSERT INTO dynamics
+            (dyn_id, mid, pub_ts, dyn_type, text, pics, jump_url, raw_json, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(dyn_id) DO UPDATE SET
+              mid=excluded.mid, pub_ts=excluded.pub_ts, dyn_type=excluded.dyn_type,
+              text=excluded.text, pics=excluded.pics, jump_url=excluded.jump_url,
+              raw_json=excluded.raw_json, fetched_at=excluded.fetched_at"""
+        data = [(str(r.get("id") or r.get("dyn_id") or ""),
+                 _as_int(r.get("mid")), _as_int(r.get("pub_ts")),
+                 str(r.get("type") or ""), str(r.get("text") or ""),
+                 json.dumps(r.get("pics") or [], ensure_ascii=False),
+                 str(r.get("jump_url") or ""),
+                 json.dumps(r.get("raw_json") or r, ensure_ascii=False)[:8000],
+                 int(time.time() * 1000))
+                for r in rows if (r.get("id") or r.get("dyn_id"))]
+        with self.lock:
+            self.db.executemany(sql, data)
+            self.db.commit()
+        return len(data)
+
+    def list_dynamics(self, limit=200, q=""):
+        limit = max(1, min(1000, _as_int(limit, 200)))
+        where, args = "", []
+        if q:
+            where = " WHERE (text LIKE ? OR text_trans LIKE ?)"
+            args = ["%" + q + "%", "%" + q + "%"]
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT * FROM dynamics" + where +
+                " ORDER BY pub_ts DESC LIMIT ?", args + [limit]).fetchall()
+            total = self.db.execute(
+                "SELECT COUNT(*) FROM dynamics" + where, args).fetchone()[0]
+        items = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["pics"] = json.loads(d.get("pics") or "[]")
+            except (ValueError, TypeError):
+                d["pics"] = []
+            items.append(d)
+        return total, items
+
+    def update_dyn_translation(self, dyn_id, text):
+        cur = self._write(
+            "UPDATE dynamics SET text_trans=? WHERE dyn_id=?",
+            (str(text or ""), str(dyn_id)))
+        return cur.rowcount > 0
+
+    def delete_dynamic(self, dyn_id):
+        cur = self._write("DELETE FROM dynamics WHERE dyn_id=?", (str(dyn_id),))
+        return cur.rowcount > 0
 
     def dashboard(self):
         """Aggregates used by the home page: totals, per-room, recent, timeline."""
@@ -380,25 +560,30 @@ class Store:
                                                            "last_at": 0})
                 item["sc_amount"] = row["s"]
 
+            # 以直播间为单位的聚合：开播次数、去重观众数、互动总量、场次流水峰值
+            for item in by_room.values():
+                rid = item["room_id"]
+                item["sessions"] = self.db.execute(
+                    "SELECT COUNT(*) FROM room_event "
+                    "WHERE room_id=? AND kind='live' AND detail='开播'",
+                    (rid,)).fetchone()[0]
+                item["viewers"] = self.db.execute(
+                    "SELECT COUNT(*) FROM ("
+                    "SELECT uid FROM danmaku WHERE uid>0 AND room_id=? UNION "
+                    "SELECT uid FROM sc_message WHERE uid>0 AND room_id=?)",
+                    (rid, rid)).fetchone()[0]
+                item["interactions"] = (item["danmaku"] + item["sc"] +
+                                        item["events"])
+                item["sc_peak"] = self.db.execute(
+                    "SELECT COALESCE(MAX(price),0) FROM sc_message "
+                    "WHERE room_id=? AND deleted=0", (rid,)).fetchone()[0]
+
             top_sc = [dict(r) for r in self.db.execute(
                 "SELECT room_id, uname, price, message, message_trans, received_at "
                 "FROM sc_message WHERE deleted=0 ORDER BY price DESC, received_at DESC "
                 "LIMIT 5")]
 
-            recent = []
-            for kind, sql in (
-                ("sc", "SELECT 'sc' AS kind, room_id, received_at, uname, "
-                       "price, message AS text FROM sc_message WHERE deleted=0 "
-                       "ORDER BY received_at DESC LIMIT 8"),
-                ("events", "SELECT 'events' AS kind, room_id, received_at, uname, "
-                           "0 AS price, detail AS text FROM room_event "
-                           "ORDER BY received_at DESC LIMIT 8"),
-                ("danmaku", "SELECT 'danmaku' AS kind, room_id, received_at, uname, "
-                            "0 AS price, text FROM danmaku "
-                            "ORDER BY received_at DESC LIMIT 8")):
-                recent.extend(dict(r) for r in self.db.execute(sql))
-            recent.sort(key=lambda x: x["received_at"] or 0, reverse=True)
-            recent = recent[:15]
+            recent = []  # 最近动态不再在首页展示（接口保留字段兼容）
 
             now = int(time.time() * 1000)
             span = 3600 * 1000

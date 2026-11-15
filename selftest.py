@@ -23,7 +23,9 @@ import zlib
 
 import capture
 import accounts as accounts_mod
+import dynamics as dynamics_mod
 import server
+import sysinfo
 from accounts import AccountStore, parse_cookie_csv
 from capture import CaptureManager
 from images import EmoteProxy, FALLBACK_PNG, ImageError, normalize_image_url
@@ -95,6 +97,59 @@ def main():
               prof and prof["uid"] == 2094031249 and prof["uname"] == "火羽ひのめ", prof)
     finally:
         urllib.request.urlopen = old_urlopen
+
+    # ---------- sysinfo（纯函数，读不到 /proc 也应有形状） ----------
+    snap = sysinfo.snapshot(tempfile.gettempdir(), app_started_at=1)
+    check("设备快照结构完整",
+          all(k in snap for k in ("cpu", "memory", "disk", "load", "network",
+                                  "uptime", "db_size")) and
+          isinstance(snap["cpu"]["percent"], float) and
+          0 <= snap["cpu"]["percent"] <= 100)
+    check("设备快照百分比在合法范围",
+          0 <= snap["memory"]["percent"] <= 100 and
+          0 <= snap["disk"]["percent"] <= 100)
+    check("设备网络字段存在",
+          "lan_ip" in snap["network"] and "online" in snap["network"])
+
+    # ---------- dynamics: WBI 签名 + 解析（纯函数，零联网） ----------
+    # 已知固定 wts 时，签名结果稳定；这里只验证结构与一致性
+    q1 = dynamics_mod.wbi_sign({"host_mid": 1}, "imgKey123", "subKey456", ts=1700000000)
+    q2 = dynamics_mod.wbi_sign({"host_mid": 1}, "imgKey123", "subKey456", ts=1700000000)
+    check("WBI 签名稳定且带 wts/w_rid",
+          q1 == q2 and "wts=1700000000" in q1 and "w_rid=" in q1 and
+          "host_mid=1" in q1, q1)
+    check("WBI mixin key 长度 32",
+          len(dynamics_mod.mixin_key("a" * 32, "b" * 32)) == 32)
+    check("WBI 签名随 key 变化",
+          dynamics_mod.wbi_sign({"a": 1}, "x", "y", ts=1) !=
+          dynamics_mod.wbi_sign({"a": 1}, "x", "z", ts=1))
+
+    # 解析 opus 结构（真实接口的形状）
+    frame = {
+        "id_str": "999", "type": "DYNAMIC_TYPE_DRAW",
+        "modules": {
+            "module_author": {"mid": 9, "pub_ts": 1794672601, "name": "主播"},
+            "module_dynamic": {
+                "major": {"type": "MAJOR_TYPE_OPUS", "opus": {
+                    "summary": {"text": "今日も配信する！"},
+                    "pics": [{"url": "https://i0.hdslb.com/p1.jpg"}],
+                    "jump_url": "//www.bilibili.com/opus/999"}},
+                "desc": None},
+        },
+    }
+    norm = dynamics_mod.normalize(frame, 9)
+    check("动态解析：id/时间/正文/图片/链接",
+          norm["id"] == "999" and norm["pub_ts"] == 1794672601 and
+          norm["text"] == "今日も配信する！" and
+          norm["pics"] == ["https://i0.hdslb.com/p1.jpg"] and
+          norm["jump_url"].endswith("/opus/999"), norm)
+    # 无 major 时退回 desc 文本
+    frame2 = {"id_str": "888", "type": "DYNAMIC_TYPE_WORD",
+              "modules": {"module_author": {"mid": 9, "pub_ts": 1},
+                          "module_dynamic": {"desc": {"text": "纯文字动态"},
+                                             "major": None}}}
+    check("动态解析：纯文字回退 desc",
+          dynamics_mod.normalize(frame2, 9)["text"] == "纯文字动态")
 
     # ---------- cookie CSV ----------
     netscape = "\n".join([
@@ -207,9 +262,72 @@ def main():
               dash["totals"]["sc"] == 1 and dash["totals"]["events"] == 2 and
               dash["totals"]["sc_amount"] == 30, dash["totals"])
         check("仪表盘按房间拆分", len(dash["by_room"]) == 2)
-        check("仪表盘高额 SC / 最近动态 / 时间轴",
-              len(dash["top_sc"]) == 1 and len(dash["recent"]) >= 2 and
+        check("仪表盘高额 SC / 时间轴（最近动态已移除）",
+              len(dash["top_sc"]) == 1 and dash["recent"] == [] and
               len(dash["timeline"]["labels"]) == 12)
+        check("按房间聚合开播次数/观众/互动",
+              all(k in dash["by_room"][0] for k in
+                  ("sessions", "viewers", "interactions", "sc_peak")))
+        # ---------- 直播场次分段 ----------
+        # 这段额外插入 2 条开播事件 + 3 条弹幕（主库，供后续 HTTP 接口验证）
+        sst = st
+        base = now + 2000
+        t2ms = now + 5000
+        for st_ms in (base, t2ms):
+            row = capture.event_row(22748536, "live", {"live": 1}, st_ms)
+            row["event_time"] = st_ms // 1000
+            sst.insert_event(row)
+        for uid, uname, text, ts in (
+                (501, "一期A", "第一场-1", base + 400),
+                (502, "一期B", "第一场-2", base + 900),
+                (601, "二期A", "第二场-1", t2ms + 300)):
+            sst.insert_danmaku([{"room_id": 22748536, "uid": uid, "uname": uname,
+                                 "text": text, "received_at": ts,
+                                 "is_emoticon": 0}])
+        sess = sst.live_sessions(22748536)
+        check("按开播事件切分场次", len(sess) == 2 and
+              sess[0]["start"] == base and sess[1]["start"] == t2ms, sess)
+        check("首场以下一场开播为终点", sess[0]["end"] == t2ms)
+        check("最后一场至今（end=0）", sess[1]["end"] == 0)
+        check("每场弹幕数正确", sess[0]["danmaku"] == 2 and
+              sess[1]["danmaku"] == 1, sess)
+        check("场次去重观众数", sess[0]["viewers"] == 2 and
+              sess[1]["viewers"] == 1, sess)
+        rng = sst.range_stats(22748536, base, t2ms)
+        check("区间统计含互动总数", rng["danmaku"] == 2 and
+              rng["interactions"] >= 2, rng)
+        allrows = sst.query_all("danmaku", room_id=22748536)
+        # 主库此前已有 1 条 storage 段弹幕 + 本段 3 条 = 4
+        check("query_all 按时间升序返回", len(allrows) == 4 and
+              allrows[-1]["received_at"] >= allrows[0]["received_at"])
+        page = sst.query_page_before("danmaku", t2ms + 1000, count=2,
+                                     room_id=22748536)
+        check("向前翻页取更早数据", len(page) == 2 and
+              all(x["received_at"] < t2ms + 1000 for x in page))
+
+        # ---------- 动态存储（独立库） ----------
+        dyn_rows = [
+            {"id": "d1", "mid": 9, "pub_ts": now // 1000, "type": "DYNAMIC_TYPE_DRAW",
+             "text": "今日も配信する", "pics": ["https://i0.hdslb.com/a.png"],
+             "jump_url": "//www.bilibili.com/opus/d1"},
+            {"id": "d2", "mid": 9, "pub_ts": now // 1000 - 86400,
+             "type": "DYNAMIC_TYPE_DRAW", "text": "昨日の話", "pics": [],
+             "jump_url": ""},
+        ]
+        check("动态入库", sst.upsert_dynamics(dyn_rows) == 2)
+        dtotal, ditems = sst.list_dynamics()
+        check("动态按时间倒序", dtotal == 2 and ditems[0]["dyn_id"] == "d1")
+        check("动态图片 JSON 回读", ditems[0]["pics"] ==
+              ["https://i0.hdslb.com/a.png"])
+        check("动态译文保存", sst.update_dyn_translation("d1", "今天也直播") is True)
+        dtotal, ditems = sst.list_dynamics()
+        check("译文可回读且重拉不覆盖", ditems[0]["text_trans"] == "今天也直播" and
+              sst.upsert_dynamics(dyn_rows) == 2 and
+              sst.list_dynamics()[1][0]["text_trans"] == "今天也直播")
+        check("动态搜索命中译文", sst.list_dynamics(q="今天")[0] == 1)
+        check("动态删除", sst.delete_dynamic("d2") is True and
+              sst.list_dynamics()[0] == 1)
+
         name, ctype, csv_body = st.export("danmaku", "csv", room_id=22748536)
         check("CSV 导出带 BOM 且含表情地址",
               csv_body.startswith("\ufeff") and "emote_url" in csv_body and
@@ -317,6 +435,7 @@ def main():
         manager = CaptureManager(st, cfg.get,
                                  lambda level, msg: logs.add(level, msg),
                                  rooms=rooms)
+        old_brief = server.fetch_room_brief
         server.fetch_room_brief = lambda rid, timeout=3: {
             "title": "房间 %s" % rid, "uid": 1, "short_id": 0,
             "live_status": 1, "live_time": 1794600000, "online": 10,
@@ -379,10 +498,43 @@ def main():
         j = json.loads(raw)
         check("仪表盘接口", status == 200 and j["totals"]["sc"] == 1 and
               "timeline" in j and "top_sc" in j)
+        status, raw = get("/api/system")
+        js = json.loads(raw)
+        check("设备状态接口：CPU/内存/存储/网络",
+              status == 200 and all(k in js["system"] for k in
+                                    ("cpu", "memory", "disk", "network", "load")))
+        status, raw = get("/api/sessions?room_id=22748536")
+        jj = json.loads(raw)
+        check("场次接口返回按开播切分的列表",
+              status == 200 and jj["total"] == 2 and
+              jj["sessions"][0]["danmaku"] == 2, jj.get("sessions"))
+        status, raw = get("/api/feed?room_id=22748536&types=danmaku&all=1")
+        jall = json.loads(raw)
+        check("全量接口不截断（all=1）",
+              status == 200 and jall["all"] is True and
+              len(jall["items"]["danmaku"]) == 4, len(jall["items"]["danmaku"]))
+        status, raw = get("/api/feed?room_id=22748536&types=danmaku&all=1&since=%d&until=%d"
+                          % (now + 2000, now + 5000))
+        jseg = json.loads(raw)
+        check("按场次区间过滤弹幕",
+              len(jseg["items"]["danmaku"]) == 2, len(jseg["items"]["danmaku"]))
+        status, raw = get("/api/dynamics")
+        jd = json.loads(raw)
+        check("动态接口返回列表与定时配置",
+              status == 200 and "items" in jd and "status" in jd and
+              "dyn_hour" in jd["config"])
+        status, raw = post("/api/dynamics/trans", {"dyn_id": "d1", "text": "接口译文"})
+        check("动态翻译写入接口", status == 200 and
+              json.loads(raw)["ok"] is True)
+        status, raw = post("/api/dynamics/config",
+                           {"dyn_auto": True, "dyn_hour": 9})
+        check("动态定时配置保存", status == 200 and
+              json.loads(raw)["config"]["dyn_hour"] == 9 and
+              cfg.get()["dyn_auto"] is True)
         status, raw = get("/api/feed?room_id=22748536&types=danmaku,sc")
         j = json.loads(raw)
         check("内容接口按房间返回分栏",
-              len(j["items"]["danmaku"]) == 1 and len(j["items"]["sc"]) == 1 and
+              len(j["items"]["danmaku"]) >= 1 and len(j["items"]["sc"]) == 1 and
               "events" not in j["items"], j["items"].keys())
         status, raw = get("/api/feed?room_id=1001&types=events")
         check("另一个房间的事件单独可见",
@@ -433,6 +585,10 @@ def main():
         check("账号带昵称头像（header 展示用）",
               (j["accounts"]["items"][0].get("profile") or {}).get("uname")
               == "测试用户", j["accounts"]["items"][0].get("profile"))
+        check("上传的 CSV 按 uid 落盘为 <uid>.csv",
+              j["accounts"]["items"][0].get("file_name") == "31373462.csv" and
+              os.path.isfile(os.path.join(tmp, "accounts", "31373462.csv")),
+              j["accounts"]["items"][0].get("file_name"))
         check("账号列表不泄露 cookie 明文",
               b"test-sessdata" not in raw and
               bool(j["accounts"]["items"][0]["sessdata_mask"]), raw[:200])
@@ -591,19 +747,25 @@ def main():
                   j["ok"] is True and j["capture"]["active"] == 1, j.get("capture", {}).get("active"))
             ok, message = manager.stop_all()
             check("全部停止", ok and manager.snapshot()["active"] == 0, message)
+            # 103 = 采集链路产生的弹幕；+3 为场次分段测试预置的弹幕
+            expect_dm = 103 + 3
             for _ in range(40):
-                if st.counts()["danmaku"] == 103:
+                if st.counts()["danmaku"] == expect_dm:
                     break
                 time.sleep(0.1)
-            check("停止时冲刷剩余缓冲", st.counts()["danmaku"] == 103, st.counts())
+            check("停止时冲刷剩余缓冲", st.counts()["danmaku"] == expect_dm, st.counts())
         finally:
             capture.BiliApi, capture.connect = old_api, old_connect
 
         check("未知接口 404", get("/api/nope")[0] == 404)
+        events_1001 = st.db.execute(
+            "SELECT COUNT(*) FROM room_event WHERE room_id=1001").fetchone()[0]
         status, raw = post("/api/clear", {"confirm": "yes", "room_id": 1001})
-        # 剩下房间 22748536 的事件：gift 与 LIVE 开播各 1 条
-        check("按房间清空数据", status == 200 and
-              st.counts()["events"] == 2, st.counts())
+        # 1001 的事件被清空，22748536 的保留（gift + 采集 LIVE + 场次测试 2 条）
+        check("按房间清空数据", status == 200 and events_1001 >= 1 and
+              st.db.execute("SELECT COUNT(*) FROM room_event "
+                            "WHERE room_id=1001").fetchone()[0] == 0,
+              st.counts())
         status, _ = post("/api/clear", {})
         check("清空需确认", status == 400)
 
@@ -613,25 +775,42 @@ def main():
         # ---------- 网页结构 ----------
         with open(os.path.join(HERE, "web", "index.html"), encoding="utf-8") as fh:
             page = fh.read()
-        check("四个页面：仪表盘 / 直播间 / 配置 / 日志",
+        check("五个页面：仪表盘 / 直播间 / 动态 / 配置 / 日志",
               all(k in page for k in ('id="page-home"', 'id="page-rooms"',
-                                      'id="page-config"', 'id="page-logs"',
-                                      'data-page="home"', "loadDashboard")))
+                                      'id="page-dynamics"', 'id="page-config"',
+                                      'id="page-logs"', 'data-page="home"',
+                                      'data-page="dynamics"', "loadDashboard")))
         check("直播间页浏览器标签式：状态点 / ✕ 删除 / ＋ 弹窗添加",
               all(k in page for k in ("roomTabs", "tabAdd", 'data-x="',
                                       "addModal", "btnAddRoom", "/api/rooms",
                                       "/api/capture/", "btnStopAll")))
-        check("采集参数按房间配置，切到直播间才显示",
-              all(k in page for k in ("roomParamsCard", "btnSaveParams",
-                                      "r_proto", "/api/rooms/settings")) and
-              all(k not in page for k in ("f_proto", "f_heartbeat", "f_stale",
-                                          "f_dm\"")))
+        check("采集参数全局统一（配置页），直播间页不再有每房间参数卡",
+              all(k in page for k in ("f_proto", "f_heartbeat", "f_stale",
+                                      "f_dm", "f_sc", "f_ev")) and
+              all(k not in page for k in ("roomParamsCard", "btnSaveParams",
+                                          "r_proto", "r_hb", "/api/rooms/settings")))
+        check("直播间数据按开播分段：左侧场次列表 + 全量不截断",
+              all(k in page for k in ("sessionPane", "sessionList", "loadSessions",
+                                      "selectSession", "data-sess=", "/api/sessions",
+                                      "all=1")) and
+              "S.limit" not in page and "id=\"limit\"" not in page)
         check("旧 chips 与独立删除按钮已移除",
               all(k not in page for k in ("roomChips", "btnDelRoom",
                                           "btnAddToggle", "addForm")))
-        check("header 账号栏 + 主播基本信息 + 本场过滤",
+        check("header 账号栏 + 主播基本信息紧凑化",
               all(k in page for k in ("acctChip", "anchorFace", "linkRoom",
-                                      "linkSpace", "liveOnly", "live_stats")))
+                                      "linkSpace", "anchor-meta", "curStats")))
+        check("直播间具体数据合并为一个完整块",
+              all(k in page for k in ('id="roomPanel"', "room-block",
+                                      'id="contentCard"')) and
+              "id=\"roomParamsCard\"" not in page)
+        check("首页按直播间为单位：开播场次/流水/互动/观众，且无最近动态",
+              all(k in page for k in ("开播场次", "累计流水", "互动总数", "观众数",
+                                      "metrics")) and
+              "最近动态" not in page and "recentList" not in page)
+        check("首页设备状态：CPU/内存/存储/网络",
+              all(k in page for k in ("devGrid", "loadSystem", "renderSystem",
+                                      "/api/system", "CPU 占用", "内存占用", "存储占用")))
         check("内容纵向分区 + 只看某类勾选",
               all(k in page for k in ('class="feed"', "data-k=\"danmaku\"",
                                       "data-k=\"sc\"", "data-k=\"events\"",
@@ -657,8 +836,24 @@ def main():
               all(k in page for k in ('class="gated"', 'id="gate"', "bootGate",
                                       "submitGate", "unlockApp", "/api/gate",
                                       "gatePass2", "gateForm", "initApp")))
+        check("动态页：按天分组 + 译文 + 定时拉取",
+              all(k in page for k in ("dynList", "renderDynamics", "loadDynamics",
+                                      "fetchDynamics", "dynDayKey", "dyn-trans",
+                                      "/api/dynamics", "/api/dynamics/fetch",
+                                      "/api/dynamics/trans", "dynAuto", "dynHour")))
+        check("译文编辑框默认收起（hidden 不被 flex 覆盖）",
+              ".dyn-edit[hidden]" in page and "display:none!important" in page)
+        check("账号头像点击进配置页（不再跳个人空间）",
+              '$(\'acctChip\').onclick' in page and
+              "showPage('config')" in page and
+              "space.bilibili.com'+uid" not in page)
+        check("账号卡显示头像与文件名",
+              "acct-face" in page and "file_name" in page)
     finally:
-        accounts_mod.fetch_profile = old_profile
+        if "old_profile" in locals():
+            accounts_mod.fetch_profile = old_profile
+        if "old_brief" in locals():
+            server.fetch_room_brief = old_brief
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("\n%d 项全部通过" % len(PASSED), flush=True)

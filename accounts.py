@@ -127,6 +127,9 @@ class AccountStore:
 
     def __init__(self, path):
         self.path = path
+        # 原始 CSV 落盘目录：按 uid 命名，同名覆盖（data/accounts/<uid>.csv）
+        self.files_dir = os.path.join(os.path.dirname(os.path.abspath(path)),
+                                      "accounts")
         self.lock = threading.RLock()
         self.active_id = ""
         self.items = []
@@ -157,10 +160,18 @@ class AccountStore:
         cookies = item.get("cookies") or {}
         sessdata = str(cookies.get(LOGIN_KEY) or "")
         error = item.get("error") or ""
+        profile = item.get("profile") or {}
+        uid = _uid(cookies)
+        if not uid:
+            try:
+                uid = int(profile.get("uid") or 0)
+            except (TypeError, ValueError):
+                uid = 0
         return {"id": item["id"], "label": item.get("label", ""),
-                "uid": _uid(cookies), "sessdata_mask": _mask(sessdata),
+                "uid": uid, "sessdata_mask": _mask(sessdata),
                 "has_login": bool(sessdata), "error": error,
                 "cookie_count": len(cookies),
+                "file_name": item.get("file_name", ""),
                 "active": item["id"] == self.active_id,
                 "profile": item.get("profile") or None,
                 "created_at": item.get("created_at", 0)}
@@ -188,6 +199,20 @@ class AccountStore:
             return {"ok": True, "active_id": self.active_id,
                     "items": [self.public(x) for x in self.items]}
 
+    def _save_raw(self, uid, text):
+        """把上传的原始 CSV 按 uid 落盘，返回文件名（只用 basename）。"""
+        if not uid or not text:
+            return ""
+        try:
+            os.makedirs(self.files_dir, exist_ok=True)
+            name = "%s.csv" % uid
+            with open(os.path.join(self.files_dir, name), "w",
+                      encoding="utf-8", newline="") as handle:
+                handle.write(text)
+            return name
+        except OSError:
+            return ""
+
     def add(self, name, text, activate=True):
         cookies = parse_cookie_csv(text)
         label = (str(name or "").strip() or "账号")[:60]
@@ -210,7 +235,17 @@ class AccountStore:
                 created = True
             if activate and not error:
                 self.active_id = item["id"]
+            # 先补资料拿到 uid，再按 uid 保存原始文件（文件名用 uid）
             self._refresh_profile(item)
+            uid = _uid(cookies)
+            if not uid:
+                try:
+                    uid = int((item.get("profile") or {}).get("uid") or 0)
+                except (TypeError, ValueError):
+                    uid = 0
+            saved = self._save_raw(uid, text)
+            if saved:
+                item["file_name"] = saved
             self._save()
             return self.public(item), created, error
 

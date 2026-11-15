@@ -135,6 +135,13 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .room-card .nums{display:flex;gap:14px;flex-wrap:wrap;margin:11px 0;font-size:11.5px;color:var(--dim)}
 .room-card .nums b{color:var(--ink-2);font-weight:500;font-variant-numeric:tabular-nums}
 .room-card .foot{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.room-card .metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0}
+.room-card .metrics div{background:rgba(255,255,255,.025);border:1px solid var(--line);
+  border-radius:9px;padding:8px 10px;min-width:0}
+.room-card .metrics b{display:block;font:500 19px/1.2 var(--jp);color:var(--ink);
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.room-card .metrics span{display:block;font-size:10px;letter-spacing:.08em;color:var(--dim-2);margin-top:3px}
+.room-card .metrics .hl b{color:var(--gold)}
 .dot{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--dim-2)}
 .dot i{width:6px;height:6px;border-radius:50%;background:var(--dim-2)}
 .dot.on{color:var(--fire-soft)}.dot.on i{background:var(--fire)}
@@ -170,20 +177,26 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .tab .x:hover{opacity:1;background:rgba(0,0,0,.25)}
 .tab.add{border-style:dashed;padding:7px 13px;font-size:14px}
 .tab-tools{display:flex;gap:8px;margin-left:auto;flex:none;align-items:center}
-.anchor{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
-.anchor img{width:56px;height:56px;border-radius:50%;object-fit:cover;
+/* 主播信息：紧凑单行 */
+.anchor{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.anchor img{width:34px;height:34px;border-radius:50%;object-fit:cover;
   border:1px solid var(--line-strong);background:rgba(255,255,255,.04);flex:none}
-.anchor .who{min-width:0;flex:1 1 200px}
-.anchor .who h2{margin:0;font:500 19px/1.35 var(--jp);overflow:hidden;
+.anchor .who{min-width:0;flex:1 1 180px;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.anchor .who h2{margin:0;font:500 14px/1.35 var(--jp);overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
-.anchor .who .sub{font:10.5px/1.5 var(--mono);color:var(--dim-2);margin-top:2px}
-.live-pill{display:inline-flex;align-items:center;gap:6px;border-radius:99px;
-  padding:5px 12px;font-size:11px;border:1px solid var(--line);color:var(--dim);flex:none}
+.anchor .who .sub{font:10.5px/1.5 var(--mono);color:var(--dim-2);margin:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.live-pill{display:inline-flex;align-items:center;gap:5px;border-radius:99px;
+  padding:3px 9px;font-size:10.5px;border:1px solid var(--line);color:var(--dim);flex:none}
 .live-pill.on{color:var(--fire-soft);border-color:rgba(255,122,69,.4);
   background:rgba(255,122,69,.07)}
-.live-pill i{width:7px;height:7px;border-radius:50%;background:var(--dim-2)}
+.live-pill i{width:6px;height:6px;border-radius:50%;background:var(--dim-2)}
 .live-pill.on i{background:var(--fire);box-shadow:0 0 0 3px rgba(255,122,69,.16)}
-.links{display:flex;flex-wrap:wrap;gap:9px;margin:4px 0 2px}
+.links{display:flex;flex-wrap:wrap;gap:7px;margin:2px 0 0}
+.anchor-meta{display:flex;flex-wrap:wrap;gap:12px;margin:2px 0 12px;font-size:11px;color:var(--dim)}
+.anchor-meta b{color:var(--ink-2);font-weight:500;font-variant-numeric:tabular-nums}
+.room-block{border-top:1px solid var(--line);margin-top:14px;padding-top:14px}
+.tab-tools{display:flex;gap:7px;margin-left:auto;flex:none;align-items:center;flex-wrap:wrap}
 .modal{position:fixed;inset:0;z-index:100;background:rgba(6,4,3,.74);
   display:flex;align-items:center;justify-content:center;padding:20px}
 .modal[hidden]{display:none}
@@ -192,7 +205,19 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .room-title h2{margin:0;font:500 20px/1.4 var(--jp)}
 .filters{display:flex;flex-wrap:wrap;gap:18px;margin:4px 0 12px;font-size:12.5px;color:var(--ink-2)}
 .filters label{display:flex;align-items:center;gap:7px;margin:0}
-.feeds{display:flex;flex-direction:column;gap:14px;margin-top:14px}
+.content-wrap{display:grid;grid-template-columns:200px 1fr;gap:14px;margin-top:14px;align-items:start}
+.session-pane{border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.16);
+  padding:10px 9px;max-height:520px;overflow:auto;position:sticky;top:70px}
+.session-pane h4{margin:2px 4px 9px;font:500 11px/1.4 var(--jp);letter-spacing:.12em;color:var(--dim)}
+.session-item{display:block;width:100%;text-align:left;border:1px solid transparent;border-radius:9px;
+  padding:8px 9px;margin-bottom:5px;transition:.15s;min-width:0}
+.session-item:hover{background:rgba(255,255,255,.04)}
+.session-item.on{border-color:rgba(255,122,69,.4);background:rgba(255,122,69,.09)}
+.session-item .st-t{display:block;font:11.5px/1.4 var(--jp);color:var(--ink-2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.session-item .st-m{display:block;font:10px/1.5 var(--mono);color:var(--dim-2);margin-top:2px}
+.session-item.on .st-t{color:var(--fire-soft)}
+.feeds{display:flex;flex-direction:column;gap:14px;min-width:0}
 .feed{border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.16);overflow:hidden}
 .feed>h3{display:flex;align-items:baseline;gap:9px;margin:0;padding:10px 14px;
   border-bottom:1px solid var(--line);font:500 13px/1.4 var(--jp);letter-spacing:.1em;color:var(--ink-2)}
@@ -214,9 +239,48 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .emote-fallback{display:inline-block;color:var(--dim-2);font-size:12px;padding:0 2px}
 .empty{padding:18px 4px;color:var(--dim-2);font-size:12px;text-align:center}
 
+/* ---------- device status ---------- */
+.dev-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.dev{background:rgba(255,255,255,.025);border:1px solid var(--line);border-radius:11px;padding:12px 14px;min-width:0}
+.dev .dev-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:7px}
+.dev .dev-h span{font-size:10.5px;letter-spacing:.1em;color:var(--dim-2)}
+.dev .dev-h b{font:500 15px/1.2 var(--jp);color:var(--ink);font-variant-numeric:tabular-nums}
+.dev .bar{height:6px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}
+.dev .bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--fire-soft),var(--fire))}
+.dev .bar i.warn{background:linear-gradient(90deg,var(--gold),#d9a94e)}
+.dev .bar i.bad{background:linear-gradient(90deg,#d98c85,var(--bad))}
+.dev .dev-sub{font:10px/1.5 var(--mono);color:var(--dim-2);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dev .dot-live{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dim)}
+.dev .dot-live i{width:7px;height:7px;border-radius:50%;background:var(--bad)}
+.dev .dot-live.on i{background:var(--ok);box-shadow:0 0 0 3px rgba(143,191,139,.16)}
+.dev .dot-live.on{color:var(--ok)}
+
+/* ---------- dynamics ---------- */
+.dyn-day{margin-bottom:18px}
+.dyn-day>h3{margin:0 0 10px;font:500 12px/1.4 var(--jp);letter-spacing:.14em;color:var(--fire-soft);
+  display:flex;align-items:center;gap:9px}
+.dyn-day>h3::after{content:"";flex:1;height:1px;background:var(--line)}
+.dyn-card{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px;
+  background:rgba(255,255,255,.02);min-width:0}
+.dyn-card .dyn-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.dyn-card .dyn-time{font:10.5px/1.4 var(--mono);color:var(--dim-2)}
+.dyn-card .dyn-open{font-size:11px;color:var(--fire-soft);margin-left:auto}
+.dyn-card .dyn-text{white-space:pre-wrap;word-break:break-word;font-size:13px;color:var(--ink-2);line-height:1.7}
+.dyn-card .dyn-trans{white-space:pre-wrap;word-break:break-word;font-size:13px;color:var(--gold);
+  line-height:1.7;border-left:2px solid rgba(232,196,137,.4);padding-left:11px;margin-top:9px}
+.dyn-card .dyn-pics{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:7px;margin-top:10px}
+.dyn-card .dyn-pics img{width:100%;height:110px;object-fit:cover;border-radius:8px;
+  border:1px solid var(--line);background:rgba(0,0,0,.2)}
+.dyn-card .dyn-edit{margin-top:10px;display:flex;flex-direction:column;gap:7px}
+.dyn-card .dyn-edit[hidden]{display:none!important}
+.dyn-card .dyn-edit textarea{min-height:58px;resize:vertical;font-size:12.5px}
+.dyn-card .dyn-actions{display:flex;gap:7px;flex-wrap:wrap}
+
 /* ---------- accounts / logs ---------- */
 .acct{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border:1px solid var(--line);
   border-radius:10px;padding:10px 12px;margin-top:8px;background:rgba(255,255,255,.02);min-width:0}
+.acct .acct-face{width:32px;height:32px;border-radius:50%;object-fit:cover;flex:none;
+  border:1px solid var(--line-strong);background:rgba(255,255,255,.05)}
 .acct .who{flex:1 1 150px;min-width:0}
 .acct .who b{display:block;font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .acct .who span{font:10.5px/1.5 var(--mono);color:var(--dim-2)}
@@ -247,6 +311,11 @@ footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-siz
   .stat b{font-size:21px}
   .bars{height:78px}.bars .bar{height:60px}
   .feed-body{max-height:300px}
+  .content-wrap{grid-template-columns:1fr}
+  .session-pane{position:static;max-height:none;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .session-pane h4{width:100%;margin:0 0 2px}
+  .session-item{width:auto;flex:1 1 130px;margin-bottom:0}
+  .dyn-card .dyn-pics img{max-width:100%}
 }
 /* ---------- 进站门禁 ---------- */
 body.gated .top,body.gated main{display:none!important}
@@ -290,11 +359,12 @@ body.gated .top,body.gated main{display:none!important}
   <nav class="nav">
     <button data-page="home" class="on">仪表盘</button>
     <button data-page="rooms">直播间</button>
+    <button data-page="dynamics">动态</button>
     <button data-page="config">配置</button>
     <button data-page="logs">日志</button>
   </nav>
   <div class="top-right">
-    <a class="acct-chip anon" id="acctChip" hidden>匿名采集</a>
+    <button type="button" class="acct-chip anon" id="acctChip" hidden>匿名采集</button>
     <span class="badge off" id="runBadge"><i></i><span>未启动</span></span>
     <input id="token" type="password" placeholder="访问口令" autocomplete="off">
   </div>
@@ -329,8 +399,8 @@ body.gated .top,body.gated main{display:none!important}
   </section>
 
   <section class="card">
-    <div class="sec-head"><h2><i>◆</i>最近动态</h2><span class="more" id="recentInfo"></span></div>
-    <div class="recent" id="recentList"></div>
+    <div class="sec-head"><h2><i>◆</i>设备状态</h2><span class="more" id="devInfo">—</span></div>
+    <div class="dev-grid" id="devGrid"></div>
   </section>
 
   <section class="card">
@@ -352,71 +422,53 @@ body.gated .top,body.gated main{display:none!important}
     <div class="empty">还没有直播间。点标签栏右侧「＋」添加一个房间号即可开始。</div>
   </div>
 
+  <!-- 单个完整块：主播信息 + 采集控制 + 内容 -->
   <section class="card" id="roomPanel" hidden>
     <div class="anchor" id="anchorBox">
       <span id="anchorFace"></span>
       <div class="who">
         <h2 id="curRoomTitle">还没有直播间</h2>
-        <div class="sub" id="curRoomId">—</div>
+        <span class="sub" id="curRoomId">—</span>
       </div>
       <span class="live-pill" id="livePill"><i></i><span>未知</span></span>
+      <div class="tab-tools">
+        <button class="btn sm" id="btnRefreshRooms">刷新信息</button>
+        <button class="btn sm" id="btnStopAll">全部停止</button>
+      </div>
     </div>
-    <div class="links">
+    <div class="anchor-meta" id="curStats"></div>
+    <div class="row">
       <a class="btn sm" id="linkRoom" target="_blank" rel="noopener">直播间 ↗</a>
       <a class="btn sm" id="linkSpace" target="_blank" rel="noopener">个人空间 ↗</a>
-    </div>
-    <div class="kv-grid" id="curStats"></div>
-    <div class="row" style="margin-top:14px">
       <button class="btn primary" id="btnCapture">开始采集</button>
-      <button class="btn" id="btnRefreshRooms">刷新直播间信息</button>
-      <button class="btn" id="btnStopAll">全部停止</button>
     </div>
     <div class="hint" id="captureHint"></div>
-  </section>
 
-  <section class="card" id="roomParamsCard" hidden>
-    <div class="sec-head"><h2><i>◆</i>采集参数</h2>
-      <span class="more" id="rpRoom">本直播间</span></div>
-    <div class="fields">
-      <div><label>压缩协议</label><select id="r_proto"><option value="2">2 · zlib（推荐，无额外依赖）</option><option value="3">3 · brotli（需装 brotli）</option></select></div>
-      <div><label>心跳间隔（秒）</label><input id="r_hb" type="number" min="10" max="120"></div>
-      <div><label>静默重连（秒）</label><input id="r_stale" type="number" min="30" max="600"></div>
+    <div class="room-block" id="contentCard">
+      <div class="sec-head"><h2><i>◆</i>内容</h2><span class="more" id="feedInfo">—</span></div>
+      <div class="filters">
+        <label><input type="checkbox" data-k="danmaku" checked> 弹幕</label>
+        <label><input type="checkbox" data-k="sc" checked> Super Chat</label>
+        <label><input type="checkbox" data-k="events" checked> 直播间事件</label>
+        <label><input type="checkbox" id="autoRefresh" checked> 自动刷新</label>
+      </div>
+      <div class="row">
+        <input id="q" type="text" placeholder="搜索内容 / 昵称" style="flex:1 1 160px">
+        <select id="expType" style="width:112px"><option value="danmaku">弹幕</option><option value="sc">SC</option><option value="events">事件</option></select>
+        <button class="btn sm" id="btnLoad">刷新</button>
+        <button class="btn sm" id="btnJson">导出 JSON</button>
+        <button class="btn sm" id="btnCsv">导出 CSV</button>
+      </div>
+      <div class="content-wrap">
+        <aside class="session-pane" id="sessionPane"><h4>直播场次</h4><div id="sessionList"></div></aside>
+        <div class="feeds">
+          <section class="feed" data-k="danmaku"><h3>弹幕 <span class="n" id="cnt-danmaku">0</span></h3><div class="feed-body" id="feed-danmaku"></div></section>
+          <section class="feed" data-k="sc"><h3>Super Chat <span class="n" id="cnt-sc">0</span></h3><div class="feed-body" id="feed-sc"></div></section>
+          <section class="feed" data-k="events"><h3>直播间事件 <span class="n" id="cnt-events">0</span></h3><div class="feed-body" id="feed-events"></div></section>
+        </div>
+      </div>
+      <div class="hint">左侧按开播时间切分场次，选中某场即显示该场全部弹幕（不截断）；「全部」显示整个直播间数据。</div>
     </div>
-    <div class="checkline" style="margin-top:12px">
-      <label><input type="checkbox" id="r_dm">记录弹幕</label>
-      <label><input type="checkbox" id="r_sc">记录 SC</label>
-      <label><input type="checkbox" id="r_ev">记录礼物/上舰</label>
-    </div>
-    <div class="row" style="margin-top:12px">
-      <button class="btn primary" id="btnSaveParams">保存本直播间参数</button>
-      <span class="muted">只作用于这一间；正在采集时需停止后重新启动生效</span>
-    </div>
-    <div class="hint" id="rpHint"></div>
-  </section>
-
-  <section class="card" id="contentCard" hidden>
-    <div class="sec-head"><h2><i>◆</i>内容</h2><span class="more" id="feedInfo">—</span></div>
-    <div class="filters">
-      <label><input type="checkbox" data-k="danmaku" checked> 弹幕</label>
-      <label><input type="checkbox" data-k="sc" checked> Super Chat</label>
-      <label><input type="checkbox" data-k="events" checked> 直播间事件</label>
-      <label><input type="checkbox" id="liveOnly"> 只看本场直播</label>
-      <label><input type="checkbox" id="autoRefresh" checked> 自动刷新</label>
-    </div>
-    <div class="row">
-      <input id="q" type="text" placeholder="搜索内容 / 昵称" style="flex:1 1 160px">
-      <select id="limit" style="width:112px"><option value="30">最近 30 条</option><option value="60">最近 60 条</option><option value="120">最近 120 条</option></select>
-      <select id="expType" style="width:112px"><option value="danmaku">弹幕</option><option value="sc">SC</option><option value="events">事件</option></select>
-      <button class="btn sm" id="btnLoad">刷新</button>
-      <button class="btn sm" id="btnJson">导出 JSON</button>
-      <button class="btn sm" id="btnCsv">导出 CSV</button>
-    </div>
-    <div class="feeds">
-      <section class="feed" data-k="danmaku"><h3>弹幕 <span class="n" id="cnt-danmaku">0</span></h3><div class="feed-body" id="feed-danmaku"></div></section>
-      <section class="feed" data-k="sc"><h3>Super Chat <span class="n" id="cnt-sc">0</span></h3><div class="feed-body" id="feed-sc"></div></section>
-      <section class="feed" data-k="events"><h3>直播间事件 <span class="n" id="cnt-events">0</span></h3><div class="feed-body" id="feed-events"></div></section>
-    </div>
-    <div class="hint">三类内容按房间分开纵向展示，勾选即可只看某一类；开播后的数据可用「只看本场直播」与未开播期间区分。</div>
   </section>
 </div>
 
@@ -438,6 +490,25 @@ body.gated .top,body.gated main{display:none!important}
   </div>
 </div>
 
+<!-- ============ 动态 ============ -->
+<div class="page" id="page-dynamics" hidden>
+  <section class="card">
+    <div class="sec-head"><h2><i>◆</i>主播动态</h2>
+      <span class="more" id="dynInfo">—</span></div>
+    <div class="row">
+      <button class="btn primary" id="btnDynFetch">立即拉取</button>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
+        <input id="dynAuto" type="checkbox"> 每天定时拉取</label>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
+        每天 <select id="dynHour" style="width:74px"></select> 点</label>
+      <button class="btn sm" id="btnDynSaveCfg">保存</button>
+      <input id="dynQ" type="text" placeholder="搜索动态 / 译文" style="flex:1 1 160px">
+    </div>
+    <div class="hint" id="dynHint">按天展示主播 B 站动态，可人工添加译文。定时拉取只需服务保持运行。</div>
+  </section>
+  <div id="dynList"></div>
+</div>
+
 <!-- ============ 配置 ============ -->
 <div class="page" id="page-config" hidden>
   <section class="card">
@@ -454,9 +525,19 @@ body.gated .top,body.gated main{display:none!important}
   </section>
 
   <section class="card">
-    <div class="sec-head"><h2><i>◆</i>服务参数</h2><span class="more">采集参数在各直播间页按房间配置</span></div>
+    <div class="sec-head"><h2><i>◆</i>采集参数</h2><span class="more">全局统一，作用于所有直播间</span></div>
     <form id="cfgForm">
       <div class="fields">
+        <div><label>压缩协议</label><select id="f_proto"><option value="2">2 · zlib（推荐，无额外依赖）</option><option value="3">3 · brotli（需装 brotli）</option></select></div>
+        <div><label>心跳间隔（秒）</label><input id="f_heartbeat" type="number" min="10" max="120"></div>
+        <div><label>静默重连（秒）</label><input id="f_stale" type="number" min="30" max="600"></div>
+      </div>
+      <div class="checkline" style="margin-top:12px">
+        <label><input type="checkbox" id="f_dm">记录弹幕</label>
+        <label><input type="checkbox" id="f_sc">记录 SC</label>
+        <label><input type="checkbox" id="f_ev">记录礼物/上舰</label>
+      </div>
+      <div class="fields" style="margin-top:16px">
         <div><label>监听地址</label><input id="f_host" type="text"></div>
         <div><label>端口</label><input id="f_port" type="number" min="1" max="65535"></div>
         <div><label>API 访问口令</label><input id="f_token" type="password" autocomplete="off"></div>
@@ -467,7 +548,7 @@ body.gated .top,body.gated main{display:none!important}
       <div class="row" style="margin-top:14px">
         <button class="btn primary" type="submit">保存配置</button>
         <button class="btn" type="button" id="btnClearToken">清除访问口令</button>
-        <span class="muted">口令留空表示不修改</span>
+        <span class="muted">口令留空表示不修改；采集参数改动需停止后重新启动才生效</span>
       </div>
     </form>
     <div class="hint" id="cfgHint"></div>
@@ -509,7 +590,8 @@ body.gated .top,body.gated main{display:none!important}
 (function(){
 'use strict';
 var S={page:'home',rooms:[],roomId:0,active:0,running:false,
-       filters:{danmaku:true,sc:true,events:true},limit:30,q:'',liveOnly:false,
+       filters:{danmaku:true,sc:true,events:true},q:'',
+       sessions:[],sessSel:'all',sessStart:0,sessEnd:0,
        cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
 var $=function(id){return document.getElementById(id)};
 var GUARD={1:'总督',2:'提督',3:'舰长'};
@@ -521,11 +603,10 @@ tokenInput.addEventListener('change',function(){
   localStorage.setItem('lc-token',tokenInput.value.trim());
   uiLog('web','访问口令已更新');loadStatus();
 });
-var validPages=['home','rooms','config','logs'];
+var validPages=['home','rooms','dynamics','config','logs'];
 S.page=localStorage.getItem('lc-page')||'home';
 if(validPages.indexOf(S.page)<0)S.page='home';
 S.roomId=parseInt(localStorage.getItem('lc-room')||'0',10)||0;
-S.limit=parseInt(localStorage.getItem('lc-limit')||'30',10)||30;
 try{var f=JSON.parse(localStorage.getItem('lc-filters')||'null');
   if(f&&typeof f==='object')S.filters=Object.assign(S.filters,f);}catch(e){}
 
@@ -675,17 +756,16 @@ function renderDashboard(j){
   $('roomSummary').textContent=S.rooms.length+' 间 · '+S.active+' 间正在采集';
   $('roomGrid').innerHTML=S.rooms.length?S.rooms.map(function(r){
     var c=r.totals||{},live={0:'未开播',1:'直播中',2:'轮播'}[r.live_status]||'未知';
-    var ls=r.live_stats;
-    var sess=ls?('<div class="nums" style="margin:6px 0 0">'+
-      '<span style="color:var(--fire-soft)">本场</span>'+
-      '<span>弹幕 <b>'+num(ls.danmaku)+'</b></span>'+
-      '<span>SC <b>'+num(ls.sc)+'</b></span>'+
-      '<span>¥<b>'+num(ls.sc_amount)+'</b></span></div>'):'';
     return '<div class="room-card '+(r.running?'on':'')+'">'+
       '<h3>'+esc(r.label)+'</h3><div class="sub">ROOM '+esc(r.id)+' · '+esc(live)+'</div>'+
+      '<div class="metrics">'+
+        '<div><b>'+num(c.sessions)+'</b><span>开播场次</span></div>'+
+        '<div class="hl"><b>¥'+num(c.sc_amount)+'</b><span>累计流水</span></div>'+
+        '<div><b>'+num(c.interactions)+'</b><span>互动总数</span></div>'+
+        '<div><b>'+num(c.viewers)+'</b><span>观众数</span></div>'+
+      '</div>'+
       '<div class="nums"><span>弹幕 <b>'+num(c.danmaku)+'</b></span>'+
-      '<span>SC <b>'+num(c.sc)+'</b></span><span>事件 <b>'+num(c.events)+'</b></span>'+
-      '<span>¥<b>'+num(c.sc_amount)+'</b></span></div>'+sess+
+      '<span>SC <b>'+num(c.sc)+'</b></span><span>峰值 <b>¥'+num(c.sc_peak)+'</b></span></div>'+
       '<div class="foot"><span class="dot '+(r.running?'on':'')+'"><i></i>'+
       (r.running?'采集中':'未采集')+'</span>'+
       '<button class="btn sm" data-view="'+esc(r.id)+'">查看内容 →</button></div></div>';
@@ -710,13 +790,6 @@ function renderDashboard(j){
       '<span class="rx"><b>'+esc(roomLabel(r.room_id))+'</b> · '+esc(r.uname||'—')+
       '：'+esc(r.message||'')+'</span></div>';
   }).join(''):'<div class="empty">还没有 Super Chat</div>';
-  $('recentInfo').textContent='最近 '+((j.recent||[]).length)+' 条';
-  $('recentList').innerHTML=(j.recent||[]).length?(j.recent||[]).map(function(r){
-    return '<div class="line"><span class="t">'+fmt(r.received_at)+'</span>'+
-      '<span class="rk">'+esc(roomLabel(r.room_id))+'</span>'+
-      '<span class="rx"><b>'+esc(KIND[r.kind]||r.kind)+'</b> '+
-      esc(r.uname||'')+(r.price?' ¥'+esc(r.price):'')+'　'+esc(r.text||'')+'</span></div>';
-  }).join(''):'<div class="empty">还没有采集到内容</div>';
   var addr='http://'+(S.svc.lan_ip||'127.0.0.1')+':'+S.svc.port;
   $('svcAddr').textContent=addr;
   var grid=kv('局域网',addr)+kv('监听',S.svc.host+':'+S.svc.port)+
@@ -727,6 +800,41 @@ function renderDashboard(j){
 }
 async function loadDashboard(){
   try{renderDashboard(await api('/api/dashboard'))}catch(e){}
+}
+function bytes(n){
+  n=Number(n)||0;
+  var u=['B','KB','MB','GB','TB'],i=0;
+  while(n>=1024&&i<u.length-1){n/=1024;i++}
+  return (i?n.toFixed(1):n.toFixed(0))+' '+u[i];
+}
+function devBar(label,value,sub,warnAt,badAt){
+  var pct=Math.max(0,Math.min(100,Number(value)||0));
+  var cls=pct>=(badAt||90)?'bad':(pct>=(warnAt||70)?'warn':'');
+  return '<div class="dev"><div class="dev-h"><span>'+esc(label)+'</span><b>'+
+    (pct?pct.toFixed(0):'0')+'%</b></div>'+
+    '<div class="bar"><i class="'+cls+'" style="width:'+pct+'%"></i></div>'+
+    '<div class="dev-sub">'+esc(sub||'')+'</div></div>';
+}
+function renderSystem(j){
+  var s=j.system||{};
+  var cpu=s.cpu||{},mem=s.memory||{},disk=s.disk||{},net=s.network||{},load=s.load||{};
+  $('devInfo').textContent=s.ts?('更新于 '+fmt(s.ts)):'—';
+  var online=!!net.online;
+  $('devGrid').innerHTML=
+    devBar('CPU 占用',cpu.percent,(cpu.cores||0)+' 核 · 负载 '+
+      (load['1']||0)+' / '+(load['5']||0)+' / '+(load['15']||0))+
+    devBar('内存占用',mem.percent,mem.total?bytes(mem.used)+' / '+bytes(mem.total):'此系统不提供内存信息')+
+    devBar('存储占用',disk.percent,bytes(disk.used)+' / '+bytes(disk.total)+
+      '（剩 '+bytes(disk.free)+'）')+
+    '<div class="dev"><div class="dev-h"><span>网络</span><b style="font-size:12px">'+
+      esc(net.lan_ip||'—')+'</b></div>'+
+      '<div class="dot-live '+(online?'on':'')+'"><i></i>'+
+      (online?'在线':'离线')+'</div>'+
+      '<div class="dev-sub">数据库 '+bytes(s.db_size||0)+
+      (s.uptime?(' · 开机 '+dur(Date.now()-s.uptime*1000)):'')+'</div></div>';
+}
+async function loadSystem(){
+  try{renderSystem(await api('/api/system'))}catch(e){}
 }
 
 /* ---------- 直播间：浏览器标签式 ---------- */
@@ -755,14 +863,12 @@ function renderRooms(j){
       '<button class="x" data-x="'+esc(r.id)+'" title="删除直播间（保留已采集数据）">✕</button></div>';
   }).join('')+'<button class="tab add" id="tabAdd" title="添加直播间">＋</button>';
   renderRoomPanel();
-  if(prevRoom!==S.roomId&&S.page==='rooms')loadFeed();
+  if(prevRoom!==S.roomId&&S.page==='rooms'){loadSessions();loadFeed()}
 }
 function renderRoomPanel(){
   var r=currentRoom(),has=!!r;
   $('emptyRooms').hidden=has;
   $('roomPanel').hidden=!has;
-  $('roomParamsCard').hidden=!has;
-  $('contentCard').hidden=!has;
   if(!has){$('roomHint').textContent='';return}
   var live={0:'未开播',1:'直播中',2:'轮播'}[r.live_status]||'未知';
   var pill=$('livePill');
@@ -770,7 +876,7 @@ function renderRoomPanel(){
   pill.querySelector('span').textContent=live;
   $('anchorBox').querySelector('#anchorFace').innerHTML=
     cdnImg(r.face,'anchor-face','主播头像')||
-    '<img alt="主播头像" src="data:," style="width:56px;height:56px">';
+    '<img alt="主播头像" src="data:," style="width:34px;height:34px">';
   $('curRoomTitle').textContent=r.label;
   $('curRoomId').textContent='ROOM '+r.id+
     (r.real_room_id&&r.real_room_id!==r.id?' · 真实 '+r.real_room_id:'')+
@@ -780,10 +886,13 @@ function renderRoomPanel(){
   $('linkSpace').style.display=uid?'':'none';
   if(uid)$('linkSpace').href='https://space.bilibili.com/'+esc(uid);
   var since=liveSince(r);
-  $('curStats').innerHTML=
-    kv('主播',r.uname||'—')+kv('人气',r.online||'—')+
-    kv('房间号',r.id)+
-    (since?kv('本场开播于',fmtFull(since)):'');
+  // 紧凑内联：主播 · 人气 · 房间号 · 本场开播时间
+  var meta=[];
+  if(r.uname)meta.push('主播 <b>'+esc(r.uname)+'</b>');
+  meta.push('人气 <b>'+esc(r.online||'—')+'</b>');
+  meta.push('房间号 <b>'+esc(r.id)+'</b>');
+  if(since)meta.push('本场开播 <b>'+esc(fmtFull(since))+'</b>');
+  $('curStats').innerHTML=meta.map(function(x){return '<span>'+x+'</span>'}).join('');
   setCaptureUI(r.running);
   $('btnCapture').disabled=false;
   var problems=[];
@@ -792,20 +901,6 @@ function renderRoomPanel(){
   if(S.svc&&S.svc.websockets===false)problems.push('缺少依赖 websockets');
   var h=$('captureHint');h.textContent=problems.join('　|　');
   h.className='hint'+(problems.length?' err':'');
-  fillRoomParams(r);
-  syncLiveOnly();
-}
-function fillRoomParams(r){
-  if(document.activeElement&&document.activeElement.tagName==='INPUT'&&
-     document.activeElement.closest&&document.activeElement.closest('#roomParamsCard'))return;
-  var p=(r&&r.params)||{},g=S.cfg||{};
-  $('rpRoom').textContent=r?r.label+' · ROOM '+r.id:'';
-  $('r_proto').value=String(p.protover!=null?p.protover:(g.protover||2));
-  $('r_hb').value=p.heartbeat_seconds!=null?p.heartbeat_seconds:(g.heartbeat_seconds||30);
-  $('r_stale').value=p.stale_seconds!=null?p.stale_seconds:(g.stale_seconds||120);
-  $('r_dm').checked=p.record_danmaku!=null?!!p.record_danmaku:(g.record_danmaku!==false);
-  $('r_sc').checked=p.record_sc!=null?!!p.record_sc:(g.record_sc!==false);
-  $('r_ev').checked=p.record_events!=null?!!p.record_events:(g.record_events!==false);
 }
 function setCaptureUI(running,label){
   var b=$('btnCapture');
@@ -818,7 +913,9 @@ async function loadRooms(){
 function selectRoom(id){
   S.roomId=parseInt(id,10)||0;
   localStorage.setItem('lc-room',String(S.roomId));
-  loadRooms();loadFeed();
+  // 切房间时场次与选中态回到「全部」
+  S.sessSel='all';S.sessStart=0;S.sessEnd=0;
+  loadRooms();loadSessions();loadFeed();
 }
 async function removeRoom(id){
   var r=null;
@@ -931,9 +1028,47 @@ function renderFeed(j){
       '<div class="empty">这一类暂时没有数据</div>';
     if(atBottom)box.scrollTop=box.scrollHeight;
   });
-  var r=currentRoom();
-  $('feedInfo').textContent=(r?r.label+' · ':'')+
-    (S.liveOnly&&liveSince(r)?'本场 · ':'')+'每栏最近 '+S.limit+' 条 · 无分页';
+  var r=currentRoom(),label='全部数据';
+  if(S.sessSel&&S.sessSel!=='all'){
+    label='第 '+S.sessSel+' 场'+(S.sessStart?' · '+fmtFull(S.sessStart):'');
+  }
+  $('feedInfo').textContent=(r?r.label+' · ':'')+label+' · 全部显示不截断';
+}
+function renderSessions(list){
+  S.sessions=list||[];
+  var box=$('sessionList');
+  if(!S.sessions.length){
+    box.innerHTML='<div class="empty" style="font-size:11.5px;padding:6px 4px">'+
+      '暂无开播记录<br>（采集到「开播」事件后自动分段）</div>';
+    return;
+  }
+  var items=S.sessions.slice().reverse();
+  box.innerHTML='<button class="session-item '+(S.sessSel==='all'?'on':'')+
+    '" data-sess="all"><span class="st-t">全部数据</span>'+
+    '<span class="st-m">共 '+S.sessions.length+' 场</span></button>'+
+    items.map(function(s){
+      var on=(String(s.index)===String(S.sessSel));
+      var end=s.end?'':' · 进行中';
+      return '<button class="session-item '+(on?'on':'')+'" data-sess="'+s.index+'">'+
+        '<span class="st-t">第 '+s.index+' 场'+(s.end?'':' ●')+'</span>'+
+        '<span class="st-m">'+(s.start?fmtFull(s.start):'—')+
+        ' · 弹幕 '+num(s.danmaku)+'</span></button>';
+    }).join('');
+}
+async function loadSessions(){
+  if(!S.roomId){renderSessions([]);return}
+  try{renderSessions((await api('/api/sessions?room_id='+S.roomId)).sessions||[])}
+  catch(e){renderSessions([])}
+}
+function selectSession(key){
+  S.sessSel=String(key);
+  if(S.sessSel==='all'){S.sessStart=0;S.sessEnd=0}
+  else{
+    var s=S.sessions.filter(function(x){return String(x.index)===String(key)})[0];
+    S.sessStart=s?s.start:0;S.sessEnd=s?s.end:0;
+  }
+  renderSessions(S.sessions);
+  loadFeed();
 }
 async function loadFeed(){
   if(!S.roomId){
@@ -941,13 +1076,94 @@ async function loadFeed(){
     return;
   }
   var types=Object.keys(S.filters).filter(function(k){return S.filters[k]});
-  var r=currentRoom(),since=0;
-  if(S.liveOnly)since=liveSince(r);
-  var qs='/api/feed?room_id='+S.roomId+'&limit='+S.limit+'&types='+types.join(',')+
+  var qs='/api/feed?room_id='+S.roomId+'&all=1&types='+types.join(',')+
          '&q='+encodeURIComponent(S.q);
-  if(since)qs+='&since='+since;
+  if(S.sessStart)qs+='&since='+S.sessStart;
+  if(S.sessEnd)qs+='&until='+S.sessEnd;
   try{renderFeed(await api(qs))}catch(e){say('captureHint','读取内容失败：'+e.message,'err')}
 }
+
+/* ---------- 动态 ---------- */
+function dynDayKey(ts){
+  if(!ts)return '未知日期';
+  var d=new Date(ts*1000);
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+}
+function dynDayLabel(key){
+  if(key==='未知日期')return key;
+  var p=key.split('-'),d=new Date(+p[0],+p[1]-1,+p[2]);
+  var wd=['日','一','二','三','四','五','六'][d.getDay()];
+  var today=dynDayKey(Math.floor(Date.now()/1000));
+  return key.replace(/-/g,'.')+' 周'+wd+(key===today?' · 今天':'');
+}
+function renderDynamics(j){
+  S.dyn=j;
+  var cfg=j.config||{};
+  $('dynAuto').checked=!!cfg.dyn_auto;
+  $('dynHour').value=String(cfg.dyn_hour!=null?cfg.dyn_hour:8);
+  var st=j.status||{};
+  $('dynInfo').textContent='共 '+(j.total||0)+' 条 · '+
+    (st.ts?('上次 '+fmt(st.ts)+' '+(st.ok?'成功':'失败')):'尚未拉取');
+  var list=j.items||[];
+  if(!list.length){
+    $('dynList').innerHTML='<div class="card"><div class="empty">还没有动态。点「立即拉取」从 B 站获取主播最新动态。</div></div>';
+    return;
+  }
+  var groups={},order=[];
+  list.forEach(function(it){
+    var k=dynDayKey(it.pub_ts);
+    if(!groups[k]){groups[k]=[];order.push(k)}
+    groups[k].push(it);
+  });
+  $('dynList').innerHTML=order.map(function(k){
+    return '<div class="dyn-day"><h3>'+esc(dynDayLabel(k))+'</h3>'+
+      groups[k].map(function(it){
+        var pics=(it.pics||[]).map(function(u){
+          return cdnImg(u,'','动态图片')||'';
+        }).join('');
+        return '<div class="dyn-card" data-dyn="'+esc(it.dyn_id)+'">'+
+          '<div class="dyn-head">'+
+            '<span class="dyn-time">'+esc(fmtFull((it.pub_ts||0)*1000))+'</span>'+
+            (it.jump_url?'<a class="dyn-open" href="'+
+              esc(it.jump_url.indexOf('//')===0?'https:'+it.jump_url:it.jump_url)+
+              '" target="_blank" rel="noopener">打开原动态 ↗</a>':'')+
+          '</div>'+
+          '<div class="dyn-text">'+esc(it.text||'（无正文）')+'</div>'+
+          (it.text_trans?'<div class="dyn-trans">'+esc(it.text_trans)+'</div>':'')+
+          (pics?'<div class="dyn-pics">'+pics+'</div>':'')+
+          '<div class="dyn-edit" hidden>'+
+            '<textarea placeholder="添加译文（人工翻译，留空保存即清除）">'+esc(it.text_trans||'')+'</textarea>'+
+            '<div class="dyn-actions">'+
+              '<button class="btn sm primary" data-dynsave="'+esc(it.dyn_id)+'">保存译文</button>'+
+              '<button class="btn sm" data-dyncancel="1">取消</button>'+
+            '</div>'+
+          '</div>'+
+          '<div class="dyn-actions" style="margin-top:9px">'+
+            '<button class="btn sm" data-dynedit="'+esc(it.dyn_id)+'">'+
+              (it.text_trans?'编辑译文':'添加译文')+'</button>'+
+          '</div>'+
+        '</div>';
+      }).join('')+'</div>';
+  }).join('');
+}
+async function loadDynamics(){
+  try{
+    var q=$('dynQ')?$('dynQ').value.trim():'';
+    renderDynamics(await api('/api/dynamics?limit=300'+(q?'&q='+encodeURIComponent(q):'')));
+  }catch(e){say('dynHint','读取动态失败：'+e.message,'err')}
+}
+async function fetchDynamics(){
+  say('dynHint','正在从 B 站拉取动态…');
+  $('btnDynFetch').disabled=true;
+  try{
+    var j=await api('/api/dynamics/fetch',{method:'POST',body:JSON.stringify({limit:20})});
+    renderDynamics({items:j.items,total:j.total,status:j.status,
+                    config:(S.dyn&&S.dyn.config)||{}});
+    say('dynHint',j.message,j.ok?'ok':'err');
+  }catch(e){say('dynHint','拉取失败：'+e.message,'err')}
+  finally{$('btnDynFetch').disabled=false}
+}
+function dynCardOf(el){return el.closest('.dyn-card')}
 
 /* ---------- 配置 ---------- */
 function renderAcctChip(){
@@ -964,9 +1180,10 @@ function renderAcctChip(){
   chip.hidden=false;chip.className='acct-chip';
   chip.innerHTML=(p.face?cdnImg(p.face,'','账号头像'):'')+
     '<b>'+esc(p.uname||act.label)+'</b>';
-  if(uid){chip.href='https://space.bilibili.com/'+uid;chip.target='_blank';chip.rel='noopener'}
-  else{chip.removeAttribute('href')}
-  chip.title=act.label+'（uid '+(uid||'—')+'）';
+  // 点头像/账号进入配置页管理账号（不再跳 B 站个人空间）
+  chip.removeAttribute('href');chip.removeAttribute('target');chip.removeAttribute('rel');
+  chip.style.cursor='pointer';
+  chip.title=act.label+'（uid '+(uid||'—')+'）· 点击进入配置';
 }
 function renderAccounts(data){
   S.accounts=(data&&data.items)||[];
@@ -979,10 +1196,14 @@ function renderAccounts(data){
   box.innerHTML=S.accounts.map(function(a){
     var pills='<span class="pill '+(a.error?'bad':'ok')+'">'+
       (a.error?esc(a.error):(a.active?'已启用':'可用'))+'</span>';
+    var p=a.profile||{};
     var meta='uid '+(a.uid||'—')+' · '+esc(a.sessdata_mask||'无 SESSDATA')+
-      ' · '+a.cookie_count+' 条 cookie';
+      ' · '+a.cookie_count+' 条 cookie'+
+      (a.file_name?' · '+esc(a.file_name):'');
+    var face=p.face?cdnImg(p.face,'acct-face','账号头像'):'';
     return '<div class="acct '+(a.active?'on':'')+'">'+
-      '<div class="who"><b>'+esc(a.label)+'</b><span>'+meta+'</span></div>'+pills+
+      face+
+      '<div class="who"><b>'+esc(p.uname||a.label)+'</b><span>'+meta+'</span></div>'+pills+
       (a.active?'':'<button class="btn sm" data-act="on" data-id="'+esc(a.id)+'">启用</button>')+
       '<button class="btn sm danger" data-act="del" data-id="'+esc(a.id)+'">删除</button></div>';
   }).join('');
@@ -1015,10 +1236,13 @@ function fillConfig(cfg){
   $('f_port').value=cfg.port||8765;
   $('f_auto').checked=!!cfg.auto_start;
   $('f_token').placeholder=cfg.token_set?'已设置 · 留空不修改':'可选';
-  // 全局配置里的采集参数只作为各直播间的默认值
+  $('f_proto').value=String(cfg.protover||2);
+  $('f_heartbeat').value=cfg.heartbeat_seconds||30;
+  $('f_stale').value=cfg.stale_seconds||120;
+  $('f_dm').checked=cfg.record_danmaku!==false;
+  $('f_sc').checked=cfg.record_sc!==false;
+  $('f_ev').checked=cfg.record_events!==false;
   S.cfg=cfg;
-  var r=currentRoom();
-  if(r)fillRoomParams(r);
 }
 async function loadStatus(){
   try{
@@ -1058,8 +1282,9 @@ function showPage(name){
   document.querySelectorAll('.nav button[data-page]').forEach(function(b){
     b.classList.toggle('on',b.dataset.page===name);
   });
-  if(name==='home')loadDashboard();
-  if(name==='rooms'){loadRooms();loadFeed()}
+  if(name==='home'){loadDashboard();loadSystem()}
+  if(name==='rooms'){loadRooms();loadSessions();loadFeed()}
+  if(name==='dynamics')loadDynamics();
   if(name==='config'){loadStatus();loadAccounts()}
   if(name==='logs'){loadLogs();renderLogs()}
 }
@@ -1102,6 +1327,10 @@ $('roomTabs').addEventListener('click',function(e){
   var tab=e.target.closest('.tab[data-room]');
   if(tab)selectRoom(tab.dataset.room);
 });
+$('sessionList').addEventListener('click',function(e){
+  var b=e.target.closest('.session-item[data-sess]');
+  if(b)selectSession(b.dataset.sess);
+});
 $('btnCloseModal').onclick=function(){openAddModal(false)};
 $('btnCancelAdd').onclick=function(){openAddModal(false)};
 $('btnAddRoom').onclick=addRoom;
@@ -1111,21 +1340,6 @@ $('addModal').addEventListener('click',function(e){if(e.target===this)openAddMod
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'&&!$('addModal').hidden)openAddModal(false);
 });
-$('btnSaveParams').onclick=async function(){
-  var r=currentRoom();if(!r)return;
-  var params={protover:parseInt($('r_proto').value,10),
-    heartbeat_seconds:parseInt($('r_hb').value,10),
-    stale_seconds:parseInt($('r_stale').value,10),
-    record_danmaku:$('r_dm').checked,record_sc:$('r_sc').checked,
-    record_events:$('r_ev').checked};
-  try{
-    var j=await api('/api/rooms/settings',{method:'POST',
-      body:JSON.stringify({room_id:r.id,params:params})});
-    say('rpHint','「'+r.label+'」的采集参数已保存'+
-      (j.restart_required?'；正在采集，停止后重新启动才生效':''),'ok');
-    if(j.rooms)renderRooms(j.rooms);
-  }catch(e){say('rpHint','保存失败：'+e.message,'err')}
-};
 $('btnCapture').onclick=function(){
   var r=currentRoom();controlCapture(r&&r.running?'stop':'start');
 };
@@ -1135,6 +1349,36 @@ $('btnStopAll').onclick=async function(){
     renderRooms(j.rooms);say('captureHint',j.message,'ok');
   }catch(e){say('captureHint','停止失败：'+e.message,'err')}
 };
+/* 点 header 账号头像 → 配置页管理账号 */
+$('acctChip').onclick=function(){if(!$('acctChip').classList.contains('anon'))showPage('config')};
+
+/* 动态页 */
+$('btnDynFetch').onclick=fetchDynamics;
+$('btnDynSaveCfg').onclick=async function(){
+  try{
+    var j=await api('/api/dynamics/config',{method:'POST',body:JSON.stringify({
+      dyn_auto:$('dynAuto').checked,dyn_hour:parseInt($('dynHour').value,10)||0})});
+    if(S.dyn)S.dyn.config=j.config;
+    say('dynHint','已保存：'+(j.config.dyn_auto?('每天 '+j.config.dyn_hour+' 点自动拉取'):'已关闭定时拉取'),'ok');
+  }catch(e){say('dynHint','保存失败：'+e.message,'err')}
+};
+var dynQTimer=null;
+$('dynQ').addEventListener('input',function(){clearTimeout(dynQTimer);dynQTimer=setTimeout(loadDynamics,300)});
+$('dynList').addEventListener('click',async function(e){
+  var edit=e.target.closest('button[data-dynedit]');
+  if(edit){var card=dynCardOf(edit);card.querySelector('.dyn-edit').hidden=false;edit.closest('.dyn-actions').style.display='none';return}
+  var cancel=e.target.closest('button[data-dyncancel]');
+  if(cancel){var c=dynCardOf(cancel);c.querySelector('.dyn-edit').hidden=true;c.querySelector('.dyn-actions').style.display='';return}
+  var save=e.target.closest('button[data-dynsave]');
+  if(save){
+    var id=save.dataset.dynsave,cc=dynCardOf(save),
+        ta=cc.querySelector('.dyn-edit textarea');
+    try{
+      await api('/api/dynamics/trans',{method:'POST',body:JSON.stringify({dyn_id:id,text:ta.value.trim()})});
+      say('dynHint','译文已保存','ok');loadDynamics();
+    }catch(err){say('dynHint','保存译文失败：'+err.message,'err')}
+  }
+});
 $('btnRefreshRooms').onclick=async function(){
   say('roomHint','正在刷新直播间信息…');
   try{
@@ -1150,20 +1394,6 @@ document.querySelectorAll('.filters input[data-k]').forEach(function(cb){
     loadFeed();
   };
 });
-$('liveOnly').onchange=function(){
-  S.liveOnly=this.checked;
-  loadFeed();
-};
-function syncLiveOnly(){
-  var r=currentRoom(),live=!!(r&&r.live_status===1);
-  var cb=$('liveOnly');
-  cb.disabled=!live;
-  cb.parentNode.title=live?'':'主播未开播时不可用';
-  if(!live&&S.liveOnly){S.liveOnly=false;cb.checked=false}
-}
-$('limit').value=String(S.limit);
-$('limit').onchange=function(){S.limit=parseInt(this.value,10)||30;
-  localStorage.setItem('lc-limit',String(S.limit));loadFeed()};
 var qTimer=null;
 $('q').addEventListener('input',function(e){
   S.q=e.target.value;clearTimeout(qTimer);qTimer=setTimeout(loadFeed,300);
@@ -1216,7 +1446,12 @@ $('btnNoAccount').onclick=async function(){
 $('cfgForm').onsubmit=async function(e){
   e.preventDefault();
   var p={host:$('f_host').value.trim(),port:parseInt($('f_port').value,10),
-    auto_start:$('f_auto').checked};
+    auto_start:$('f_auto').checked,
+    protover:parseInt($('f_proto').value,10),
+    heartbeat_seconds:parseInt($('f_heartbeat').value,10),
+    stale_seconds:parseInt($('f_stale').value,10),
+    record_danmaku:$('f_dm').checked,record_sc:$('f_sc').checked,
+    record_events:$('f_ev').checked};
   var t=$('f_token').value.trim();if(t)p.token=t;
   try{
     var j=await api('/api/config',{method:'POST',body:JSON.stringify(p)});
@@ -1244,8 +1479,8 @@ $('logLevel').onchange=renderLogs;
 
 setInterval(function(){
   if(document.hidden)return;
-  if(S.page==='home')loadDashboard();
-  else if(S.page==='rooms'){loadRooms();if($('autoRefresh').checked)loadFeed()}
+  if(S.page==='home'){loadDashboard();loadSystem()}
+  else if(S.page==='rooms'){loadRooms();if($('autoRefresh').checked){loadSessions();loadFeed()}}
   else if(S.page==='config')loadStatus();
   else if(S.page==='logs')loadLogs();
   loadAccounts();
@@ -1254,6 +1489,10 @@ document.addEventListener('visibilitychange',function(){
   if(!document.hidden){loadStatus();loadAccounts();showPage(S.page)}
 });
 function initApp(){
+  // 动态页「每天几点」下拉（0–23 点）
+  var hh='';
+  for(var h=0;h<24;h++)hh+='<option value="'+h+'">'+('0'+h).slice(-2)+'</option>';
+  $('dynHour').innerHTML=hh;
   loadAccounts();
   loadStatus();
   showPage(S.page);
