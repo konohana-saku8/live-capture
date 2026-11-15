@@ -547,7 +547,7 @@ body.gated .top,body.gated main{display:none!important}
   </section>
 
   <section class="card">
-    <div class="sec-head"><h2><i>◆</i>采集参数</h2><span class="more">全局统一，作用于所有直播间</span></div>
+    <div class="sec-head"><h2><i>◆</i>采集参数</h2><span class="more">全局统一，作用于所有采集器</span></div>
     <form id="cfgForm">
       <div class="fields">
         <div><label>压缩协议</label><select id="f_proto"><option value="2">2 · zlib（推荐，无额外依赖）</option><option value="3">3 · brotli（需装 brotli）</option></select></div>
@@ -565,7 +565,7 @@ body.gated .top,body.gated main{display:none!important}
         <div><label>API 访问口令</label><input id="f_token" type="password" autocomplete="off"></div>
       </div>
       <div class="checkline" style="margin-top:14px">
-        <label><input type="checkbox" id="f_auto">启动服务时自动采集所有直播间</label>
+        <label><input type="checkbox" id="f_auto">启动服务时自动采集所有采集器</label>
       </div>
       <div class="row" style="margin-top:14px">
         <button class="btn primary" type="submit">保存配置</button>
@@ -579,7 +579,7 @@ body.gated .top,body.gated main{display:none!important}
   <section class="card">
     <div class="sec-head"><h2><i>◆</i>数据管理</h2></div>
     <div class="row"><button class="btn danger" id="btnClear">清空全部采集数据</button>
-      <span class="muted">需要二次确认；不会删除直播间列表、配置与账号</span></div>
+      <span class="muted">需要二次确认；不会删除采集器列表、配置与账号</span></div>
   </section>
 </div>
 
@@ -883,7 +883,7 @@ async function loadSystem(){
   try{renderSystem(await api('/api/system'))}catch(e){}
 }
 
-/* ---------- 直播间：浏览器标签式 ---------- */
+/* ---------- 采集器：浏览器标签式 ---------- */
 function cdnImg(url,cls,alt,style){
   url=String(url||'');
   if(!/^(https?:\/\/|\/\/)/i.test(url))return '';
@@ -992,7 +992,7 @@ async function removeRoom(id){
   }catch(e){say('roomHint','删除失败：'+e.message,'err')}
 }
 async function controlCapture(kind){
-  if(!S.roomId){say('captureHint','请先添加直播间','err');return}
+  if(!S.roomId){say('captureHint','请先添加采集器','err');return}
   if(S.busy)return;
   S.busy=true;
   var starting=kind==='start';
@@ -1163,7 +1163,7 @@ function selectSession(key){
 }
 async function loadFeed(){
   if(!S.roomId){
-    ['danmaku','sc','events'].forEach(function(k){$('feed-'+k).innerHTML='<div class="empty">请先添加直播间</div>'});
+    ['danmaku','sc','events'].forEach(function(k){$('feed-'+k).innerHTML='<div class="empty">请先添加采集器</div>'});
     return;
   }
   var types=Object.keys(S.filters).filter(function(k){return S.filters[k]});
@@ -1503,7 +1503,7 @@ $('btnRefreshRooms').onclick=async function(){
   say('roomHint','正在刷新直播间信息…');
   try{
     var j=await api('/api/rooms/refresh',{method:'POST',body:'{}'});
-    renderRooms(j.rooms);say('roomHint','已刷新 '+j.updated+' 个直播间','ok');
+    renderRooms(j.rooms);say('roomHint','已刷新 '+j.updated+' 个采集器','ok');
   }catch(e){say('roomHint','刷新失败：'+e.message,'err')}
 };
 document.querySelectorAll('.filters input[data-k]').forEach(function(cb){
@@ -1521,7 +1521,7 @@ $('q').addEventListener('input',function(e){
 $('q').addEventListener('keydown',function(e){if(e.key==='Enter'){clearTimeout(qTimer);loadFeed()}});
 $('btnLoad').onclick=function(){loadRooms();loadFeed()};
 async function exportData(fmt){
-  if(!S.roomId){say('captureHint','请先选择直播间','err');return}
+  if(!S.roomId){say('captureHint','请先选择采集器','err');return}
   var url='/api/export?type='+$('expType').value+'&format='+fmt+
     '&room_id='+S.roomId+'&q='+encodeURIComponent(S.q);
   try{

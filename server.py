@@ -171,6 +171,7 @@ class DynamicScheduler:
         self.lock = threading.RLock()
         self.last_result = {"ok": False, "msg": "尚未拉取", "ts": 0}
         self._stop = threading.Event()
+        self._last_fail = 0
         self._thread = None
 
     def targets(self):
@@ -262,13 +263,33 @@ class DynamicScheduler:
         return target
 
     def _loop(self):
+        """每 30 秒对一次表：到点且今天这个时间点还没拉过就拉。
+
+        不用「睡到明天同一时刻」的长等待，这样手机休眠错过时间点后醒来能补拉，
+        改过时/分也能马上生效；失败后隔 30 分钟再试，避免反复撞风控。
+        """
         while not self._stop.is_set():
-            wait = max(30, self._next_run() - time.time())
-            if self._stop.wait(wait):
+            if self._stop.wait(30):
                 break
+            cfg = self.config.get()
+            hour = _as_int(cfg.get("dyn_hour"), 8)
+            minute = _as_int(cfg.get("dyn_minute"), 0)
+            now = time.localtime()
+            target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
+                                  hour, minute, 0, 0, -1))
+            if time.time() < target:
+                continue
+            last = _as_int(cfg.get("dyn_last_ts"))
+            if last and last >= int(target * 1000):
+                continue                       # 今天这个时间点已经拉过
+            if self._last_fail and time.time() - self._last_fail < 1800:
+                continue
             res = self.pull("定时")
             if res.get("ok"):
                 self.config.save({"dyn_last_ts": res["ts"]})
+                self._last_fail = 0
+            else:
+                self._last_fail = time.time()
 
     def stop(self):
         self._stop.set()

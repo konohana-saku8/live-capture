@@ -633,6 +633,35 @@ def main():
         status, raw = get("/api/dynamics?mid=9")
         check("动态接口按 up 主 uid 过滤",
               status == 200 and json.loads(raw)["total"] == 1)
+
+        # ---------- 动态调度器：按采集器逐个拉 ----------
+        class _FakeFetcher(object):
+            seen = []
+
+            def __init__(self):
+                pass
+
+            def fetch(self, mid, limit=20):
+                _FakeFetcher.seen.append(mid)
+                return ([{"id": "f%s" % mid, "mid": mid, "pub_ts": now // 1000,
+                          "text": "fake", "pics": [], "jump_url": ""}], "")
+
+        sched = server.DynamicScheduler(sst, cfg, logs,
+                                        fetcher_cls=_FakeFetcher, rooms=rooms)
+        check("调度目标只取开了「采集动态」的 up 主",
+              sched.targets() == [9], sched.targets())
+        res = sched.pull("测试")
+        check("调度器按采集器逐个拉动态",
+              res["ok"] and _FakeFetcher.seen == [9] and
+              sst.list_dynamics(mid=9)[0] == 2, (res, _FakeFetcher.seen))
+        rooms.settings(22748536, {"collect_dynamics": False})
+        check("全部关掉动态采集后没有目标", sched.targets() == [])
+        cfg.save({"dyn_mid": 555})
+        check("没有采集器时用 dyn_mid 兜底", sched.targets() == [555])
+        rooms.settings(22748536, {"collect_dynamics": True})
+        cfg.save({"dyn_mid": 0, "dyn_hour": 7, "dyn_minute": 45})
+        check("定时配置保存到分钟",
+              cfg.get()["dyn_hour"] == 7 and cfg.get()["dyn_minute"] == 45)
         status, raw = get("/api/feed?room_id=22748536&types=danmaku,sc")
         j = json.loads(raw)
         check("内容接口按房间返回分栏",
