@@ -16,7 +16,7 @@ if [ -z "$LC_AUTOSTART" ]; then
       (
         cd "$HOME/live-capture" || exit 0
         mkdir -p data
-        nohup python3 run.py >> data/service.log 2>&1 < /dev/null &
+        nohup "$HOME/live-capture/.venv/bin/python" run.py >> data/service.log 2>&1 < /dev/null &
         echo $! > data/service.pid
       ) >/dev/null 2>&1
     fi
