@@ -961,6 +961,13 @@ def main():
               all(k in page for k in ('id="roomPanel"', "room-block",
                                       'id="contentCard"')) and
               "id=\"roomParamsCard\"" not in page)
+        check("采集器内部用局部标签切分直播间 / 动态（可继续扩展）",
+              all(k in page for k in ('id="roomSubTabs"', 'data-sub="live"',
+                                      'data-sub="dyn"', 'data-panel="live"',
+                                      'data-panel="dyn"', "showSubTab",
+                                      "SUBTABS", "lc-subtab", "subN-live",
+                                      "subN-dyn")) and
+              page.index('data-panel="live"') < page.index('data-panel="dyn"'))
         check("首页按直播间为单位：开播场次/流水/互动/观众，且无最近动态",
               all(k in page for k in ("开播场次", "累计流水", "互动总数", "观众数",
                                       "metrics")) and

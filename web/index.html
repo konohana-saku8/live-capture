@@ -202,6 +202,21 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .anchor-meta{display:flex;flex-wrap:wrap;gap:12px;margin:2px 0 12px;font-size:11px;color:var(--dim)}
 .anchor-meta b{color:var(--ink-2);font-weight:500;font-variant-numeric:tabular-nums}
 .room-block{border-top:1px solid var(--line);margin-top:14px;padding-top:14px}
+/* 采集器内部的局部标签：直播间 / 动态 / 以后新增的数据源 */
+.sub-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px;padding-bottom:11px;
+  border-bottom:1px solid var(--line)}
+.sub-tab{display:inline-flex;align-items:center;gap:8px;padding:6px 13px;border-radius:99px;
+  font-size:12.5px;color:var(--dim);background:none;border:1px solid transparent;
+  cursor:pointer;transition:.18s;white-space:nowrap}
+.sub-tab:hover{color:var(--ink-2);background:rgba(255,255,255,.04)}
+.sub-tab.on{color:var(--fire-soft);border-color:rgba(255,122,69,.4);
+  background:rgba(255,122,69,.1);font-weight:500}
+.sub-tab i{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.45;flex:none}
+.sub-tab.on i{opacity:1;background:var(--fire);box-shadow:0 0 0 3px rgba(255,122,69,.14)}
+.sub-tab .n{font:10px/1 var(--mono);color:var(--dim-2);letter-spacing:.03em}
+.sub-tab.on .n{color:var(--fire-soft)}
+.room-block[data-panel]{border-top:0;margin-top:0;padding-top:16px}
+.room-block[data-panel][hidden]{display:none!important}
 .tab-tools{display:flex;gap:7px;margin-left:auto;flex:none;align-items:center;flex-wrap:wrap}
 .modal{position:fixed;inset:0;z-index:100;background:rgba(6,4,3,.74);
   display:flex;align-items:center;justify-content:center;padding:20px}
@@ -468,7 +483,12 @@ body.gated .top,body.gated main{display:none!important}
       <span class="muted" id="collectHint"></span>
     </div>
 
-    <div class="room-block" id="contentCard">
+    <div class="sub-tabs" id="roomSubTabs">
+      <button class="sub-tab on" data-sub="live"><i></i>直播间<span class="n" id="subN-live">—</span></button>
+      <button class="sub-tab" data-sub="dyn"><i></i>动态<span class="n" id="subN-dyn">—</span></button>
+    </div>
+
+    <div class="room-block" id="contentCard" data-panel="live">
       <div class="sec-head"><h2><i>◆</i>直播间数据</h2><span class="more" id="feedInfo">—</span></div>
       <div class="filters">
         <label><input type="checkbox" data-k="danmaku" checked> 弹幕</label>
@@ -494,7 +514,7 @@ body.gated .top,body.gated main{display:none!important}
       <div class="hint">「场」＝开播到下播；「场间」＝上一次下播到这次开播，期间收到的弹幕同样完整保留。选中某段即显示该段全部内容，不截断。</div>
     </div>
 
-    <div class="room-block">
+    <div class="room-block" data-panel="dyn" hidden>
       <div class="sec-head"><h2><i>◆</i>up 主动态</h2><span class="more" id="dynInfo">—</span></div>
       <div class="row">
         <button class="btn sm primary" id="btnDynFetch">立即拉取</button>
@@ -614,6 +634,7 @@ body.gated .top,body.gated main{display:none!important}
 var S={page:'home',rooms:[],roomId:0,active:0,running:false,
        filters:{danmaku:true,sc:true,events:true},q:'',
        segs:[],sessSel:'all',sessStart:0,sessEnd:0,collectRoomId:0,
+       subTab:localStorage.getItem('lc-subtab')||'live',
        cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
 var $=function(id){return document.getElementById(id)};
 var GUARD={1:'总督',2:'提督',3:'舰长'};
@@ -895,6 +916,24 @@ function liveSince(r){
   if(!r||r.live_status!==1)return 0;
   return r.live_started_at||(r.live_time||0)*1000;
 }
+/* 采集器内部的局部标签：只切这一块，不换页、不改 hash。
+   以后新增值得记录的数据源，只要在 #roomSubTabs 里加一个 button[data-sub]
+   并在 #roomPanel 里加一个 .room-block[data-panel="同名"]，再把名字放进
+   SUBTABS，加载逻辑按需加一行即可。 */
+var SUBTABS=['live','dyn'];
+function showSubTab(name,skipLoad){
+  if(SUBTABS.indexOf(name)<0)name=SUBTABS[0];
+  S.subTab=name;localStorage.setItem('lc-subtab',name);
+  document.querySelectorAll('#roomSubTabs .sub-tab').forEach(function(b){
+    b.classList.toggle('on',b.dataset.sub===name);
+  });
+  document.querySelectorAll('#roomPanel .room-block[data-panel]').forEach(function(p){
+    p.hidden=p.dataset.panel!==name;
+  });
+  if(skipLoad)return;
+  if(name==='dyn')loadDynamics();
+  else{loadSessions();loadFeed()}
+}
 function renderRooms(j){
   S.rooms=(j&&j.items)||[];
   S.active=j&&j.active||0;S.running=!!(j&&j.running);
@@ -910,7 +949,7 @@ function renderRooms(j){
       '<button class="x" data-x="'+esc(r.id)+'" title="删除采集器（保留已采集数据）">✕</button></div>';
   }).join('')+'<button class="tab add" id="tabAdd" title="按 up 主 uid 添加采集器">＋</button>';
   renderRoomPanel();
-  if(prevRoom!==S.roomId&&S.page==='rooms'){loadSessions();loadFeed();loadDynamics()}
+  if(prevRoom!==S.roomId&&S.page==='rooms')showSubTab(S.subTab);
 }
 function renderRoomPanel(){
   var r=currentRoom(),has=!!r;
@@ -973,12 +1012,14 @@ function setCaptureUI(running,label){
 async function loadRooms(){
   try{renderRooms(await api('/api/rooms'))}catch(e){}
 }
-function selectRoom(id){
+async function selectRoom(id){
   S.roomId=parseInt(id,10)||0;
   localStorage.setItem('lc-room',String(S.roomId));
-  // 切采集器时场次与选中态回到「全部」
+  // 切采集器时场次与选中态回到「全部」，并清掉上一家的动态
   S.sessSel='all';S.sessStart=0;S.sessEnd=0;
-  loadRooms();loadSessions();loadFeed();loadDynamics();
+  S.collectRoomId=0;
+  $('dynList').innerHTML='';$('subN-dyn').textContent='—';
+  await loadRooms();   // renderRooms 里会按当前标签重新拉数据
 }
 async function removeRoom(id){
   var r=null;
@@ -1025,7 +1066,7 @@ async function addRoom(){
     openAddModal(false);
     say('roomHint','已添加：'+(j.room.uname||j.room.label)+'（房间 '+j.room.id+'）'+
       (j.warning?'（'+j.warning+'）':''),'ok');
-    await loadRooms();loadFeed();loadSessions();loadDynamics();
+    await loadRooms();showSubTab(S.subTab);
   }catch(e){say('addHint','添加失败：'+e.message,'err')}
   finally{$('btnAddRoom').disabled=false}
 }
@@ -1120,6 +1161,7 @@ function segByKey(key){
 }
 function renderSessions(list){
   S.segs=list||[];
+  $('subN-live').textContent=S.segs.length?S.segs.length+' 段':'0';
   var box=$('sessionList');
   if(!S.segs.length){
     box.innerHTML='<div class="empty" style="font-size:11.5px;padding:6px 4px">'+
@@ -1189,6 +1231,7 @@ function dynDayLabel(key){
 }
 function renderDynamics(j){
   S.dyn=j;
+  $('subN-dyn').textContent=(j.total||0)+' 条';
   var cfg=j.config||{};
   $('dynAuto').checked=!!cfg.dyn_auto;
   $('dynHour').value=String(cfg.dyn_hour!=null?cfg.dyn_hour:8);
@@ -1243,7 +1286,7 @@ function renderDynamics(j){
 }
 async function loadDynamics(){
   var r=currentRoom();
-  if(!r){$('dynList').innerHTML='';return}
+  if(!r){$('dynList').innerHTML='';$('subN-dyn').textContent='—';return}
   var q=$('dynQ')?$('dynQ').value.trim():'';
   var mid=r.uid||0;
   try{
@@ -1386,7 +1429,7 @@ function showPage(name){
     b.classList.toggle('on',b.dataset.page===name);
   });
   if(name==='home'){loadDashboard();loadSystem()}
-  if(name==='rooms'){loadRooms();loadSessions();loadFeed();loadDynamics()}
+  if(name==='rooms'){loadRooms();showSubTab(S.subTab)}
   if(name==='config'){loadStatus();loadAccounts()}
   if(name==='logs'){loadLogs();renderLogs()}
 }
@@ -1420,7 +1463,14 @@ document.querySelectorAll('.nav button[data-page]').forEach(function(b){
 $('roomGrid').addEventListener('click',function(e){
   var b=e.target.closest('button[data-view]');if(!b)return;
   S.roomId=parseInt(b.dataset.view,10);localStorage.setItem('lc-room',String(S.roomId));
+  S.sessSel='all';S.sessStart=0;S.sessEnd=0;S.collectRoomId=0;
+  $('dynList').innerHTML='';$('subN-dyn').textContent='—';
   showPage('rooms');
+});
+$('roomSubTabs').addEventListener('click',function(e){
+  var b=e.target.closest('button[data-sub]');if(!b)return;
+  if(b.dataset.sub===S.subTab)return;
+  showSubTab(b.dataset.sub);
 });
 $('roomTabs').addEventListener('click',function(e){
   var x=e.target.closest('button[data-x]');
@@ -1600,7 +1650,8 @@ $('logLevel').onchange=renderLogs;
 setInterval(function(){
   if(document.hidden)return;
   if(S.page==='home'){loadDashboard();loadSystem()}
-  else if(S.page==='rooms'){loadRooms();if($('autoRefresh').checked){loadSessions();loadFeed()}}
+  else if(S.page==='rooms'){loadRooms();
+    if(S.subTab==='live'&&$('autoRefresh').checked){loadSessions();loadFeed()}}
   else if(S.page==='config')loadStatus();
   else if(S.page==='logs')loadLogs();
   loadAccounts();
@@ -1618,6 +1669,7 @@ function initApp(){
   $('dynMinute').innerHTML=mi;
   loadAccounts();
   loadStatus();
+  showSubTab(S.subTab,true);   // 先摆好标签与面板，数据由 showPage 拉
   showPage(S.page);
 }
 $('gateForm').addEventListener('submit',function(e){e.preventDefault();submitGate()});
