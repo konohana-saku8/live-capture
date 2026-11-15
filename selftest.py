@@ -224,6 +224,17 @@ def main():
         _, created3 = rooms.add(22748536, "改名")
         check("同名房间号重复添加为更新", not created3 and
               rooms.get(22748536)["label"] == "改名")
+        check("采集器默认同时采直播间与动态",
+              r1["collect_live"] is True and r1["collect_dynamics"] is True, r1)
+        check("按 uid 找采集器", (rooms.find_by_uid(9) or {}).get("id") == 22748536)
+        rooms.settings(22748536, {"collect_dynamics": False})
+        check("采集器开关可单独关闭",
+              rooms.get(22748536)["collect_dynamics"] is False and
+              rooms.get(22748536)["collect_live"] is True)
+        check("采集动态的目标列表随开关变化",
+              [x["id"] for x in rooms.collect_targets("collect_dynamics")]
+              == [1001])
+        rooms.settings(22748536, {"collect_dynamics": True})
         check("直播间持久化", len(RoomStore(room_path).list()["items"]) == 2)
         check("刷新直播间信息", rooms.refresh(1001, {"live_status": 2})["live_status"] == 2)
         check("删除直播间", rooms.remove(1001) is True and
@@ -284,7 +295,7 @@ def main():
             sst.insert_danmaku([{"room_id": 22748536, "uid": uid, "uname": uname,
                                  "text": text, "received_at": ts,
                                  "is_emoticon": 0}])
-        sess = sst.live_sessions(22748536)
+        sess = sst.live_segments(22748536)
         check("按开播事件切分场次", len(sess) == 2 and
               sess[0]["start"] == base and sess[1]["start"] == t2ms, sess)
         check("首场以下一场开播为终点", sess[0]["end"] == t2ms)
@@ -293,6 +304,8 @@ def main():
               sess[1]["danmaku"] == 1, sess)
         check("场次去重观众数", sess[0]["viewers"] == 2 and
               sess[1]["viewers"] == 1, sess)
+        check("没有下播事件时不产生场间段",
+              [s["kind"] for s in sess] == ["live", "live"], sess)
         rng = sst.range_stats(22748536, base, t2ms)
         check("区间统计含互动总数", rng["danmaku"] == 2 and
               rng["interactions"] >= 2, rng)
@@ -323,10 +336,58 @@ def main():
                                 "text": "新数据", "received_at": base2 + 500,
                                 "is_emoticon": 0}])
         rstore.end_run(rr2)
-        rsess = rstore.live_sessions(22748536)
+        rsess = rstore.live_segments(22748536)
         check("无开播事件时按采集批次兜底分段", len(rsess) == 2 and
               rsess[0].get("approx") is True and
               rsess[0]["danmaku"] == 1 and rsess[1]["danmaku"] == 1, rsess)
+
+        # ---------- 场 / 场间 交替分段（独立库） ----------
+        gst = Store(os.path.join(tmp, "segments.db"))
+        gt0 = now - 3 * 3600 * 1000
+        hour = 3600 * 1000
+
+        def live_ev(detail, ts):
+            row = capture.event_row(22748536, "live",
+                                    {"live": 1 if detail == "开播" else 0}, ts)
+            row["event_time"] = ts // 1000
+            gst.insert_event(row)
+
+        live_ev("开播", gt0)
+        live_ev("下播", gt0 + hour)
+        live_ev("开播", gt0 + 2 * hour)
+        for uid, text, ts, amount in (
+                (701, "场内1", gt0 + 600, 0),
+                (702, "场内2", gt0 + 900, 30),
+                (703, "场间1", gt0 + hour + 300, 0),
+                (704, "场内3", gt0 + 2 * hour + 600, 0)):
+            gst.insert_danmaku([{"room_id": 22748536, "uid": uid, "uname": text,
+                                 "text": text, "received_at": ts,
+                                 "is_emoticon": 0}])
+            if amount:
+                gst.insert_sc({"sc_id": "g%d" % uid, "room_id": 22748536,
+                               "uid": uid, "uname": text, "price": amount,
+                               "message": text, "received_at": ts})
+        gsegs = gst.live_segments(22748536)
+        check("场 / 场间 交替分段",
+              [s["kind"] for s in gsegs] == ["live", "gap", "live"], gsegs)
+        check("场 = 开播到下播", gsegs[0]["end"] == gt0 + hour and
+              gsegs[0]["danmaku"] == 2 and gsegs[0]["sc_amount"] == 30)
+        check("场间 = 上一次下播到这次开播",
+              gsegs[1]["start"] == gt0 + hour and
+              gsegs[1]["end"] == gt0 + 2 * hour and gsegs[1]["danmaku"] == 1)
+        check("最后一场至今且带观众数",
+              gsegs[2]["end"] == 0 and gsegs[2]["viewers"] == 1)
+        check("每段都有流水/观众/弹幕字段",
+              all(k in gsegs[0] for k in ("sc_amount", "viewers", "danmaku")),
+              gsegs[0])
+        # 下播之后再收到的弹幕归到尾部场间
+        gst.insert_danmaku([{"room_id": 22748536, "uid": 705, "uname": "下播后",
+                             "text": "下播后还在聊", "received_at": now + 90000,
+                             "is_emoticon": 0}])
+        live_ev("下播", now + 80000)
+        gsegs = gst.live_segments(22748536)
+        check("下播后的弹幕进入尾部场间",
+              gsegs[-1]["kind"] == "gap" and gsegs[-1]["danmaku"] == 1, gsegs[-1])
 
         # ---------- 动态存储（独立库） ----------
         dyn_rows = [
@@ -348,6 +409,9 @@ def main():
               sst.upsert_dynamics(dyn_rows) == 2 and
               sst.list_dynamics()[1][0]["text_trans"] == "今天也直播")
         check("动态搜索命中译文", sst.list_dynamics(q="今天")[0] == 1)
+        check("动态可按 up 主 uid 过滤",
+              sst.list_dynamics(mid=9)[0] == 2 and
+              sst.list_dynamics(mid=12345)[0] == 0)
         check("动态删除", sst.delete_dynamic("d2") is True and
               sst.list_dynamics()[0] == 1)
 
@@ -463,6 +527,9 @@ def main():
             "title": "房间 %s" % rid, "uid": 1, "short_id": 0,
             "live_status": 1, "live_time": 1794600000, "online": 10,
             "uname": "主播%s" % rid, "face": "https://i0.hdslb.com/bfs/face/%s.png" % rid}
+        old_by_uid = server.fetch_room_by_uid
+        server.fetch_room_by_uid = lambda uid, timeout=4: dict(
+            server.fetch_room_brief(7788, timeout), room_id=7788, uid=uid)
         srv = create_server("127.0.0.1", 0, tmp, os.path.join(HERE, "web"),
                             st, manager, cfg, logs, rooms=rooms)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -508,11 +575,12 @@ def main():
         j = json.loads(raw)
         check("直播间列表含两间且都未采集",
               status == 200 and len(j["items"]) == 2 and j["active"] == 0, j)
-        check("直播间列表带按房间统计",
+        check("采集器列表带按房间统计",
               any(x["totals"]["events"] == 1 for x in j["items"]))
-        check("直播间列表带主播信息与本场边界",
+        check("采集器列表带 up 主信息与采集开关",
               all(k in j["items"][0] for k in
-                  ("face", "uname", "live_time", "params", "live_stats")))
+                  ("face", "uname", "uid", "live_time", "params", "live_stats",
+                   "collect_live", "collect_dynamics", "dyns")))
         check("开播中的房间有本场统计",
               j["items"][0]["live_stats"] is not None and
               j["items"][0]["live_stats"]["since"] == 1794600000000,
@@ -528,9 +596,10 @@ def main():
                                     ("cpu", "memory", "disk", "network", "load")))
         status, raw = get("/api/sessions?room_id=22748536")
         jj = json.loads(raw)
-        check("场次接口返回按开播切分的列表",
+        check("场次接口返回场 / 场间分段",
               status == 200 and jj["total"] == 2 and
-              jj["sessions"][0]["danmaku"] == 2, jj.get("sessions"))
+              jj["segments"][0]["kind"] == "live" and
+              jj["segments"][0]["danmaku"] == 2, jj.get("segments"))
         status, raw = get("/api/feed?room_id=22748536&types=danmaku&all=1")
         jall = json.loads(raw)
         check("全量接口不截断（all=1）",
@@ -545,15 +614,20 @@ def main():
         jd = json.loads(raw)
         check("动态接口返回列表与定时配置",
               status == 200 and "items" in jd and "status" in jd and
-              "dyn_hour" in jd["config"])
+              "dyn_hour" in jd["config"] and "dyn_minute" in jd["config"])
         status, raw = post("/api/dynamics/trans", {"dyn_id": "d1", "text": "接口译文"})
         check("动态翻译写入接口", status == 200 and
               json.loads(raw)["ok"] is True)
         status, raw = post("/api/dynamics/config",
-                           {"dyn_auto": True, "dyn_hour": 9})
-        check("动态定时配置保存", status == 200 and
+                           {"dyn_auto": True, "dyn_hour": 9, "dyn_minute": 25})
+        check("动态定时精确到分钟",
+              status == 200 and
               json.loads(raw)["config"]["dyn_hour"] == 9 and
-              cfg.get()["dyn_auto"] is True)
+              json.loads(raw)["config"]["dyn_minute"] == 25 and
+              cfg.get()["dyn_auto"] is True and cfg.get()["dyn_minute"] == 25)
+        status, raw = get("/api/dynamics?mid=9")
+        check("动态接口按 up 主 uid 过滤",
+              status == 200 and json.loads(raw)["total"] == 1)
         status, raw = get("/api/feed?room_id=22748536&types=danmaku,sc")
         j = json.loads(raw)
         check("内容接口按房间返回分栏",
@@ -571,11 +645,28 @@ def main():
         status, raw = post("/api/config", {"protover": 3})
         check("保存配置", status == 200 and cfg.get()["protover"] == 3)
         post("/api/config", {"protover": 2})
+        status, raw = post("/api/rooms", {"uid": 12345})
+        ju = json.loads(raw)
+        check("按 up 主 uid 添加采集器（自动解析房间号）",
+              status == 200 and ju["room"]["id"] == 7788 and
+              ju["room"]["uid"] == 12345 and len(ju["rooms"]["items"]) == 3, ju)
+        post("/api/rooms/remove", {"room_id": 7788})
+        check("缺 uid 时添加被拒",
+              post("/api/rooms", {"room_id": 0})[0] == 400)
         status, raw = post("/api/rooms", {"room_id": 3003, "label": "第三间"})
         check("网页添加直播间（不联网）",
               status == 200 and len(json.loads(raw)["rooms"]["items"]) == 3)
         status, raw = post("/api/rooms/refresh", {})
         check("刷新直播间信息接口", json.loads(raw)["updated"] == 3)
+        status, raw = post("/api/rooms/settings",
+                           {"room_id": 22748536,
+                            "params": {"collect_dynamics": False}})
+        j = json.loads(raw)
+        check("采集器开关接口：关掉动态采集",
+              status == 200 and j["room"]["collect_dynamics"] is False and
+              j["room"]["collect_live"] is True, j.get("room"))
+        post("/api/rooms/settings", {"room_id": 22748536,
+                                     "params": {"collect_dynamics": True}})
         status, raw = post("/api/rooms/settings", {"room_id": 22748536,
                                                     "params": {"protover": 3,
                                                                "heartbeat_seconds": 45}})
@@ -798,24 +889,33 @@ def main():
         # ---------- 网页结构 ----------
         with open(os.path.join(HERE, "web", "index.html"), encoding="utf-8") as fh:
             page = fh.read()
-        check("五个页面：仪表盘 / 直播间 / 动态 / 配置 / 日志",
+        check("四个页面：仪表盘 / 采集器 / 配置 / 日志（不再有独立动态页）",
               all(k in page for k in ('id="page-home"', 'id="page-rooms"',
-                                      'id="page-dynamics"', 'id="page-config"',
-                                      'id="page-logs"', 'data-page="home"',
-                                      'data-page="dynamics"', "loadDashboard")))
-        check("直播间页浏览器标签式：状态点 / ✕ 删除 / ＋ 弹窗添加",
+                                      'id="page-config"', 'id="page-logs"',
+                                      'data-page="home"', 'data-page="rooms"',
+                                      "loadDashboard")) and
+              'id="page-dynamics"' not in page and
+              'data-page="dynamics"' not in page)
+        check("采集器页按 up 主 uid 添加并自动带出直播间",
+              all(k in page for k in ('id="newUid"', "up 主 uid", "UID ",
+                                      "addModal", "btnAddRoom", "/api/rooms")))
+        check("采集器页可选采哪些数据（直播间 / 动态）",
+              all(k in page for k in ("collect-row", 'id="colLive"', 'id="colDyn"',
+                                      "btnSaveCollect", "saveCollect")))
+        check("采集器页浏览器标签式：状态点 / ✕ 删除 / ＋ 弹窗添加",
               all(k in page for k in ("roomTabs", "tabAdd", 'data-x="',
                                       "addModal", "btnAddRoom", "/api/rooms",
                                       "/api/capture/", "btnStopAll")))
-        check("采集参数全局统一（配置页），直播间页不再有每房间参数卡",
+        check("采集参数全局统一（配置页），采集器页不再有每房间参数卡",
               all(k in page for k in ("f_proto", "f_heartbeat", "f_stale",
                                       "f_dm", "f_sc", "f_ev")) and
               all(k not in page for k in ("roomParamsCard", "btnSaveParams",
-                                          "r_proto", "r_hb", "/api/rooms/settings")))
-        check("直播间数据按开播分段：左侧场次列表 + 全量不截断",
+                                          "r_proto", "r_hb")))
+        check("直播数据按「场 / 场间」分段：左侧列表 + 全量不截断",
               all(k in page for k in ("sessionPane", "sessionList", "loadSessions",
                                       "selectSession", "data-sess=", "/api/sessions",
-                                      "all=1")) and
+                                      "all=1", "segRange", "segByKey",
+                                      "场间", "sc_amount")) and
               "S.limit" not in page and "id=\"limit\"" not in page)
         check("旧 chips 与独立删除按钮已移除",
               all(k not in page for k in ("roomChips", "btnDelRoom",
@@ -831,9 +931,12 @@ def main():
               all(k in page for k in ("开播场次", "累计流水", "互动总数", "观众数",
                                       "metrics")) and
               "最近动态" not in page and "recentList" not in page)
-        check("首页设备状态：CPU/内存/存储/网络",
+        check("首页设备与服务在最上面：局域网/监听/时长/websockets/数据目录/口令",
               all(k in page for k in ("devGrid", "loadSystem", "renderSystem",
-                                      "/api/system", "CPU 占用", "内存占用", "存储占用")))
+                                      "/api/system", "CPU 占用", "内存占用", "存储占用",
+                                      "局域网", "监听", "服务已运行", "最后收包",
+                                      "数据目录", "访问口令", "kv-grid wide")) and
+              page.index('id="devGrid"') < page.index('id="roomGrid"'))
         check("内容纵向分区 + 只看某类勾选",
               all(k in page for k in ('class="feed"', "data-k=\"danmaku\"",
                                       "data-k=\"sc\"", "data-k=\"events\"",
@@ -859,13 +962,20 @@ def main():
               all(k in page for k in ('class="gated"', 'id="gate"', "bootGate",
                                       "submitGate", "unlockApp", "/api/gate",
                                       "gatePass2", "gateForm", "initApp")))
-        check("动态页：按天分组 + 译文 + 定时拉取",
+        check("动态并入采集器页：按天分组 + 译文 + 定时拉取",
               all(k in page for k in ("dynList", "renderDynamics", "loadDynamics",
                                       "fetchDynamics", "dynDayKey", "dyn-trans",
                                       "/api/dynamics", "/api/dynamics/fetch",
-                                      "/api/dynamics/trans", "dynAuto", "dynHour")))
+                                      "/api/dynamics/trans", "dynAuto", "dynHour",
+                                      "dynMinute")) and
+              'id="page-dynamics"' not in page)
         check("译文编辑框默认收起（hidden 不被 flex 覆盖）",
               ".dyn-edit[hidden]" in page and "display:none!important" in page)
+        check("取消译文编辑后按钮回到可见（dyn-tools 单独隐藏）",
+              'class="dyn-actions dyn-tools"' in page and
+              ".dyn-tools[hidden]" in page and
+              "card.querySelector('.dyn-tools').hidden=true" in page and
+              ".querySelector('.dyn-tools').hidden=false" in page)
         check("账号头像点击进配置页（不再跳个人空间）",
               '$(\'acctChip\').onclick' in page and
               "showPage('config')" in page and
@@ -877,6 +987,8 @@ def main():
             accounts_mod.fetch_profile = old_profile
         if "old_brief" in locals():
             server.fetch_room_brief = old_brief
+        if "old_by_uid" in locals():
+            server.fetch_room_by_uid = old_by_uid
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("\n%d 项全部通过" % len(PASSED), flush=True)

@@ -11,7 +11,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from accounts import AccountStore
-from capture import WS_IMPORT_ERROR, fetch_room_brief
+from capture import WS_IMPORT_ERROR, fetch_room_brief, fetch_room_by_uid
 from dynamics import DynamicsFetcher
 from images import EmoteProxy, FALLBACK_PNG
 from rooms import PARAM_KEYS, RoomStore
@@ -29,9 +29,10 @@ DEFAULTS = {
     "port": 8765,
     "token": "",
     "auto_start": False,
-    "dyn_mid": 2094031249,     # 主播 uid，动态抓取目标
-    "dyn_auto": True,          # 每天定时拉取
-    "dyn_hour": 8,             # 本地时间每天几点拉取
+    "dyn_mid": 0,              # 旧版全局动态 uid，仅在没有采集器时兜底
+    "dyn_auto": True,          # 每天定时拉取所有采集器的动态
+    "dyn_hour": 8,             # 本地时间几点
+    "dyn_minute": 0,           # 精确到分钟
     "dyn_last_ts": 0,          # 上次成功拉取时间（内部用）
 }
 SECRET_KEYS = ("token",)
@@ -43,8 +44,9 @@ INT_BOUNDS = {
     "stale_seconds": (30, 600),
     "http_timeout": (3, 60),
     "port": (1, 65535),
-    "dyn_mid": (1, 999999999),
+    "dyn_mid": (0, 999999999),
     "dyn_hour": (0, 23),
+    "dyn_minute": (0, 59),
 }
 VALID_KINDS = ("danmaku", "sc", "events")
 
@@ -153,39 +155,69 @@ def _lan_ip():
 
 
 class DynamicScheduler:
-    """Pull the anchor's public dynamics once a day, plus optional startup pull.
+    """按采集器逐个拉取 up 主动态，每天在设定时刻（精确到分钟）跑一次。
 
-    Keeps a last-pull timestamp in the config so a restart does not refetch
-    repeatedly within the same day. All work is best-effort and logged.
+    目标来自采集器列表里打开了「采集动态」的 uid；一个采集器都没有时退回
+    配置里的 dyn_mid 兜底。整轮拉取的成功与否写进 last_result，供页面展示。
     """
 
-    def __init__(self, store, config, logs, fetcher_cls=DynamicsFetcher):
+    def __init__(self, store, config, logs, fetcher_cls=DynamicsFetcher,
+                 rooms=None):
         self.store = store
         self.config = config
         self.logs = logs
         self.fetcher_cls = fetcher_cls
+        self.rooms = rooms
         self.lock = threading.RLock()
         self.last_result = {"ok": False, "msg": "尚未拉取", "ts": 0}
         self._stop = threading.Event()
         self._thread = None
 
-    def pull(self, reason="手动", limit=20):
-        cfg = self.config.get()
-        mid = _as_int(cfg.get("dyn_mid"))
-        if not mid:
-            return {"ok": False, "msg": "未设置主播 uid", "ts": int(time.time()*1000)}
-        try:
-            fetcher = self.fetcher_cls()
-            items, _ = fetcher.fetch(mid, limit=limit)
-            n = self.store.upsert_dynamics(items)
-            result = {"ok": True, "msg": "%s拉取 %d 条（新增/更新 %d）" %
-                      (reason, len(items), n), "ts": int(time.time() * 1000),
-                      "count": len(items)}
-            self.logs.add("info", result["msg"])
-        except Exception as exc:
-            result = {"ok": False, "msg": "%s拉取失败：%s" % (reason, exc),
+    def targets(self):
+        """返回要拉动态的 up 主 uid 列表。"""
+        items = self.rooms.collect_targets("collect_dynamics") \
+            if self.rooms is not None else []
+        mids = [_as_int(x.get("uid")) for x in items]
+        mids = [m for m in mids if m > 0]
+        if not mids:
+            legacy = _as_int(self.config.get().get("dyn_mid"))
+            if legacy:
+                mids = [legacy]
+        return mids
+
+    def pull_one(self, mid, reason="手动", limit=20):
+        fetcher = self.fetcher_cls()
+        items, _ = fetcher.fetch(_as_int(mid), limit=limit)
+        n = self.store.upsert_dynamics(items)
+        return len(items), n
+
+    def pull(self, reason="手动", limit=20, mid=0):
+        mids = [_as_int(mid)] if _as_int(mid) > 0 else self.targets()
+        if not mids:
+            result = {"ok": False, "msg": "没有开启「采集动态」的 up 主",
                       "ts": int(time.time() * 1000)}
-            self.logs.add("error", result["msg"])
+            with self.lock:
+                self.last_result = result
+            return result
+        ok, done, total, errors = True, 0, 0, []
+        for one in mids:
+            try:
+                got, _ = self.pull_one(one, reason, limit)
+                total += got
+                done += 1
+            except Exception as exc:
+                ok = False
+                errors.append("uid %s：%s" % (one, exc))
+        ts = int(time.time() * 1000)
+        if errors and not done:
+            msg = "%s拉取失败：%s" % (reason, "；".join(errors))
+        else:
+            msg = "%s拉取 %d 位 up 主，共 %d 条%s" % (
+                reason, done, total,
+                ("；失败 " + "；".join(errors)) if errors else "")
+        result = {"ok": ok, "msg": msg, "ts": ts, "count": total,
+                  "mids": mids}
+        self.logs.add("info" if ok else "error", msg)
         with self.lock:
             self.last_result = result
         return result
@@ -193,8 +225,8 @@ class DynamicScheduler:
     def status(self):
         with self.lock:
             out = dict(self.last_result)
-        total, _ = self.store.list_dynamics(limit=1)
-        out["total"] = total
+        out["total"] = self.store.list_dynamics(limit=1)[0]
+        out["targets"] = self.targets()
         return out
 
     def start(self):
@@ -217,16 +249,21 @@ class DynamicScheduler:
         if res.get("ok"):
             self.config.save({"dyn_last_ts": res["ts"]})
 
+    def _next_run(self):
+        """下一个「时:分」的本地时间戳（今天过了就算明天）。"""
+        cfg = self.config.get()
+        hour = _as_int(cfg.get("dyn_hour"), 8)
+        minute = _as_int(cfg.get("dyn_minute"), 0)
+        now = time.localtime()
+        target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
+                              hour, minute, 0, 0, -1))
+        if target <= time.time():
+            target += 86400
+        return target
+
     def _loop(self):
         while not self._stop.is_set():
-            now = time.localtime()
-            # 计算到下一次目标 hour:00 的秒数
-            target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
-                                  _as_int(self.config.get().get("dyn_hour"), 8),
-                                  0, 0, 0, 0, -1))
-            if target <= time.time():
-                target += 86400
-            wait = max(60, target - time.time())
+            wait = max(30, self._next_run() - time.time())
             if self._stop.wait(wait):
                 break
             res = self.pull("定时")
@@ -368,8 +405,9 @@ class Handler(BaseHTTPRequestHandler):
         rooms = self.server.rooms.list().get("items") or []
         snap = self.server.manager.snapshot()
         states = {s["room_id"]: s for s in snap["rooms"]}
-        totals = {x["room_id"]: x for x in
-                  self.server.store.dashboard().get("by_room") or []}
+        dash = self.server.store.dashboard()
+        totals = {x["room_id"]: x for x in dash.get("by_room") or []}
+        dyn_by_mid = dash.get("dyn_by_mid") or {}
         items = []
         for room in rooms:
             st = states.get(room["id"]) or {}
@@ -401,6 +439,7 @@ class Handler(BaseHTTPRequestHandler):
                 last_error=st.get("last_error", ""),
                 warning=st.get("warning", ""),
                 counts=st.get("counts", {}),
+                dyns=dyn_by_mid.get(_as_int(room.get("uid")), 0),
                 totals={"danmaku": agg.get("danmaku", 0),
                         "sc": agg.get("sc", 0),
                         "events": agg.get("events", 0),
@@ -499,18 +538,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/sessions":
             rid = _as_int(q.get("room_id")) or self._first_room_id()
-            sessions = store.live_sessions(rid)
-            self._json({"ok": True, "room_id": rid, "sessions": sessions,
-                        "total": len(sessions)})
+            segs = store.live_segments(rid)
+            self._json({"ok": True, "room_id": rid, "segments": segs,
+                        "sessions": segs, "total": len(segs)})
             return
         if path == "/api/dynamics":
             total, items = store.list_dynamics(
-                limit=q.get("limit") or 200, q=q.get("q") or "")
+                limit=q.get("limit") or 200, q=q.get("q") or "",
+                mid=q.get("mid") or 0)
+            cfg = config.get()
             self._json({"ok": True, "total": total, "items": items,
                         "status": self.server.dynamics.status(),
-                        "config": {"dyn_mid": _as_int(config.get().get("dyn_mid")),
-                                   "dyn_auto": bool(config.get().get("dyn_auto")),
-                                   "dyn_hour": _as_int(config.get().get("dyn_hour"), 8)}})
+                        "config": {"dyn_auto": bool(cfg.get("dyn_auto")),
+                                   "dyn_hour": _as_int(cfg.get("dyn_hour"), 8),
+                                   "dyn_minute": _as_int(cfg.get("dyn_minute"))}})
             return
         if path == "/api/config":
             self._json({"ok": True, "config": Config.masked(config.get()),
@@ -560,26 +601,37 @@ class Handler(BaseHTTPRequestHandler):
         manager, config = self.server.manager, self.server.config
         rooms, accounts = self.server.rooms, self.server.accounts
 
-        # ---- room management ----
+        # ---- collector management ----
         if path == "/api/rooms":
+            uid = _as_int(body.get("uid"))
             rid = _as_int(body.get("room_id"))
-            if rid <= 0:
-                self._fail(400, "房间号必须是正整数")
-                return
             label = str(body.get("label") or "")[:80]
             warning = ""
-            try:
-                brief = fetch_room_brief(rid, timeout=3)
-            except Exception as exc:
-                brief, warning = {}, "直播间信息获取失败，先用房间号：%s" % exc
+            brief = {}
+            if uid > 0:
+                try:
+                    brief = fetch_room_by_uid(uid, timeout=4)
+                    rid = _as_int(brief.get("room_id")) or rid
+                except Exception as exc:
+                    self._fail(400, "按 uid 获取直播间失败：%s" % exc)
+                    return
+            if rid <= 0:
+                self._fail(400, "请填写 up 主 uid")
+                return
+            if not brief:
+                try:
+                    brief = fetch_room_brief(rid, timeout=3)
+                except Exception as exc:
+                    brief, warning = {}, "直播间信息获取失败，先用房间号：%s" % exc
             try:
                 item, created = rooms.add(rid, label, brief)
             except ValueError as exc:
                 self._fail(400, str(exc))
                 return
             self.server.logs.add(
-                "info", "%s直播间：%s（%s）" %
-                ("新增" if created else "更新", item["label"], rid))
+                "info", "%s采集器：%s（uid %s · 房间 %s）" %
+                ("新增" if created else "更新", item["label"],
+                 item.get("uid") or "—", rid))
             self._json({"ok": True, "room": item, "created": created,
                         "warning": warning, "rooms": self._rooms_payload()})
             return
@@ -590,7 +642,7 @@ class Handler(BaseHTTPRequestHandler):
                     for s in manager.snapshot()["rooms"]):
                 manager.stop(rid)
             ok = rooms.remove(rid)
-            self.server.logs.add("info", "删除直播间：%s（%s）" %
+            self.server.logs.add("info", "删除采集器：%s（%s）" %
                                  ("成功" if ok else "不存在", rid))
             self._json({"ok": ok, "rooms": self._rooms_payload(),
                         "capture": manager.snapshot()})
@@ -603,6 +655,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             clean = {}
             for key, value in params.items():
+                if key in ("collect_live", "collect_dynamics"):
+                    clean[key] = bool(value)
+                    continue
                 if key not in PARAM_KEYS:
                     continue
                 if key in BOOL_KEYS:
@@ -620,14 +675,19 @@ class Handler(BaseHTTPRequestHandler):
                     clean[key] = num
             item = rooms.settings(rid, clean)
             if not item:
-                self._fail(404, "直播间不存在")
+                self._fail(404, "采集器不存在")
                 return
-            running = any(s["room_id"] == rid and s["running"]
-                          for s in manager.snapshot()["rooms"])
+            # 关掉「采集直播间」时顺手停掉正在跑的采集
+            if item.get("collect_live") is False and any(
+                    s["room_id"] == rid and s["running"]
+                    for s in manager.snapshot()["rooms"]):
+                manager.stop(rid)
             self.server.logs.add(
-                "info", "保存直播间参数：%s（%s）" % (item["label"], rid))
-            self._json({"ok": True, "room": item, "restart_required": running,
-                        "rooms": self._rooms_payload()})
+                "info", "保存采集器开关：%s（%s）" % (item["label"], rid))
+            self._json({"ok": True, "room": item,
+                        "restart_required": bool(item.get("collect_live")),
+                        "rooms": self._rooms_payload(),
+                        "capture": manager.snapshot()})
             return
         if path == "/api/rooms/refresh":
             updated = 0
@@ -645,12 +705,12 @@ class Handler(BaseHTTPRequestHandler):
 
         # ---- dynamics ----
         if path == "/api/dynamics/fetch":
-            if _as_int(body.get("dyn_mid")) > 0:
-                config.save({"dyn_mid": _as_int(body.get("dyn_mid"))})
-            res = self.server.dynamics.pull("手动", limit=_as_int(body.get("limit"), 20) or 20)
+            mid = _as_int(body.get("mid"))
+            res = self.server.dynamics.pull(
+                "手动", limit=_as_int(body.get("limit"), 20) or 20, mid=mid)
             if res.get("ok"):
                 config.save({"dyn_last_ts": res["ts"]})
-            total, items = self.server.store.list_dynamics(limit=200)
+            total, items = self.server.store.list_dynamics(limit=200, mid=mid)
             self._json({"ok": res["ok"], "message": res["msg"],
                         "total": total, "items": items,
                         "status": self.server.dynamics.status()},
@@ -668,7 +728,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/dynamics/delete":
             dyn_id = str(body.get("dyn_id") or "")
             ok = self.server.store.delete_dynamic(dyn_id) if dyn_id else False
-            total, items = self.server.store.list_dynamics(limit=200)
+            total, items = self.server.store.list_dynamics(
+                limit=200, mid=_as_int(body.get("mid")))
             self._json({"ok": ok, "total": total, "items": items})
             return
         if path == "/api/dynamics/config":
@@ -677,19 +738,25 @@ class Handler(BaseHTTPRequestHandler):
                 patch["dyn_auto"] = bool(body["dyn_auto"])
             if _as_int(body.get("dyn_hour"), -1) >= 0:
                 patch["dyn_hour"] = _as_int(body["dyn_hour"])
-            if _as_int(body.get("dyn_mid")) > 0:
-                patch["dyn_mid"] = _as_int(body["dyn_mid"])
+            if _as_int(body.get("dyn_minute"), -1) >= 0:
+                patch["dyn_minute"] = _as_int(body["dyn_minute"])
             if patch:
                 config.save(patch)
+            now = config.get()
             self._json({"ok": True,
-                        "config": {"dyn_mid": _as_int(config.get().get("dyn_mid")),
-                                   "dyn_auto": bool(config.get().get("dyn_auto")),
-                                   "dyn_hour": _as_int(config.get().get("dyn_hour"), 8)}})
+                        "config": {
+                            "dyn_auto": bool(now.get("dyn_auto")),
+                            "dyn_hour": _as_int(now.get("dyn_hour"), 8),
+                            "dyn_minute": _as_int(now.get("dyn_minute"))}})
             return
 
         # ---- capture control ----
         if path in ("/api/capture/start", "/api/start"):
             rid = _as_int(body.get("room_id")) or self._first_room_id()
+            target = rooms.get(rid) or {}
+            if target and target.get("collect_live") is False:
+                self._fail(409, "这个采集器关了「采集直播间」，先在采集器里打开")
+                return
             ok, message = manager.start(rid)
             self._capture_payload(ok, message, 200 if ok else 409)
             return
@@ -752,9 +819,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._fail(400, '需要 {"confirm":"yes"}')
                 return
             rid = _as_int(body.get("room_id"))
-            self.server.store.clear(rid or None)
+            mid = _as_int(body.get("mid"))
+            if rid and not mid:
+                mid = _as_int((rooms.get(rid) or {}).get("uid"))
+            self.server.store.clear(rid or None, mid)
             self.server.logs.add("warn", "数据已清空：%s" %
-                                 ("房间 %s" % rid if rid else "全部"))
+                                 ("采集器 %s" % rid if rid else "全部"))
             self._json({"ok": True})
             return
         self._fail(404, "没有这个接口")
@@ -777,7 +847,7 @@ def create_server(host, port, data_dir, web_dir, store, manager, config, logs,
         os.path.join(data_dir, "accounts.json"))
     srv.rooms = rooms or RoomStore(os.path.join(data_dir, "rooms.json"))
     srv.images = EmoteProxy()
-    srv.dynamics = DynamicScheduler(store, config, logs)
+    srv.dynamics = DynamicScheduler(store, config, logs, rooms=srv.rooms)
     srv.cpu_sampler = sysinfo.CpuSampler()
 
     def _sys_snapshot():
@@ -814,6 +884,8 @@ def serve(host, port, data_dir, web_dir, store, manager, config, logs,
     print("=" * 52, flush=True)
     if auto_start:
         for room in (srv.rooms.list().get("items") or []):
+            if not room.get("collect_live", True):
+                continue
             ok, message = manager.start(room["id"])
             logs.add("info" if ok else "error",
                      "自动开始采集 %s：%s" % (room["id"], message))

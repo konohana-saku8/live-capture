@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""直播间列表：网页里增删，持久化在 data/rooms.json。
+"""采集器列表：网页里增删，持久化在 data/rooms.json。
 
-采集状态不在文件里（由 CaptureManager 持有），重启服务后所有直播间默认未采集；
+一个采集器对应一位 up 主：条目里既存 up 主 uid / 昵称 / 头像，也存解析出来的
+直播间号，弹幕与 SC 仍按房间号（id）分表存放，历史数据不用迁移。
+
+采集状态不在文件里（由 CaptureManager 持有），重启服务后所有采集器默认未采集；
 需要的话在配置页打开「服务启动时自动采集」。
 
-每间直播间可带独立的采集参数（PARAM_KEYS），启动采集时覆盖全局默认值。
+每个采集器可以选择采集哪些数据（collect_live / collect_dynamics）。
 """
 from __future__ import annotations
 
@@ -16,6 +19,8 @@ import time
 # 每间直播间可覆盖的采集参数（服务级配置 host/port/token 等不在此列）
 PARAM_KEYS = ("protover", "heartbeat_seconds", "stale_seconds",
               "record_danmaku", "record_sc", "record_events")
+# 采集器可以选择采哪些数据
+COLLECT_KEYS = ("collect_live", "collect_dynamics")
 
 
 def _as_int(value, default=0):
@@ -65,6 +70,8 @@ class RoomStore:
                 "online": _as_int(item.get("online")),
                 "uname": str(item.get("uname") or "")[:80],
                 "face": str(item.get("face") or "")[:300],
+                "collect_live": item.get("collect_live", True) is not False,
+                "collect_dynamics": item.get("collect_dynamics", True) is not False,
                 "params": {k: params[k] for k in PARAM_KEYS if k in params},
                 "created_at": _as_int(item.get("created_at"))}
 
@@ -91,8 +98,9 @@ class RoomStore:
             raise ValueError("房间号必须是正整数")
         brief = brief or {}
         title = str(brief.get("title") or "")
+        uname = str(brief.get("uname") or "")
         given = str(label or "").strip()
-        display = given or (title[:24] if title else "房间 %s" % rid)
+        display = given or (uname[:24] or title[:24] or "房间 %s" % rid)
         with self.lock:
             for item in self.items:
                 if item["id"] == rid:
@@ -116,6 +124,17 @@ class RoomStore:
             self._save()
             return dict(item), True
 
+    def find_by_uid(self, uid):
+        uid = _as_int(uid)
+        with self.lock:
+            return next((dict(x) for x in self.items if uid and x["uid"] == uid),
+                        None)
+
+    def collect_targets(self, key="collect_dynamics"):
+        """返回打开了某个采集开关的采集器（用于按 up 主拉动态）。"""
+        with self.lock:
+            return [dict(x) for x in self.items if x.get(key, True)]
+
     @staticmethod
     def _apply_brief(item, brief):
         for key in ("uid", "short_id", "live_status", "live_time", "online"):
@@ -128,7 +147,7 @@ class RoomStore:
             item["face"] = str(brief["face"])[:300]
 
     def settings(self, room_id, patch):
-        """合并保存某间直播间的采集参数；房间不存在返回 None。"""
+        """合并保存某个采集器的开关与采集参数；不存在返回 None。"""
         rid = _as_int(room_id)
         with self.lock:
             for item in self.items:
@@ -137,6 +156,8 @@ class RoomStore:
                     for key, value in (patch or {}).items():
                         if key in PARAM_KEYS:
                             params[key] = value
+                        elif key in COLLECT_KEYS:
+                            item[key] = bool(value)
                     self._save()
                     return dict(item)
         return None

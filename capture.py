@@ -435,6 +435,42 @@ def fetch_room_brief(room_id, timeout=3):
     return out
 
 
+def fetch_room_by_uid(uid, timeout=3):
+    """按 up 主 uid 找直播间，再补一份完整房间信息。
+
+    采集器以 up 主 uid 为单位添加：填 uid 就能自动拿到房间号、昵称、头像、
+    直播状态与人气。没有开通直播间的主播会抛错。
+    """
+    uid = _as_int(uid)
+    if uid <= 0:
+        raise ValueError("up 主 uid 必须是正整数")
+    url = ("https://api.live.bilibili.com/room/v1/Room/"
+           "getRoomInfoOld?mid=%d" % uid)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": DEFAULT_UA, "Referer": "https://live.bilibili.com/"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if data.get("code") != 0:
+        raise RuntimeError("uid 查询 code=%s" % data.get("code"))
+    info = data.get("data") or {}
+    rid = _as_int(info.get("roomid"))
+    if rid <= 0:
+        raise RuntimeError("该 uid 没有开通直播间")
+    try:
+        out = fetch_room_brief(rid, timeout=timeout)
+    except Exception:
+        out = {"title": str(info.get("title") or ""), "uid": uid,
+               "short_id": 0, "live_status": _as_int(info.get("liveStatus")),
+               "live_time": 0, "online": _as_int(info.get("online")),
+               "uname": "", "face": str(info.get("face") or "")}
+    out["room_id"] = rid
+    if not _as_int(out.get("uid")):
+        out["uid"] = uid
+    if _as_int(out.get("live_status")) == 1 and not _as_int(out.get("live_time")):
+        out["live_time"] = _as_int(info.get("live_time"))
+    return out
+
+
 def fetch_identity(uid, timeout=3):
     """按 uid 取头像昵称（公开接口），给账号/直播间共用。失败返回空串。"""
     out = {"uid": _as_int(uid), "uname": "", "face": ""}

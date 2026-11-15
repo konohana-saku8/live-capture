@@ -242,8 +242,9 @@ class Store:
             self._write("UPDATE runs SET stopped_at=? WHERE id=?",
                         (int(time.time() * 1000), run_id))
 
-    def clear(self, room_id=None):
+    def clear(self, room_id=None, mid=0):
         rid = _as_int(room_id)
+        mid = _as_int(mid)
         with self.lock:
             for table in ("danmaku", "sc_message", "room_event"):
                 if rid:
@@ -251,6 +252,10 @@ class Store:
                                     (rid,))
                 else:
                     self.db.execute("DELETE FROM " + table)
+            if mid:
+                self.db.execute("DELETE FROM dynamics WHERE mid=?", (mid,))
+            elif not rid:
+                self.db.execute("DELETE FROM dynamics")
             self.db.commit()
 
     # ---------------- reads ----------------
@@ -428,38 +433,87 @@ class Store:
                 "interactions": dm[0] + sc[0] + ev,
                 "since": since, "until": until}
 
-    def live_sessions(self, room_id):
-        """按 LIVE 开播事件把数据切成一场场，返回每场时间边界与统计。
+    def live_segments(self, room_id):
+        """把一条直播间的数据切成「场」与「场间」，带每段统计。
 
-        每场 = 一次开播到下场开播前；最后一场 until=0（至今）。
-        旧版本采集的数据没有 LIVE 事件，此时退回按采集批次（runs）切分，
-        并在结果里标 approx=True，前端据此提示「按采集批次近似」。
+        - 场：开播 → 下播。没有下播记录（强杀 / 只开到一半）时，一直算到
+          下一次开播或至今，避免尾巴数据落在两段之间的缝里。
+        - 场间：上一场下播 → 这一场开播，也就是「上一次直播结束到这次开播前」
+          收到的弹幕；最后一场之后到至今的场间同样会给出（只要有数据）。
+        每段都返回时间边界与弹幕数 / SC 流水 / 去重观众数，前端列表直接展示。
+        旧版本采集的数据没有 LIVE 事件，退回按采集批次切分并标 approx。
         """
         rid = _as_int(room_id)
         if not rid:
             return []
         with self.lock:
-            live_starts = [r[0] for r in self.db.execute(
-                "SELECT received_at FROM room_event "
-                "WHERE room_id=? AND kind='live' AND detail='开播' "
-                "ORDER BY received_at ASC", (rid,))]
-        approx = False
-        if live_starts:
-            starts = live_starts
-        else:
-            # 兜底：按采集批次切分。用下一批次的开始作终点，区间更宽，
-            # 不会因为 stopped_at 缺失（强杀/异常退出）而丢掉尾巴数据。
-            with self.lock:
-                starts = [r[0] for r in self.db.execute(
-                    "SELECT started_at FROM runs WHERE room_id=? "
-                    "ORDER BY started_at ASC", (rid,))]
-            approx = bool(starts)
+            marks = [(r[0], r[1]) for r in self.db.execute(
+                "SELECT received_at, detail FROM room_event "
+                "WHERE room_id=? AND kind='live' "
+                "ORDER BY received_at ASC, seq ASC", (rid,))]
+        if not marks:
+            return self._segment_by_runs(rid)
+
+        shows = []          # [(start, end)]，end=0 表示还没下播
+        open_at = 0
+        for ts, detail in marks:
+            if detail == "开播":
+                if open_at and ts > open_at:
+                    shows.append((open_at, ts))
+                open_at = ts
+            elif detail == "下播" and open_at:
+                shows.append((open_at, ts if ts >= open_at else open_at))
+                open_at = 0
+        if open_at:
+            shows.append((open_at, 0))
+        if not shows:
+            return self._segment_by_runs(rid)
+
+        segs = []           # [(kind, start, end)]
+        last_end = 0
+        for start, end in shows:
+            # 上一场下播到这一场开播之间就是场间
+            if last_end and start > last_end:
+                segs.append(("gap", last_end, start))
+            segs.append(("live", start, end))
+            if end:
+                last_end = end
+        if last_end and shows[-1][1]:
+            segs.append(("gap", last_end, 0))     # 下播之后到现在（还在收弹幕）
+
+        out, seq_live, seq_gap = [], 0, 0
+        for kind, start, end in segs:
+            stat = self.range_stats(rid, start, end) or {}
+            if kind == "live":
+                seq_live += 1
+                index = seq_live
+            else:
+                seq_gap += 1
+                index = seq_gap
+            # 只保留确实有数据的尾部场间，避免空行噪声
+            if kind == "gap" and not stat.get("interactions"):
+                continue
+            out.append({"kind": kind, "index": index, "start": start,
+                        "end": end, "approx": False,
+                        "danmaku": stat.get("danmaku", 0),
+                        "sc": stat.get("sc", 0),
+                        "sc_amount": stat.get("sc_amount", 0),
+                        "viewers": stat.get("viewers", 0),
+                        "interactions": stat.get("interactions", 0)})
+        return out
+
+    def _segment_by_runs(self, rid):
+        """没有 LIVE 事件时的兜底：按采集批次切分，用下一批次的开始作终点。"""
+        with self.lock:
+            starts = [r[0] for r in self.db.execute(
+                "SELECT started_at FROM runs WHERE room_id=? "
+                "ORDER BY started_at ASC", (rid,))]
         out = []
         for i, start in enumerate(starts):
             end = starts[i + 1] if i + 1 < len(starts) else 0
             stat = self.range_stats(rid, start, end) or {}
-            out.append({"index": i + 1, "start": start, "end": end,
-                        "approx": approx,
+            out.append({"kind": "live", "index": i + 1, "start": start,
+                        "end": end, "approx": True,
                         "danmaku": stat.get("danmaku", 0),
                         "sc": stat.get("sc", 0),
                         "sc_amount": stat.get("sc_amount", 0),
@@ -493,12 +547,16 @@ class Store:
             self.db.commit()
         return len(data)
 
-    def list_dynamics(self, limit=200, q=""):
+    def list_dynamics(self, limit=200, q="", mid=0):
         limit = max(1, min(1000, _as_int(limit, 200)))
-        where, args = "", []
+        clauses, args = [], []
+        if _as_int(mid) > 0:
+            clauses.append("mid=?")
+            args.append(_as_int(mid))
         if q:
-            where = " WHERE (text LIKE ? OR text_trans LIKE ?)"
-            args = ["%" + q + "%", "%" + q + "%"]
+            clauses.append("(text LIKE ? OR text_trans LIKE ?)")
+            args.extend(["%" + q + "%", "%" + q + "%"])
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self.lock:
             rows = self.db.execute(
                 "SELECT * FROM dynamics" + where +
@@ -542,6 +600,8 @@ class Store:
                 "SELECT room_id FROM danmaku UNION "
                 "SELECT room_id FROM sc_message UNION "
                 "SELECT room_id FROM room_event)").fetchone()[0]
+            totals["dynamics"] = self.db.execute(
+                "SELECT COUNT(*) FROM dynamics").fetchone()[0]
 
             by_room = {}
             for key, table in TABLE_OF.items():
@@ -596,6 +656,10 @@ class Store:
                 "FROM sc_message WHERE deleted=0 ORDER BY price DESC, received_at DESC "
                 "LIMIT 5")]
 
+            # 动态条数按 up 主 uid 聚合（采集器卡上显示）
+            dyn_by_mid = {row[0]: row[1] for row in self.db.execute(
+                "SELECT mid, COUNT(*) FROM dynamics GROUP BY mid")}
+
             recent = []  # 最近动态不再在首页展示（接口保留字段兼容）
 
             now = int(time.time() * 1000)
@@ -615,7 +679,7 @@ class Store:
                 labels.append("%02d:00" % d.tm_hour)
         return {"totals": totals,
                 "by_room": sorted(by_room.values(), key=lambda x: x["room_id"]),
-                "top_sc": top_sc, "recent": recent,
+                "top_sc": top_sc, "recent": recent, "dyn_by_mid": dyn_by_mid,
                 "timeline": {"labels": labels, **timeline},
                 "last_received_at": max(
                     [x["last_at"] for x in by_room.values()] + [0])}
