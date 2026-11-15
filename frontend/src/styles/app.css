@@ -1,0 +1,17 @@
+/* 在旧样式之上做少量修正，不覆盖原有设计语言。 */
+
+/* 顶栏最后一项是「地址 · 服务正常」：不能让它被 flex 压缩，
+   宽度不够时整块换到第二行，而不是把文字裁掉。 */
+.navinfo{flex:0 0 auto}
+
+/* 空态时按钮是 disabled，保留边框让它们仍看得出是按钮。 */
+.btn:disabled{opacity:.55;cursor:not-allowed}
+
+/* 采集器清单为空时占满宽度，不要缩成一小块。 */
+.collector-list > .empty{grid-column:1/-1}
+
+/* 弹幕列里的表情兜底文字，和图片同高，不跳动。 */
+.emote-fallback{color:var(--dim);font-size:11.5px}
+
+/* 动态卡片编辑态：textarea 占满卡片宽度 */
+.dyn-card .dyn-edit textarea{width:100%;min-height:78px}
