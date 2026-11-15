@@ -619,13 +619,16 @@ class Handler(BaseHTTPRequestHandler):
                 mid=q.get("mid") or 0)
             # 定时抓取是这一位 up 主自己的设置，随列表一起回填给页面
             room = self.server.rooms.get(q.get("room_id")) or {}
+            mid = _as_int(q.get("mid"))
+            last_ts = (_as_int(room.get("dyn_last_ts")) or
+                       self.server.store.last_dyn_fetch(mid))
             self._json({"ok": True, "total": total, "items": items,
                         "limit": limit, "offset": offset,
                         "status": self.server.dynamics.status(),
                         "config": {"dyn_auto": bool(room.get("dyn_auto")),
                                    "dyn_hour": _as_int(room.get("dyn_hour"), 8),
                                    "dyn_minute": _as_int(room.get("dyn_minute")),
-                                   "dyn_last_ts": _as_int(room.get("dyn_last_ts")),
+                                   "dyn_last_ts": last_ts,
                                    "collect_dynamics": room.get("collect_dynamics", True)}})
             return
         if path == "/api/config":

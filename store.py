@@ -612,6 +612,16 @@ class Store:
             self.db.commit()
         return len(data)
 
+    def last_dyn_fetch(self, mid=0):
+        """某位 up 主最近一次拉到动态的时间（老数据没有 dyn_last_ts 时兜底）。"""
+        sql = "SELECT COALESCE(MAX(fetched_at),0) FROM dynamics"
+        args = []
+        if _as_int(mid) > 0:
+            sql += " WHERE mid=?"
+            args.append(_as_int(mid))
+        with self.lock:
+            return self.db.execute(sql, args).fetchone()[0] or 0
+
     def list_dynamics(self, limit=200, offset=0, q="", mid=0):
         """按发布时间倒序取一页动态；返回 (总数, 这一页的条目)。"""
         limit = max(1, min(1000, _as_int(limit, 200)))
