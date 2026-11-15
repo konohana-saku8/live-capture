@@ -660,15 +660,23 @@ class Store:
                 item["sc_peak"] = self.db.execute(
                     "SELECT COALESCE(MAX(price),0) FROM sc_message "
                     "WHERE room_id=? AND deleted=0", (rid,)).fetchone()[0]
+                # 最近一次开播（采集到的 LIVE 开播事件），采集器清单上显示
+                item["last_live_at"] = self.db.execute(
+                    "SELECT COALESCE(MAX(received_at),0) FROM room_event "
+                    "WHERE room_id=? AND kind='live' AND detail='开播'",
+                    (rid,)).fetchone()[0]
 
             top_sc = [dict(r) for r in self.db.execute(
                 "SELECT room_id, uname, price, message, message_trans, received_at "
                 "FROM sc_message WHERE deleted=0 ORDER BY price DESC, received_at DESC "
                 "LIMIT 5")]
 
-            # 动态条数按 up 主 uid 聚合（采集器卡上显示）
-            dyn_by_mid = {row[0]: row[1] for row in self.db.execute(
-                "SELECT mid, COUNT(*) FROM dynamics GROUP BY mid")}
+            # 动态按 up 主 uid 聚合：条数 + 最近一次拉到的时间
+            dyn_by_mid = {}
+            for row in self.db.execute(
+                    "SELECT mid, COUNT(*), COALESCE(MAX(fetched_at),0) "
+                    "FROM dynamics GROUP BY mid"):
+                dyn_by_mid[row[0]] = {"n": row[1], "last_at": row[2] or 0}
 
             recent = []  # 最近动态不再在首页展示（接口保留字段兼容）
 

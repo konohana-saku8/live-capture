@@ -217,6 +217,39 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .sub-tab.on .n{color:var(--fire-soft)}
 .room-block[data-panel]{border-top:0;margin-top:0;padding-top:16px}
 .room-block[data-panel][hidden]{display:none!important}
+/* 采集器清单：一条 = 一个采集目标（采谁、在采什么、采了多少） */
+.collector-list{display:flex;flex-direction:column;gap:8px}
+.collector{display:flex;gap:11px;align-items:flex-start;padding:11px 13px;border-radius:11px;
+  border:1px solid var(--line);background:rgba(255,255,255,.018);cursor:pointer;
+  transition:.16s;min-width:0;position:relative}
+.collector:hover{border-color:var(--line-strong);background:rgba(255,255,255,.035)}
+.collector.on{border-color:rgba(255,122,69,.42);
+  background:radial-gradient(120% 150% at 0% 0%,rgba(255,122,69,.11),transparent 60%),rgba(255,255,255,.02)}
+.collector.on::before{content:"";position:absolute;left:0;top:11px;bottom:11px;width:2px;
+  border-radius:2px;background:linear-gradient(180deg,var(--fire-soft),var(--fire))}
+.collector .cface{width:34px;height:34px;border-radius:50%;object-fit:cover;flex:none;
+  border:1px solid var(--line-strong);background:rgba(255,255,255,.04)}
+.collector .cmain{flex:1 1 auto;min-width:0}
+.collector .crow{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.collector .crow b{font:500 13.5px/1.35 var(--jp);color:var(--ink);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.collector .cid{font:10px/1.5 var(--mono);color:var(--dim-2);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.collector .cx{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;
+  font-size:11px;color:var(--dim);opacity:.5;flex:none;margin-left:auto}
+.collector .cx:hover{opacity:1;background:rgba(224,115,107,.14);color:var(--bad)}
+.collector .cgoals{display:flex;flex-direction:column;gap:3px;margin-top:6px}
+.collector .goal{display:flex;align-items:baseline;gap:7px;font:11px/1.55 var(--mono);
+  color:var(--dim);min-width:0;flex-wrap:wrap}
+.collector .goal em{font-style:normal;flex:none;font-size:9.5px;letter-spacing:.06em;
+  border:1px solid var(--line-strong);border-radius:5px;padding:0 5px;color:var(--dim-2)}
+.collector .goal.live em{border-color:rgba(255,122,69,.4);color:var(--fire-soft);
+  background:rgba(255,122,69,.09)}
+.collector .goal.dyn em{border-color:rgba(232,196,137,.34);color:var(--gold);
+  background:rgba(232,196,137,.07)}
+.collector .goal b{font-weight:500;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.collector .goal .off{color:var(--dim-2)}
+.collector-add{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .tab-tools{display:flex;gap:7px;margin-left:auto;flex:none;align-items:center;flex-wrap:wrap}
 .modal{position:fixed;inset:0;z-index:100;background:rgba(6,4,3,.74);
   display:flex;align-items:center;justify-content:center;padding:20px}
@@ -306,6 +339,9 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .dyn-card .dyn-edit{margin-top:10px;display:flex;flex-direction:column;gap:7px}
 .dyn-card .dyn-edit[hidden]{display:none!important}
 .dyn-card .dyn-edit textarea{min-height:58px;resize:vertical;font-size:12.5px}
+.dyn-card .dyn-edit .unsaved{font-size:10.5px;color:var(--fire-soft);display:none}
+.dyn-card .dyn-edit.dirty textarea{border-color:rgba(255,122,69,.55)}
+.dyn-card .dyn-edit.dirty .unsaved{display:block}
 .dyn-card .dyn-actions{display:flex;gap:7px;flex-wrap:wrap}
 .dyn-card .dyn-tools{margin-top:9px}
 .dyn-card .dyn-tools[hidden]{display:none!important}
@@ -420,8 +456,6 @@ body.gated .top,body.gated main{display:none!important}
     <div class="kv-grid wide" id="svcGrid"></div>
   </section>
 
-  <div class="stats" id="statRow"></div>
-
   <section class="card">
     <div class="sec-head"><h2><i>◆</i>采集器</h2>
       <span class="more" id="roomSummary">—</span></div>
@@ -430,12 +464,12 @@ body.gated .top,body.gated main{display:none!important}
 
   <section class="card">
     <div class="sec-head"><h2><i>◆</i>近 12 小时</h2>
-      <span class="more">弹幕 / SC / 事件</span></div>
+      <span class="more">全部采集器合计 · 弹幕 / SC / 事件</span></div>
     <div class="bars" id="timeline"></div>
   </section>
 
   <section class="card">
-    <div class="sec-head"><h2><i>◆</i>高额 SC</h2><span class="more">按金额 · 前 5</span></div>
+    <div class="sec-head"><h2><i>◆</i>高额 SC</h2><span class="more">全部采集器 · 按金额前 5</span></div>
     <div class="recent" id="topSc"></div>
   </section>
 </div>
@@ -443,9 +477,13 @@ body.gated .top,body.gated main{display:none!important}
 <!-- ============ 采集器 ============ -->
 <div class="page" id="page-rooms" hidden>
   <section class="card">
-    <div class="sec-head"><h2><i>◆</i>采集器</h2>
+    <div class="sec-head"><h2><i>◆</i>采集目标</h2>
       <span class="more">绿点＝采集中 · 红点＝未采集</span></div>
-    <div class="tabs" id="roomTabs"></div>
+    <div class="collector-list" id="roomTabs"></div>
+    <div class="collector-add">
+      <button class="btn sm" id="tabAdd">＋ 添加采集器</button>
+      <span class="muted">填 up 主 uid，自动解析直播间号、昵称与头像</span>
+    </div>
     <div class="hint" id="roomHint"></div>
   </section>
 
@@ -634,7 +672,7 @@ body.gated .top,body.gated main{display:none!important}
 var S={page:'home',rooms:[],roomId:0,active:0,running:false,
        filters:{danmaku:true,sc:true,events:true},q:'',
        segs:[],sessSel:'all',sessStart:0,sessEnd:0,collectRoomId:0,
-       subTab:localStorage.getItem('lc-subtab')||'live',
+       subTab:localStorage.getItem('lc-subtab')||'live',cfgSnap:null,
        cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
 var $=function(id){return document.getElementById(id)};
 var GUARD={1:'总督',2:'提督',3:'舰长'};
@@ -809,14 +847,6 @@ function renderDashboard(j){
   S.svc=j.service;S.cfg=j.config;S.rooms=(j.rooms&&j.rooms.items)||[];
   S.active=j.capture.active;S.running=j.capture.running;
   setBadge(S.active,S.running);
-  var t=j.totals||{};
-  $('statRow').innerHTML=
-    '<div class="stat"><b>'+num(t.danmaku)+'</b><span>弹幕</span></div>'+
-    '<div class="stat"><b>'+num(t.sc)+'</b><span>SUPER CHAT</span></div>'+
-    '<div class="stat"><b>¥'+num(t.sc_amount)+'</b><span>SC 总额</span></div>'+
-    '<div class="stat"><b>'+num(t.events)+'</b><span>直播间事件</span></div>'+
-    '<div class="stat"><b>'+num(S.rooms.length)+'</b><span>采集器</span></div>'+
-    '<div class="stat"><b>'+num(S.active)+'</b><span>采集中</span></div>';
   $('roomSummary').textContent=S.rooms.length+' 位 up 主 · '+S.active+' 位正在采集';
   $('roomGrid').innerHTML=S.rooms.length?S.rooms.map(function(r){
     var c=r.totals||{},live={0:'未开播',1:'直播中',2:'轮播'}[r.live_status]||'未知';
@@ -921,8 +951,10 @@ function liveSince(r){
    并在 #roomPanel 里加一个 .room-block[data-panel="同名"]，再把名字放进
    SUBTABS，加载逻辑按需加一行即可。 */
 var SUBTABS=['live','dyn'];
-function showSubTab(name,skipLoad){
+function showSubTab(name,skipLoad,silent){
   if(SUBTABS.indexOf(name)<0)name=SUBTABS[0];
+  if(!silent&&S.subTab==='dyn'&&name!=='dyn'&&
+     !confirmDynDirty('译文还没保存，切换标签会丢掉这次修改，继续吗？'))return false;
   S.subTab=name;localStorage.setItem('lc-subtab',name);
   document.querySelectorAll('#roomSubTabs .sub-tab').forEach(function(b){
     b.classList.toggle('on',b.dataset.sub===name);
@@ -942,14 +974,37 @@ function renderRooms(j){
   var ids=S.rooms.map(function(r){return r.id});
   if(ids.indexOf(S.roomId)<0){S.roomId=ids.length?ids[0]:0;localStorage.setItem('lc-room',String(S.roomId))}
   $('roomTabs').innerHTML=S.rooms.map(function(r){
-    return '<div class="tab '+(r.id===S.roomId?'on':'')+'" data-room="'+esc(r.id)+
-      '" title="UID '+esc(r.uid||'—')+' · 房间 '+esc(r.id)+'">'+
-      '<i class="st '+(r.running?'on':'')+'" title="'+(r.running?'采集中':'未采集')+'"></i>'+
-      '<span class="lbl">'+esc(r.uname||r.label)+'</span>'+
-      '<button class="x" data-x="'+esc(r.id)+'" title="删除采集器（保留已采集数据）">✕</button></div>';
-  }).join('')+'<button class="tab add" id="tabAdd" title="按 up 主 uid 添加采集器">＋</button>';
+    var c=r.totals||{},name=r.uname||r.label;
+    var colLive=r.collect_live!==false,colDyn=r.collect_dynamics!==false;
+    // 采集目标这一行：采谁 + 在采什么 + 采了多少
+    var goalLive=colLive
+      ? '<span class="goal live"><em>直播间</em>累计开播 <b>'+num(c.sessions)+'</b> 次 · '+
+        '最近开播 <b>'+(r.last_live_at?fmtFull(r.last_live_at):'—')+'</b>'+
+        (r.running?' · <b>实时采集中</b>':'')+'</span>'
+      : '<span class="goal live"><em>直播间</em><span class="off">已关闭</span></span>';
+    var goalDyn=colDyn
+      ? '<span class="goal dyn"><em>动态</em>累计 <b>'+num(r.dyns)+'</b> 条 · '+
+        (r.dyn_auto?'每天 <b>'+esc(r.dyn_schedule||'—')+'</b> 定时拉取':'定时拉取已关')+
+        (r.dyn_last_at?' · 上次 <b>'+fmtFull(r.dyn_last_at)+'</b>':' · 还没拉过')+'</span>'
+      : '<span class="goal dyn"><em>动态</em><span class="off">已关闭</span></span>';
+    return '<div class="collector '+(r.id===S.roomId?'on':'')+'" data-room="'+esc(r.id)+'">'+
+      (cdnImg(r.face,'cface','up 主头像')||
+        '<span class="cface"></span>')+
+      '<div class="cmain">'+
+        '<div class="crow"><b>'+esc(name)+'</b>'+
+          '<span class="dot '+(r.running?'on':'')+'" title="'+(r.running?'采集中':'未采集')+
+            '"><i></i>'+(r.running?'采集中':'未采集')+'</span>'+
+          '<span class="cid">UID '+esc(r.uid||'—')+' · ROOM '+esc(r.id)+'</span>'+
+          '<button class="cx" data-x="'+esc(r.id)+'" title="删除采集器（保留已采集数据）">✕</button>'+
+        '</div>'+
+        '<div class="cgoals">'+goalLive+goalDyn+'</div>'+
+      '</div></div>';
+  }).join('');
   renderRoomPanel();
-  if(prevRoom!==S.roomId&&S.page==='rooms')showSubTab(S.subTab);
+  /* 动态标签的数字先用采集器列表里的条数预填，免得没打开过动态时显示「—」 */
+  var cur=currentRoom();
+  if(cur)$('subN-dyn').textContent=num(cur.dyns||0)+' 条';
+  if(prevRoom!==S.roomId&&S.page==='rooms')showSubTab(S.subTab,false,true);
 }
 function renderRoomPanel(){
   var r=currentRoom(),has=!!r;
@@ -1013,6 +1068,7 @@ async function loadRooms(){
   try{renderRooms(await api('/api/rooms'))}catch(e){}
 }
 async function selectRoom(id){
+  if(!confirmDynDirty('译文还没保存，切换采集器会丢掉这次修改，继续吗？'))return;
   S.roomId=parseInt(id,10)||0;
   localStorage.setItem('lc-room',String(S.roomId));
   // 切采集器时场次与选中态回到「全部」，并清掉上一家的动态
@@ -1270,7 +1326,8 @@ function renderDynamics(j){
           (it.text_trans?'<div class="dyn-trans">'+esc(it.text_trans)+'</div>':'')+
           (pics?'<div class="dyn-pics">'+pics+'</div>':'')+
           '<div class="dyn-edit" hidden>'+
-            '<textarea placeholder="添加译文（人工翻译，留空保存即清除）">'+esc(it.text_trans||'')+'</textarea>'+
+            '<textarea data-orig="'+esc(it.text_trans||'')+'" placeholder="添加译文（人工翻译，留空保存即清除）">'+esc(it.text_trans||'')+'</textarea>'+
+            '<span class="unsaved">未保存 · 记得点「保存译文」</span>'+
             '<div class="dyn-actions">'+
               '<button class="btn sm primary" data-dynsave="'+esc(it.dyn_id)+'">保存译文</button>'+
               '<button class="btn sm" data-dyncancel="1">取消</button>'+
@@ -1310,6 +1367,20 @@ async function fetchDynamics(){
   finally{$('btnDynFetch').disabled=false}
 }
 function dynCardOf(el){return el.closest('.dyn-card')}
+/* 译文未保存检测：只看已展开的编辑框，内容和打开时的原文不同就算脏。
+   取消、切标签、切采集器、切页面、关页面前都要过一遍。 */
+function dynDirtyCard(){
+  var tas=document.querySelectorAll('#dynList .dyn-edit:not([hidden]) textarea');
+  for(var i=0;i<tas.length;i++){
+    var ta=tas[i],orig=ta.getAttribute('data-orig')||'';
+    if(ta.value.trim()!==orig.trim())return ta.closest('.dyn-card');
+  }
+  return null;
+}
+function confirmDynDirty(msg){
+  if(!dynDirtyCard())return true;
+  return confirm(msg||'译文还没保存，确定放弃这次的修改？');
+}
 
 /* ---------- 配置 ---------- */
 function renderAcctChip(){
@@ -1375,9 +1446,22 @@ async function uploadAccount(){
   reader.onerror=function(){say('acctHint','文件读取失败','err')};
   reader.readAsText(f,'utf-8');
 }
+function cfgValues(){
+  return {proto:$('f_proto').value,heartbeat:$('f_heartbeat').value,
+          stale:$('f_stale').value,host:$('f_host').value,port:$('f_port').value,
+          token:$('f_token').value,auto:$('f_auto').checked,
+          dm:$('f_dm').checked,sc:$('f_sc').checked,ev:$('f_ev').checked};
+}
+function cfgDirty(){
+  if(!S.cfgSnap)return false;
+  try{return JSON.stringify(cfgValues())!==JSON.stringify(S.cfgSnap)}
+  catch(e){return false}
+}
 function fillConfig(cfg){
   if(!cfg)return;
-  if(document.activeElement&&document.activeElement.tagName==='INPUT')return;
+  // 正在这个表单里操作，或已经有没保存的修改时，不要用轮询结果覆盖
+  if($('cfgForm').contains(document.activeElement))return;
+  if(cfgDirty())return;
   $('f_host').value=cfg.host||'0.0.0.0';
   $('f_port').value=cfg.port||8765;
   $('f_auto').checked=!!cfg.auto_start;
@@ -1389,6 +1473,7 @@ function fillConfig(cfg){
   $('f_sc').checked=cfg.record_sc!==false;
   $('f_ev').checked=cfg.record_events!==false;
   S.cfg=cfg;
+  S.cfgSnap=cfgValues();
 }
 async function loadStatus(){
   try{
@@ -1423,6 +1508,11 @@ function renderLogs(){
 
 /* ---------- 页面切换 ---------- */
 function showPage(name){
+  /* 有没保存的修改就拦一下：译文 / 采集参数 */
+  if(S.page==='rooms'&&name!=='rooms'&&
+     !confirmDynDirty('译文还没保存，离开采集器会丢掉这次修改，继续吗？'))return;
+  if(S.page==='config'&&name!=='config'&&cfgDirty()&&
+     !confirm('采集参数还有未保存的修改，离开就会丢掉，继续吗？'))return;
   S.page=name;localStorage.setItem('lc-page',name);
   validPages.forEach(function(p){$('page-'+p).hidden=p!==name});
   document.querySelectorAll('.nav button[data-page]').forEach(function(b){
@@ -1475,10 +1565,10 @@ $('roomSubTabs').addEventListener('click',function(e){
 $('roomTabs').addEventListener('click',function(e){
   var x=e.target.closest('button[data-x]');
   if(x){removeRoom(x.dataset.x);return}
-  if(e.target.closest('#tabAdd')){openAddModal(true);return}
-  var tab=e.target.closest('.tab[data-room]');
-  if(tab)selectRoom(tab.dataset.room);
+  var item=e.target.closest('[data-room]');
+  if(item)selectRoom(item.dataset.room);
 });
+$('tabAdd').onclick=function(){openAddModal(true)};
 $('sessionList').addEventListener('click',function(e){
   var b=e.target.closest('.session-item[data-sess]');
   if(b)selectSession(b.dataset.sess);
@@ -1523,6 +1613,15 @@ $('btnDynSaveCfg').onclick=async function(){
 };
 var dynQTimer=null;
 $('dynQ').addEventListener('input',function(){clearTimeout(dynQTimer);dynQTimer=setTimeout(loadDynamics,300)});
+$('dynList').addEventListener('input',function(e){
+  var ta=e.target;
+  if(!ta||ta.tagName!=='TEXTAREA')return;
+  var box=ta.closest('.dyn-edit');
+  if(!box)return;
+  /* 改了没保存就标记出来，切走时也会据此提示 */
+  var orig=ta.getAttribute('data-orig')||'';
+  box.classList.toggle('dirty',ta.value.trim()!==orig.trim());
+});
 $('dynList').addEventListener('click',async function(e){
   var edit=e.target.closest('button[data-dynedit]');
   if(edit){
@@ -1535,7 +1634,12 @@ $('dynList').addEventListener('click',async function(e){
   var cancel=e.target.closest('button[data-dyncancel]');
   if(cancel){
     var c=dynCardOf(cancel);
+    var ta0=c.querySelector('.dyn-edit textarea');
+    if(ta0&&ta0.value.trim()!==(ta0.getAttribute('data-orig')||'').trim()&&
+       !confirm('译文还没保存，确定放弃这次的修改吗？'))return;
+    if(ta0)ta0.value=ta0.getAttribute('data-orig')||'';
     c.querySelector('.dyn-edit').hidden=true;
+    c.querySelector('.dyn-edit').classList.remove('dirty');
     c.querySelector('.dyn-tools').hidden=false;
     return;
   }
@@ -1627,13 +1731,16 @@ $('cfgForm').onsubmit=async function(e){
     var j=await api('/api/config',{method:'POST',body:JSON.stringify(p)});
     say('cfgHint','配置已保存'+(j.restart_required?'；采集运行中，需停止后重新启动才生效':''),'ok');
     if(t){tokenInput.value=t;localStorage.setItem('lc-token',t)}   // 同步新口令，避免自己被锁在外面
-    $('f_token').value='';await loadStatus();
+    $('f_token').value='';
+    S.cfgSnap=cfgValues();   // 已落盘，清掉「未保存」标记
+    await loadStatus();
   }catch(err){say('cfgHint','保存失败：'+err.message,'err')}
 };
 $('btnClearToken').onclick=async function(){
   try{
     await api('/api/config',{method:'POST',body:JSON.stringify({token:''})});
     tokenInput.value='';localStorage.removeItem('lc-token');
+    S.cfgSnap=cfgValues();
     say('cfgHint','已清除访问口令','ok');await loadStatus();
   }catch(e){say('cfgHint',e.message,'err')}
 };
@@ -1658,6 +1765,12 @@ setInterval(function(){
 },4000);
 document.addEventListener('visibilitychange',function(){
   if(!document.hidden){loadStatus();loadAccounts();showPage(S.page)}
+});
+/* 关页 / 刷新前最后一道闸：有没保存的译文或采集参数就交给浏览器拦一下 */
+window.addEventListener('beforeunload',function(e){
+  if(dynDirtyCard()||(S.page==='config'&&cfgDirty())){
+    e.preventDefault();e.returnValue='';
+  }
 });
 function initApp(){
   // 动态定时「时:分」下拉（0–23 时 / 0–59 分，精确到分钟）

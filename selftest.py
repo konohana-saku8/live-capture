@@ -586,6 +586,14 @@ def main():
               all(k in j["items"][0] for k in
                   ("face", "uname", "uid", "live_time", "params", "live_stats",
                    "collect_live", "collect_dynamics", "dyns")))
+        check("采集器列表带采集目标摘要：最近开播 / 动态定时 / 上次拉取",
+              all(k in j["items"][0] for k in
+                  ("last_live_at", "dyn_last_at", "dyn_schedule", "dyn_auto")) and
+              j["items"][0]["last_live_at"] >= 1794600000000 and
+              isinstance(j["items"][0]["dyn_schedule"], str) and
+              ":" in j["items"][0]["dyn_schedule"],
+              {k: j["items"][0].get(k) for k in
+               ("last_live_at", "dyn_last_at", "dyn_schedule")})
         check("开播中的房间有本场统计",
               j["items"][0]["live_stats"] is not None and
               j["items"][0]["live_stats"]["since"] == 1794600000000,
@@ -968,10 +976,21 @@ def main():
                                       "SUBTABS", "lc-subtab", "subN-live",
                                       "subN-dyn")) and
               page.index('data-panel="live"') < page.index('data-panel="dyn"'))
-        check("首页按直播间为单位：开播场次/流水/互动/观众，且无最近动态",
+        check("首页只按 up 主分，不再有跨 up 主合计统计条",
               all(k in page for k in ("开播场次", "累计流水", "互动总数", "观众数",
                                       "metrics")) and
-              "最近动态" not in page and "recentList" not in page)
+              'id="statRow"' not in page and "最近动态" not in page and
+              "recentList" not in page)
+        check("采集器清单列出采集目标：谁的动态/定时何时/累计多少 + 开播次数/最近开播",
+              all(k in page for k in ("collector-list", "collector-add",
+                                      'class="goal live"', 'class="goal dyn"',
+                                      "last_live_at", "dyn_schedule",
+                                      "dyn_last_at", "实时采集中",
+                                      "累计开播")))
+        check("未保存修改会提示：译文 / 采集参数 / 关页前",
+              all(k in page for k in ("dynDirtyCard", "confirmDynDirty",
+                                      "data-orig", "cfgDirty", "cfgSnap",
+                                      "beforeunload", "未保存")))
         check("首页设备与服务在最上面：局域网/监听/时长/websockets/数据目录/口令",
               all(k in page for k in ("devGrid", "loadSystem", "renderSystem",
                                       "/api/system", "CPU 占用", "内存占用", "存储占用",

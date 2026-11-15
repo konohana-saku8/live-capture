@@ -429,6 +429,10 @@ class Handler(BaseHTTPRequestHandler):
         dash = self.server.store.dashboard()
         totals = {x["room_id"]: x for x in dash.get("by_room") or []}
         dyn_by_mid = dash.get("dyn_by_mid") or {}
+        cfg = self.server.config.get()
+        dyn_schedule = "%02d:%02d" % (_as_int(cfg.get("dyn_hour"), 8),
+                                      _as_int(cfg.get("dyn_minute"), 0))
+        dyn_auto = bool(cfg.get("dyn_auto"))
         items = []
         for room in rooms:
             st = states.get(room["id"]) or {}
@@ -460,7 +464,11 @@ class Handler(BaseHTTPRequestHandler):
                 last_error=st.get("last_error", ""),
                 warning=st.get("warning", ""),
                 counts=st.get("counts", {}),
-                dyns=dyn_by_mid.get(_as_int(room.get("uid")), 0),
+                dyns=(dyn_by_mid.get(_as_int(room.get("uid"))) or {}).get("n", 0),
+                dyn_last_at=(dyn_by_mid.get(_as_int(room.get("uid"))) or {}).get("last_at", 0),
+                dyn_schedule=dyn_schedule,
+                dyn_auto=dyn_auto,
+                last_live_at=agg.get("last_live_at", 0),
                 totals={"danmaku": agg.get("danmaku", 0),
                         "sc": agg.get("sc", 0),
                         "events": agg.get("events", 0),
