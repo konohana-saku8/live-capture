@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 *.log
 .state/
+node_modules/
+dist/

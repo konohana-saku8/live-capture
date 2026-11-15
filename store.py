@@ -568,6 +568,42 @@ class Store:
                 "ORDER BY received_at DESC, seq DESC LIMIT 1", (rid,)).fetchone()
         return (row[0], row[1]) if row else None
 
+    def delete_session(self, room_id, start, end, with_marks=False):
+        """删掉一个场次（或场间）时间段内的全部数据，不可恢复。
+
+        - ``end=0`` 表示这段还没有结束（进行中的场 / 最后一段场间），一直删到
+          最新；``end`` 毫秒以内含端点（下播那一条标记恰好等于 ``end``）。
+        - ``with_marks=True`` 连同该时间段的「开播 / 下播」标记一起删，删整场
+          用；场间不能动标记，否则相邻两场会被并到一起。
+        返回各类删除条数，供前端提示。
+        """
+        rid = _as_int(room_id)
+        start = _as_int(start)
+        end = _as_int(end)
+        if not rid or start <= 0:
+            raise ValueError("room_id/start 必填")
+        if end and end < start:
+            raise ValueError("end 不能早于 start")
+        out = {"danmaku": 0, "sc": 0, "events": 0}
+        with self.lock:
+            for table, key in (("danmaku", "danmaku"), ("sc_message", "sc")):
+                sql = "DELETE FROM %s WHERE room_id=? AND received_at>=?" % table
+                args = [rid, start]
+                if end:
+                    sql += " AND received_at<=?"
+                    args.append(end)
+                out[key] = max(0, self.db.execute(sql, args).rowcount)
+            # 场间：内容全删（礼物 / 进入等事件都算内容），但开播/下播标记保留；
+            # 整场：room_event 连标记一起删。
+            sql = ("DELETE FROM room_event WHERE room_id=? AND received_at>=?"
+                   + (" AND received_at<=?" if end else ""))
+            if not with_marks:
+                sql += " AND kind<>'live'"
+            args = [rid, start] + ([end] if end else [])
+            out["events"] = max(0, self.db.execute(sql, args).rowcount)
+            self.db.commit()
+        return out
+
     def _segment_unsegmented(self, rid):
         """一次开播都还没记录：所有采集到的内容归为一段，等下次开播再切开。
 

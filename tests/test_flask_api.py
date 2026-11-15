@@ -120,6 +120,70 @@ class FlaskApiTest(unittest.TestCase):
         self.assertIn("capture", data)
         self.assertIn("rooms", data)
 
+    # ---------- 场次删除 ----------
+
+    def _seed_session(self):
+        """造一场完整的直播数据：开播 → 弹幕/SC/事件 → 下播。"""
+        rt = self.rt
+        st = rt.store
+        rid = 22749001
+        start, end = 1794700000000, 1794703600000
+        st.insert_event({"room_id": rid, "kind": "live", "detail": "开播",
+                         "event_time": start // 1000, "received_at": start,
+                         "raw_json": "{}"})
+        st.insert_danmaku([{"room_id": rid, "uid": 1, "uname": "a",
+                            "text": "hi", "received_at": start + 1000},
+                           {"room_id": rid, "uid": 2, "uname": "b",
+                            "text": "yo", "received_at": start + 2000},
+                           {"room_id": rid, "uid": 3, "uname": "c",
+                            "text": "keep", "received_at": end + 60000}])
+        st.insert_event({"room_id": rid, "kind": "live", "detail": "下播",
+                         "event_time": end // 1000, "received_at": end,
+                         "raw_json": "{}"})
+        return rid, start, end
+
+    def test_session_delete_validation(self):
+        self.assertStatus(self.post("/api/session/delete", {"start": 1}), 400,
+                          "缺 room_id")
+        self.assertStatus(self.post("/api/session/delete",
+                                    {"room_id": 1, "start": 1}), 400, "缺 kind")
+        self.assertStatus(self.post("/api/session/delete",
+                                    {"room_id": 1, "start": 1, "kind": "bad"}),
+                          400, "kind 非法")
+        self.assertStatus(self.post("/api/session/delete",
+                                    {"room_id": 1, "start": 2, "end": 1,
+                                     "kind": "live"}), 400, "end 早于 start")
+
+    def test_session_delete_live(self):
+        rid, start, end = self._seed_session()
+        resp = self.post("/api/session/delete",
+                         {"room_id": rid, "start": start, "end": end,
+                          "kind": "live"})
+        self.assertStatus(resp, 200)
+        d = resp.get_json()["deleted"]
+        self.assertEqual(d["danmaku"], 2)
+        self.assertEqual(d["events"], 2)          # 开播 + 下播标记一起删
+        segs = self.get("/api/sessions?room_id=%d" % rid).get_json()["segments"]
+        self.assertEqual(len(segs), 1)            # 标记删光 → 归「未分段」
+        self.assertEqual(segs[0].get("single"), True)
+        rows = self.rt.store.query("danmaku", limit=10, room_id=rid)[1]
+        self.assertEqual([r["text"] for r in rows], ["keep"])
+
+    def test_session_delete_gap_keeps_marks(self):
+        rid, start, end = self._seed_session()
+        resp = self.post("/api/session/delete",
+                         {"room_id": rid, "start": start, "end": end,
+                          "kind": "gap"})
+        self.assertStatus(resp, 200)
+        d = resp.get_json()["deleted"]
+        self.assertEqual(d["danmaku"], 2)
+        self.assertEqual(d["events"], 0)          # 开播/下播标记保留
+        segs = self.get("/api/sessions?room_id=%d" % rid).get_json()["segments"]
+        self.assertEqual(len(segs), 2)            # 场还在（内容空了）+ 场间
+        self.assertEqual(segs[0]["kind"], "live")
+        self.assertEqual(segs[0]["danmaku"], 0)
+        self.assertEqual(segs[1]["danmaku"], 1)   # 「keep」留在场间
+
     def test_bad_json_body(self):
         resp = self.client.post("/api/config", data="{not json",
                                 content_type="application/json")

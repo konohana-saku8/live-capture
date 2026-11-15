@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from flask import Blueprint, Response
 
-from ..http import ApiError, arg, bool_arg, int_arg
-from ..settings import VALID_KINDS
+from ..http import ApiError, arg, bool_arg, int_arg, json_post
+from ..settings import VALID_KINDS, as_int
 from . import rt
 
 bp = Blueprint("feed", __name__, url_prefix="/api")
@@ -69,6 +69,24 @@ def sessions():
     segs = r.store.live_segments(rid)
     return {"ok": True, "room_id": rid, "segments": segs,
             "sessions": segs, "total": len(segs)}
+
+
+@bp.post("/session/delete")
+@json_post
+def session_delete(payload: dict):
+    """删掉一个场次 / 场间：时间段内的弹幕、SC、事件一起删，不可恢复。"""
+    r = rt()
+    rid = as_int(payload.get("room_id"))
+    start = as_int(payload.get("start"))
+    end = as_int(payload.get("end"))
+    kind = str(payload.get("kind") or "")
+    if not rid or start <= 0:
+        raise ApiError("缺少 room_id / start", 400)
+    if kind not in ("live", "gap"):
+        raise ApiError("kind 必须是 live 或 gap", 400)
+    deleted = r.store.delete_session(rid, start, end,
+                                     with_marks=(kind == "live"))
+    return {"ok": True, "room_id": rid, "deleted": deleted}
 
 
 def _list_kind(kind: str):

@@ -5,8 +5,8 @@ import { computed, ref } from 'vue'
 import { download } from '@/api/client'
 import { segRange, segTitle } from '@/lib/format'
 import {
-  currentRoom, currentSeg, hint, loadFeed, loadMore, loadSessions,
-  selectSession, state,
+  currentRoom, currentSeg, deleteSession, hint, loadFeed, loadMore,
+  loadSessions, selectSession, state,
 } from '@/stores/app'
 import type { FeedKind, Segment } from '@/types'
 import FeedColumn from './FeedColumn.vue'
@@ -50,6 +50,27 @@ function onQueryInput() {
 
 function reload() {
   loadSessions()
+}
+
+/** 删除当前选中的场次：确认一次再提交，删完刷新场次列表与内容。 */
+async function delSession() {
+  const s = currentSeg.value
+  if (!s) return
+  const label = segTitle(s) + ' · ' + segRange(s)
+  const detail = '弹幕 ' + (s.danmaku || 0) + '、SC ' + (s.sc || 0) +
+    '，含事件与开播 / 下播标记'
+  if (!window.confirm('确认删除「' + label + '」？\n' + detail +
+      '\n删除后不可恢复。')) return
+  try {
+    const j: any = await deleteSession()
+    const d = (j && j.deleted) || {}
+    hint('capture', '已删除：弹幕 ' + (d.danmaku || 0) + '、SC ' + (d.sc || 0) +
+      '、事件 ' + (d.events || 0), 'ok')
+  } catch (e: any) {
+    hint('capture', '删除失败：' + e.message, 'err')
+    return
+  }
+  await loadSessions()
 }
 
 async function exportData(fmt: 'json' | 'csv') {
@@ -122,6 +143,15 @@ async function exportData(fmt: 'json' | 'csv') {
                style="padding:6px 6px 0;color:var(--dim-2);font-size:10px">
             还没有开播记录，采集到的内容先归为一段，下次开播自动切开
           </div>
+        </div>
+        <div v-if="currentSeg" class="seg-del"
+             style="padding:8px 6px 0;border-top:1px solid var(--line);
+                    margin-top:8px">
+          <button class="btn sm" style="color:#c0392b"
+                  @click="delSession">删除这段…</button>
+          <span style="color:var(--dim-2);font-size:10px">
+            按时间段删数据，不可恢复
+          </span>
         </div>
       </aside>
 
