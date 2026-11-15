@@ -30,14 +30,9 @@ DEFAULTS = {
     "token": "",
     "auto_start": False,
     "dyn_mid": 0,              # 旧版全局动态 uid，仅在没有采集器时兜底
-    "dyn_auto": True,          # 每天定时拉取所有采集器的动态
-    "dyn_hour": 8,             # 本地时间几点
-    "dyn_minute": 0,           # 精确到分钟
-    "dyn_last_ts": 0,          # 上次成功拉取时间（内部用）
 }
 SECRET_KEYS = ("token",)
-BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "auto_start",
-             "dyn_auto")
+BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "auto_start")
 INT_BOUNDS = {
     "protover": (2, 3),
     "heartbeat_seconds": (10, 120),
@@ -45,8 +40,6 @@ INT_BOUNDS = {
     "http_timeout": (3, 60),
     "port": (1, 65535),
     "dyn_mid": (0, 999999999),
-    "dyn_hour": (0, 23),
-    "dyn_minute": (0, 59),
 }
 VALID_KINDS = ("danmaku", "sc", "events")
 
@@ -155,10 +148,11 @@ def _lan_ip():
 
 
 class DynamicScheduler:
-    """按采集器逐个拉取 up 主动态，每天在设定时刻（精确到分钟）跑一次。
+    """按采集器逐个拉取 up 主动态。
 
-    目标来自采集器列表里打开了「采集动态」的 uid；一个采集器都没有时退回
-    配置里的 dyn_mid 兜底。整轮拉取的成功与否写进 last_result，供页面展示。
+    定时抓取是**每位 up 主自己的设置**（rooms.json 里的 dyn_auto / dyn_hour /
+    dyn_minute，默认关闭）：到点只拉这一位，互不影响。整轮结果写进
+    last_result 供页面展示。
     """
 
     def __init__(self, store, config, logs, fetcher_cls=DynamicsFetcher,
@@ -171,11 +165,12 @@ class DynamicScheduler:
         self.lock = threading.RLock()
         self.last_result = {"ok": False, "msg": "尚未拉取", "ts": 0}
         self._stop = threading.Event()
-        self._last_fail = 0
+        self._fail = {}          # room_id -> 上次失败时间戳，30 分钟内不重试
         self._thread = None
 
+    # ---------- 目标 ----------
     def targets(self):
-        """返回要拉动态的 up 主 uid 列表。"""
+        """所有打开了「采集动态」的 uid（「立即拉取」针对单个 up 主时用不到）。"""
         items = self.rooms.collect_targets("collect_dynamics") \
             if self.rooms is not None else []
         mids = [_as_int(x.get("uid")) for x in items]
@@ -186,6 +181,11 @@ class DynamicScheduler:
                 mids = [legacy]
         return mids
 
+    def auto_rooms(self):
+        """打开了定时抓取的采集器（各自带时:分）。"""
+        return self.rooms.auto_dyn_rooms() if self.rooms is not None else []
+
+    # ---------- 拉取 ----------
     def pull_one(self, mid, reason="手动", limit=20):
         fetcher = self.fetcher_cls()
         items, _ = fetcher.fetch(_as_int(mid), limit=limit)
@@ -228,37 +228,26 @@ class DynamicScheduler:
             out = dict(self.last_result)
         out["total"] = self.store.list_dynamics(limit=1)[0]
         out["targets"] = self.targets()
+        out["auto"] = [_as_int(x.get("id")) for x in self.auto_rooms()]
         return out
 
+    # ---------- 定时 ----------
     def start(self):
-        cfg = self.config.get()
-        if not cfg.get("dyn_auto"):
+        """定时线程常驻：某位 up 主随时打开定时，30 秒内就生效。
+
+        关掉定时不再需要重启服务，所以这里不再看全局开关。
+        """
+        if self._thread and self._thread.is_alive():
             return
-        # 启动时若今天还没拉过就补一次（后台线程，不阻塞启动）
-        last = _as_int(cfg.get("dyn_last_ts"))
-        today = time.strftime("%Y-%m-%d", time.localtime())
-        last_day = time.strftime("%Y-%m-%d", time.localtime(last / 1000)) \
-            if last else ""
-        if last_day != today:
-            threading.Thread(target=self._startup_pull, daemon=True).start()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
-    def _startup_pull(self):
-        time.sleep(20)  # 等服务与手机网络就绪，避开启动瞬间的风控
-        res = self.pull("启动补拉")
-        if res.get("ok"):
-            self.config.save({"dyn_last_ts": res["ts"]})
-
-    def _next_run(self):
-        """下一个「时:分」的本地时间戳（今天过了就算明天）。
+    def _next_run(self, hour=8, minute=0):
+        """今天的「时:分」时间戳；已经过了就算明天。
 
         注意 `time.mktime` 要的是 9 元组（末尾 isdst），少一项会抛
         「illegal time tuple argument」——定时线程会直接死掉。
         """
-        cfg = self.config.get()
-        hour = _as_int(cfg.get("dyn_hour"), 8)
-        minute = _as_int(cfg.get("dyn_minute"), 0)
         now = time.localtime()
         target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
                               hour, minute, 0, 0, 0, -1))
@@ -281,30 +270,48 @@ class DynamicScheduler:
                 self.logs.add("error", "动态定时检查出错：%s" % exc)
 
     def _tick(self):
-        cfg = self.config.get()
-        if not cfg.get("dyn_auto"):
-            return                             # 关掉「每天定时拉取」就不定时跑
-        hour = _as_int(cfg.get("dyn_hour"), 8)
-        minute = _as_int(cfg.get("dyn_minute"), 0)
-        now = time.localtime()
-        target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
-                              hour, minute, 0, 0, 0, -1))
-        if time.time() < target:
-            return
-        last = _as_int(cfg.get("dyn_last_ts"))
-        if last and last >= int(target * 1000):
-            return                             # 今天这个时间点已经拉过
-        if self._last_fail and time.time() - self._last_fail < 1800:
-            return
-        res = self.pull("定时")
-        if res.get("ok"):
-            self.config.save({"dyn_last_ts": res["ts"]})
-            self._last_fail = 0
-        else:
-            self._last_fail = time.time()
+        now = time.time()
+        lt = time.localtime(now)
+        for room in self.auto_rooms():
+            rid = _as_int(room.get("id"))
+            uid = _as_int(room.get("uid"))
+            if uid <= 0:
+                continue
+            hour = min(23, max(0, _as_int(room.get("dyn_hour"), 8)))
+            minute = min(59, max(0, _as_int(room.get("dyn_minute"), 0)))
+            target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
+                                  hour, minute, 0, 0, 0, -1))
+            if now < target:
+                continue                       # 今天还没到点
+            last = _as_int(room.get("dyn_last_ts"))
+            if last and last >= int(target * 1000):
+                continue                       # 今天这个时间点已经拉过
+            failed = self._fail.get(rid) or 0
+            if failed and now - failed < 1800:
+                continue                       # 刚失败过，等半小时
+            who = room.get("uname") or ("uid %s" % uid)
+            try:
+                got, _ = self.pull_one(uid, "定时")
+            except Exception as exc:
+                self._fail[rid] = now
+                msg = "定时拉取 %s 的动态失败：%s" % (who, exc)
+                self.logs.add("error", msg)
+                with self.lock:
+                    self.last_result = {"ok": False, "msg": msg,
+                                        "ts": int(now * 1000)}
+                continue
+            self._fail.pop(rid, None)
+            ts = int(time.time() * 1000)
+            self.rooms.settings(rid, {"dyn_last_ts": ts})
+            msg = "定时拉取 %s 的动态：%d 条" % (who, got)
+            self.logs.add("info", msg)
+            with self.lock:
+                self.last_result = {"ok": True, "msg": msg, "ts": ts,
+                                    "count": got, "mids": [uid]}
 
     def stop(self):
         self._stop.set()
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -441,10 +448,6 @@ class Handler(BaseHTTPRequestHandler):
         dash = self.server.store.dashboard()
         totals = {x["room_id"]: x for x in dash.get("by_room") or []}
         dyn_by_mid = dash.get("dyn_by_mid") or {}
-        cfg = self.server.config.get()
-        dyn_schedule = "%02d:%02d" % (_as_int(cfg.get("dyn_hour"), 8),
-                                      _as_int(cfg.get("dyn_minute"), 0))
-        dyn_auto = bool(cfg.get("dyn_auto"))
         items = []
         for room in rooms:
             st = states.get(room["id"]) or {}
@@ -480,8 +483,11 @@ class Handler(BaseHTTPRequestHandler):
                 counts=st.get("counts", {}),
                 dyns=(dyn_by_mid.get(_as_int(room.get("uid"))) or {}).get("n", 0),
                 dyn_last_at=(dyn_by_mid.get(_as_int(room.get("uid"))) or {}).get("last_at", 0),
-                dyn_schedule=dyn_schedule,
-                dyn_auto=dyn_auto,
+                # 定时抓取按 up 主各存一份，这里回填这一位自己的时:分
+                dyn_schedule="%02d:%02d" % (_as_int(room.get("dyn_hour"), 8),
+                                            _as_int(room.get("dyn_minute"), 0)),
+                dyn_auto=bool(room.get("dyn_auto")),
+                dyn_last_ts=_as_int(room.get("dyn_last_ts")),
                 last_live_at=agg.get("last_live_at", 0),
                 totals={"danmaku": agg.get("danmaku", 0),
                         "sc": agg.get("sc", 0),
@@ -558,9 +564,27 @@ class Handler(BaseHTTPRequestHandler):
             since = q.get("since")
             until = q.get("until")
             all_mode = str(q.get("all") or "").lower() in ("1", "true", "yes")
-            items, counts = {}, {}
+            paged = str(q.get("paged") or "").lower() in ("1", "true", "yes")
+            items, counts, more, oldest = {}, {}, {}, {}
             for kind in kinds:
-                if all_mode:
+                if paged:
+                    # 从最新一页往回取：数据量大了（十几万条弹幕）不能整段塞给浏览器
+                    limit = max(1, min(1000, _as_int(q.get("limit"), 600)))
+                    before = _as_int(q.get("before"))
+                    inclusive = str(q.get("incl") or "").lower() in ("1", "true", "yes")
+                    rows = store.query_page_before(
+                        kind, before or 0, count=limit + 1,
+                        room_id=rid or None, since=since, until=until,
+                        inclusive=inclusive, q=q.get("q") or "")
+                    more[kind] = len(rows) > limit
+                    if more[kind]:
+                        rows = rows[1:]        # 多取的那条只用来判断「还有更早的」
+                    items[kind] = rows
+                    counts[kind] = store.count_range(
+                        kind, q=q.get("q") or "", room_id=rid or None,
+                        since=since, until=until)
+                    oldest[kind] = rows[0]["received_at"] if rows else 0
+                elif all_mode:
                     rows = store.query_all(kind, q=q.get("q") or "",
                                            room_id=rid or None,
                                            since=since, until=until)
@@ -575,7 +599,8 @@ class Handler(BaseHTTPRequestHandler):
                     items[kind] = rows
                     counts[kind] = total
             self._json({"ok": True, "room_id": rid, "items": items,
-                        "counts": counts, "all": all_mode})
+                        "counts": counts, "all": all_mode, "paged": paged,
+                        "more": more, "oldest": oldest})
             return
         if path == "/api/system":
             self._json({"ok": True, "system": self.server.sys_snapshot()})
@@ -592,13 +617,16 @@ class Handler(BaseHTTPRequestHandler):
             total, items = store.list_dynamics(
                 limit=limit, offset=offset, q=q.get("q") or "",
                 mid=q.get("mid") or 0)
-            cfg = config.get()
+            # 定时抓取是这一位 up 主自己的设置，随列表一起回填给页面
+            room = self.server.rooms.get(q.get("room_id")) or {}
             self._json({"ok": True, "total": total, "items": items,
                         "limit": limit, "offset": offset,
                         "status": self.server.dynamics.status(),
-                        "config": {"dyn_auto": bool(cfg.get("dyn_auto")),
-                                   "dyn_hour": _as_int(cfg.get("dyn_hour"), 8),
-                                   "dyn_minute": _as_int(cfg.get("dyn_minute"))}})
+                        "config": {"dyn_auto": bool(room.get("dyn_auto")),
+                                   "dyn_hour": _as_int(room.get("dyn_hour"), 8),
+                                   "dyn_minute": _as_int(room.get("dyn_minute")),
+                                   "dyn_last_ts": _as_int(room.get("dyn_last_ts")),
+                                   "collect_dynamics": room.get("collect_dynamics", True)}})
             return
         if path == "/api/config":
             self._json({"ok": True, "config": Config.masked(config.get()),
@@ -705,6 +733,22 @@ class Handler(BaseHTTPRequestHandler):
                 if key in ("collect_live", "collect_dynamics", "live_only"):
                     clean[key] = bool(value)
                     continue
+                # 定时抓取也按 up 主存，走同一个接口
+                if key == "dyn_auto":
+                    clean[key] = bool(value)
+                    continue
+                if key in ("dyn_hour", "dyn_minute"):
+                    try:
+                        num = int(value)
+                    except (TypeError, ValueError):
+                        self._fail(400, "%s 必须是数字" % key)
+                        return
+                    high = 23 if key == "dyn_hour" else 59
+                    if not 0 <= num <= high:
+                        self._fail(400, "%s 需要在 0–%s 之间" % (key, high))
+                        return
+                    clean[key] = num
+                    continue
                 if key not in PARAM_KEYS:
                     continue
                 if key in BOOL_KEYS:
@@ -755,8 +799,9 @@ class Handler(BaseHTTPRequestHandler):
             mid = _as_int(body.get("mid"))
             res = self.server.dynamics.pull(
                 "手动", limit=_as_int(body.get("limit"), 20) or 20, mid=mid)
-            if res.get("ok"):
-                config.save({"dyn_last_ts": res["ts"]})
+            rid = _as_int(body.get("room_id"))
+            if res.get("ok") and rid:
+                rooms.settings(rid, {"dyn_last_ts": res["ts"]})
             total, items = self.server.store.list_dynamics(limit=200, mid=mid)
             self._json({"ok": res["ok"], "message": res["msg"],
                         "total": total, "items": items,
@@ -780,6 +825,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": ok, "total": total, "items": items})
             return
         if path == "/api/dynamics/config":
+            rid = _as_int(body.get("room_id"))
+            if rid <= 0:
+                self._fail(400, "缺少 room_id：定时抓取按 up 主分别设置")
+                return
             patch = {}
             if "dyn_auto" in body:
                 patch["dyn_auto"] = bool(body["dyn_auto"])
@@ -787,14 +836,18 @@ class Handler(BaseHTTPRequestHandler):
                 patch["dyn_hour"] = _as_int(body["dyn_hour"])
             if _as_int(body.get("dyn_minute"), -1) >= 0:
                 patch["dyn_minute"] = _as_int(body["dyn_minute"])
-            if patch:
-                config.save(patch)
-            now = config.get()
+            room = rooms.settings(rid, patch) if patch else rooms.get(rid)
+            if not room:
+                self._fail(404, "没有这个采集器")
+                return
             self._json({"ok": True,
+                        "room": room,
+                        "rooms": self._rooms_payload(),
                         "config": {
-                            "dyn_auto": bool(now.get("dyn_auto")),
-                            "dyn_hour": _as_int(now.get("dyn_hour"), 8),
-                            "dyn_minute": _as_int(now.get("dyn_minute"))}})
+                            "dyn_auto": bool(room.get("dyn_auto")),
+                            "dyn_hour": _as_int(room.get("dyn_hour"), 8),
+                            "dyn_minute": _as_int(room.get("dyn_minute")),
+                            "dyn_last_ts": _as_int(room.get("dyn_last_ts"))}})
             return
 
         # ---- capture control ----

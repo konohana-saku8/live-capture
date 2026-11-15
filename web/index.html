@@ -351,11 +351,13 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .dyn-card .dyn-edit.dirty textarea{border-color:rgba(255,122,69,.55)}
 .dyn-card .dyn-edit.dirty .unsaved{display:block}
 .dyn-card .dyn-actions{display:flex;gap:7px;flex-wrap:wrap}
-.dyn-pager{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;
+.dyn-pager,.room-pager{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;
   padding:6px 0 2px;border-top:1px solid var(--line);margin-top:4px}
-.dyn-pager .pg{font:11px/1.5 var(--mono);color:var(--dim-2);letter-spacing:.02em}
-.dyn-pager .pg b{color:var(--fire-soft);font-weight:600}
-.dyn-pager .btn[disabled]{opacity:.35;cursor:default}
+.dyn-pager .pg,.room-pager .pg{font:11px/1.5 var(--mono);color:var(--dim-2);letter-spacing:.02em}
+.dyn-pager .pg b,.room-pager .pg b{color:var(--fire-soft);font-weight:600}
+.dyn-pager .btn[disabled],.room-pager .btn[disabled]{opacity:.35;cursor:default}
+.room-pager{margin-top:12px;padding-top:10px}
+.room-pager[hidden]{display:none!important}
 .dyn-card .dyn-tools{margin-top:9px}
 .dyn-card .dyn-tools[hidden]{display:none!important}
 
@@ -497,6 +499,7 @@ body.gated .top,body.gated main{display:none!important}
         <button class="btn sm" id="btnStopAll">全部停止</button>
       </div></div>
     <div class="collector-list" id="roomTabs"></div>
+    <div class="room-pager" id="roomPager" hidden></div>
     <div class="collector-add">
       <button class="btn sm" id="tabAdd">＋ 添加采集器</button>
       <span class="muted">填 up 主 uid，自动解析直播间号、昵称与头像</span>
@@ -534,6 +537,7 @@ body.gated .top,body.gated main{display:none!important}
       <button class="btn sm" id="btnSaveCollect">保存开关</button>
       <span class="muted" id="collectHint"></span>
     </div>
+    <div class="hint">这些开关和「开始采集 / 停止采集」只对当前这位 up 主生效，每个采集器各开各的。定时抓取在「动态」标签里单独设置，默认关闭。</div>
 
     <div class="sub-tabs" id="roomSubTabs">
       <button class="sub-tab on" data-sub="live"><i></i>直播间<span class="n" id="subN-live">—</span></button>
@@ -563,7 +567,7 @@ body.gated .top,body.gated main{display:none!important}
           <section class="feed" data-k="events"><h3>直播间事件 <span class="n" id="cnt-events">0</span></h3><div class="feed-body" id="feed-events"></div></section>
         </div>
       </div>
-      <div class="hint">「场」＝开播到下播；「场间」＝上一次下播到这次开播，期间收到的弹幕同样完整保留。还没有开过播时，采集到的内容先归为「未分段」，下次开播自动切开。弹幕按时间正序，越上方越早；一段太长时先显示最新的 800 条，点列表顶部的按钮往前追。</div>
+      <div class="hint">弹幕只按场次查看：左边选一段，右边就是那一段的全部内容。「场」＝开播到下播；「场间」＝上一次下播到这次开播，期间收到的弹幕同样完整保留。还没有开过播时，采集到的内容先归为「未分段」，下次开播自动切开。弹幕按时间正序，越上方越早；一段太长时先显示最新的 400 条，点列表顶部的按钮往前追。</div>
     </div>
 
     <div class="room-block" data-panel="dyn" hidden>
@@ -578,7 +582,7 @@ body.gated .top,body.gated main{display:none!important}
         <button class="btn sm" id="btnDynSaveCfg">保存定时</button>
         <input id="dynQ" type="text" placeholder="搜索动态 / 译文" style="flex:1 1 160px">
       </div>
-      <div class="hint" id="dynHint">按天展示这位 up 主的 B 站动态，可随时添加或修改译文。定时拉取只需服务保持运行。</div>
+      <div class="hint" id="dynHint">按天展示这位 up 主的 B 站动态，可随时添加或修改译文。定时抓取是按 up 主分别设置的，默认关闭；打开后只需服务保持运行。</div>
       <div id="dynList"></div>
     </div>
   </section>
@@ -681,14 +685,17 @@ body.gated .top,body.gated main{display:none!important}
 'use strict';
 var S={page:'home',rooms:[],roomId:0,active:0,running:false,
        filters:{danmaku:true,sc:true,events:true},q:'',
-       segs:[],sessSel:'all',sessStart:0,sessEnd:0,collectRoomId:0,panelRoom:0,
-       feedRows:{},feedShown:{danmaku:0,sc:0,events:0},feedRowsKey:{},
+       segs:[],sessSel:0,sessStart:0,sessEnd:0,collectRoomId:0,panelRoom:0,
+       roomPage:0,roomPageReady:false,
+       feedRows:{danmaku:[],sc:[],events:[]},feedMore:{},loadingMore:{},
        dynPage:0,dynPageSize:10,dynQuery:'',
        subTab:localStorage.getItem('lc-subtab')||'live',cfgSnap:null,
        cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
-/* 弹幕区一次铺多少条：整场动辄两万条，全塞进 DOM 手机会卡，先给尾部的这么多，
+/* 采集器清单每页 3 个：up 主多了不用一直往下滚 */
+var ROOM_PAGE=3;
+/* 弹幕区一次取多少条：整场动辄两万条，全塞进 DOM 手机会卡，先给最新的这么多，
    点顶部按钮再往前追。时间正序——越上方越早。 */
-var FEED_PAGE=800;
+var FEED_PAGE=400;
 var $=function(id){return document.getElementById(id)};
 var GUARD={1:'总督',2:'提督',3:'舰长'};
 var KIND={danmaku:'弹幕',sc:'SC',events:'事件',guard:'上舰',gift:'礼物',
@@ -982,7 +989,26 @@ function showSubTab(name,skipLoad,silent){
   });
   if(skipLoad)return;
   if(name==='dyn')loadDynamics();
-  else{loadSessions();loadFeed()}
+  else loadSessions()
+}
+/* 采集器清单分页：每页 ROOM_PAGE 个，翻页只重画这一块 */
+function jumpRoomPage(id){
+  for(var i=0;i<S.rooms.length;i++){
+    if(S.rooms[i].id===id){S.roomPage=Math.floor(i/ROOM_PAGE);return true}
+  }
+  return false;
+}
+function paintRoomPager(pages){
+  var box=$('roomPager'),total=S.rooms.length,p=S.roomPage;
+  if(pages<=1){box.hidden=true;box.innerHTML='';return}
+  box.hidden=false;
+  var from=p*ROOM_PAGE+1,to=Math.min(total,from+ROOM_PAGE-1);
+  box.innerHTML='<button class="btn sm" data-roompage="'+(p-1)+'"'+
+      (p<=0?' disabled':'')+'>‹ 上一页</button>'+
+    '<span class="pg">第 <b>'+(p+1)+'</b> / '+pages+' 页 · 第 '+from+'–'+to+
+      ' 个 / 共 '+total+' 个</span>'+
+    '<button class="btn sm" data-roompage="'+(p+1)+'"'+
+      (p>=pages-1?' disabled':'')+'>下一页 ›</button>';
 }
 function renderRooms(j){
   S.rooms=(j&&j.items)||[];
@@ -1000,7 +1026,12 @@ function renderRooms(j){
   var prevRoom=S.panelRoom;
   var ids=S.rooms.map(function(r){return r.id});
   if(ids.indexOf(S.roomId)<0){S.roomId=ids.length?ids[0]:0;localStorage.setItem('lc-room',String(S.roomId))}
-  $('roomTabs').innerHTML=S.rooms.map(function(r){
+  /* 首次进页面时把当前选中的采集器所在页翻出来，免得高亮的那条不在这一页 */
+  if(!S.roomPageReady){S.roomPageReady=true;jumpRoomPage(S.roomId)}
+  var pages=Math.max(1,Math.ceil(S.rooms.length/ROOM_PAGE));
+  S.roomPage=Math.min(Math.max(0,S.roomPage),pages-1);
+  var from=S.roomPage*ROOM_PAGE;
+  $('roomTabs').innerHTML=S.rooms.slice(from,from+ROOM_PAGE).map(function(r){
     var c=r.totals||{},name=r.uname||r.label;
     var colLive=r.collect_live!==false,colDyn=r.collect_dynamics!==false;
     // 采集目标这一行：采谁 + 在采什么 + 采了多少
@@ -1014,7 +1045,8 @@ function renderRooms(j){
     var goalDyn=colDyn
       ? '<span class="goal dyn"><em>动态</em>累计 <b>'+num(r.dyns)+'</b> 条 · '+
         (r.dyn_auto?'每天 <b>'+esc(r.dyn_schedule||'—')+'</b> 定时拉取':'定时拉取已关')+
-        (r.dyn_last_at?' · 上次 <b>'+fmtFull(r.dyn_last_at)+'</b>':' · 还没拉过')+'</span>'
+        ((r.dyn_last_ts||r.dyn_last_at)?
+          ' · 上次 <b>'+fmtFull(r.dyn_last_ts||r.dyn_last_at)+'</b>':' · 还没拉过')+'</span>'
       : '<span class="goal dyn"><em>动态</em><span class="off">已关闭</span></span>';
     return '<div class="collector '+(r.id===S.roomId?'on':'')+'" data-room="'+esc(r.id)+'">'+
       (cdnImg(r.face,'cface','up 主头像')||
@@ -1030,6 +1062,7 @@ function renderRooms(j){
         '<div class="cgoals">'+goalLive+goalDyn+'</div>'+
       '</div></div>';
   }).join('');
+  paintRoomPager(pages);
   renderRoomPanel();
   /* 动态标签的数字先用采集器列表里的条数预填，免得没打开过动态时显示「—」 */
   var cur=currentRoom();
@@ -1112,8 +1145,9 @@ async function selectRoom(id){
   if(!confirmDynDirty('译文还没保存，切换采集器会丢掉这次修改，继续吗？'))return;
   S.roomId=parseInt(id,10)||0;
   localStorage.setItem('lc-room',String(S.roomId));
-  // 切采集器时场次与选中态回到「全部」，并清掉上一家的动态
-  S.sessSel='all';S.sessStart=0;S.sessEnd=0;
+  jumpRoomPage(S.roomId);          // 选中的这位可能在别的页上
+  // 切采集器时场次回到「最近的这一段」，并清掉上一家的动态
+  S.sessSel=0;S.sessStart=0;S.sessEnd=0;
   S.collectRoomId=0;
   $('dynList').innerHTML='';$('subN-dyn').textContent='—';
   await loadRooms();   // renderRooms 里会按当前标签重新拉数据
@@ -1160,6 +1194,7 @@ async function addRoom(){
     var j=await api('/api/rooms',{method:'POST',body:JSON.stringify({
       uid:uid,label:$('newRoomName').value.trim()})});
     S.roomId=j.room.id;localStorage.setItem('lc-room',String(S.roomId));
+    S.roomPage=1e9;      // 新加的排在最后，翻到最后一页（renderRooms 会夹到有效范围）
     openAddModal(false);
     say('roomHint','已添加：'+(j.room.uname||j.room.label)+'（房间 '+j.room.id+'）'+
       (j.warning?'（'+j.warning+'）':''),'ok');
@@ -1235,111 +1270,136 @@ function feedRow(kind,r){
   return '<div class="line">'+t+'<span class="tag">['+esc(KIND[r.kind]||r.kind||'事件')+']</span>'+
     who(r)+'　'+esc(r.detail||'')+'</div>';
 }
-function renderFeed(j){
+function feedRowKey(k,r){
+  return k==='sc'?('s'+r.sc_id):(k==='danmaku'?('d'+r.seq):('e'+r.seq));
+}
+/* 增量刷新（还在播的那一场）把新到的一页并进已有列表：按主键去重再按时间排 */
+function mergeFeed(k,old,fresh){
+  var seen={},out=[];
+  (old||[]).concat(fresh||[]).forEach(function(r){
+    var key=feedRowKey(k,r);
+    if(seen[key])return;
+    seen[key]=1;out.push(r);
+  });
+  out.sort(function(a,b){
+    var d=(a.received_at||0)-(b.received_at||0);
+    return d||((a.seq||0)-(b.seq||0));
+  });
+  return out;
+}
+function renderFeed(j,tail){
   var kinds=['danmaku','sc','events'];
   kinds.forEach(function(k){
     var sec=document.querySelector('.feed[data-k="'+k+'"]');
     sec.hidden=!S.filters[k];
     var rows=(j.items&&j.items[k])||[];
-    S.feedRows[k]=rows;
-    // 换了场次 / 换了采集器 / 搜索条件变了，窗口从小重来
-    if(S.feedRowsKey[k]!==S.roomId+'|'+S.sessSel+'|'+S.q){
-      S.feedRowsKey[k]=S.roomId+'|'+S.sessSel+'|'+S.q;
-      S.feedShown[k]=0;
+    if(tail&&(S.feedRows[k]||[]).length){
+      S.feedRows[k]=mergeFeed(k,S.feedRows[k],rows);
+      S.feedMore[k]=!!(j.more&&j.more[k])||!!S.feedMore[k];
+    }else{
+      S.feedRows[k]=rows;
+      S.feedMore[k]=!!(j.more&&j.more[k]);
     }
     $('cnt-'+k).textContent=num((j.counts&&j.counts[k])||0);
-    paintFeed(k);
+    paintFeed(k,!tail);
   });
-  var r=currentRoom(),label='全部数据';
-  if(S.sessSel&&S.sessSel!=='all'){
-    var s=segByKey(S.sessSel);
-    if(s)label=(s.kind==='live'?'第 '+s.index+' 场'
-      :(s.single?'未分段':(s.lead?'首次开播前':'场间 '+s.index)))+' · '+segRange(s);
-  }
+  feedLabel();
+}
+function feedLabel(){
+  var r=currentRoom(),s=segByKey(S.sessSel),label='未选场次';
+  if(s)label=(s.kind==='live'?'第 '+s.index+' 场'
+    :(s.single?'未分段':(s.lead?'首次开播前':'场间 '+s.index)))+' · '+segRange(s);
   $('feedInfo').textContent=(r?(r.uname||r.label)+' · ':'')+label;
 }
-/* 时间正序渲染：接口给的已经是「早 → 晚」，不要再 reverse。
-   一次最多铺 FEED_PAGE 条（取尾部最新的），更早的点按钮追加。 */
-function paintFeed(k){
+/* 时间正序：越上方越早。开头一条「载入更早」用于往前追还没取过的分页。 */
+function paintFeed(k,toBottom){
   var rows=S.feedRows[k]||[],box=$('feed-'+k);
   if(!rows.length){
-    box.innerHTML='<div class="empty">这一类暂时没有数据</div>';
+    box.innerHTML='<div class="empty">这一段没有该类数据</div>';
     return;
   }
-  var shown=S.feedShown[k]||FEED_PAGE;
-  shown=Math.min(Math.max(shown,FEED_PAGE),rows.length);
-  S.feedShown[k]=shown;
-  var start=rows.length-shown;
   var atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
-  var fresh=!box.childNodes.length;
+  var prevTop=box.scrollTop;
   var html='';
-  if(start>0){
-    html+='<button class="feed-more" data-more="'+k+'">↑ 载入更早的 '+FEED_PAGE+
-      ' 条（前面还有 '+num(start)+' 条）</button>';
+  if(S.feedMore[k]){
+    html+='<button class="feed-more" data-more="'+k+'">↑ 载入更早的 '+FEED_PAGE+' 条</button>';
   }
-  html+=rows.slice(start).map(function(r){return feedRow(k,r)}).join('');
+  html+=rows.map(function(r){return feedRow(k,r)}).join('');
   box.innerHTML=html;
-  if(fresh||atBottom)box.scrollTop=box.scrollHeight;
+  if(toBottom||atBottom)box.scrollTop=box.scrollHeight;
+  else box.scrollTop=prevTop;
 }
 function segByKey(key){
   for(var i=0;i<S.segs.length;i++)
     if(S.segs[i].kind+'-'+S.segs[i].index===String(key))return S.segs[i];
   return null;
 }
+function segKeyOf(s){return s.kind+'-'+s.index}
+function applySeg(s){S.sessSel=segKeyOf(s);S.sessStart=s.start||0;S.sessEnd=s.end||0}
 function renderSessions(list){
   S.segs=list||[];
   $('subN-live').textContent=S.segs.length?S.segs.length+' 段':'0';
   var box=$('sessionList');
   if(!S.segs.length){
+    S.sessSel=0;S.sessStart=0;S.sessEnd=0;
     box.innerHTML='<div class="empty" style="font-size:11.5px;padding:6px 4px">'+
       '暂无场次记录<br>（采集到开播 / 下播事件后自动分段）</div>';
-    return;
+    return false;
   }
-  var items=S.segs.slice().reverse();
+  /* 只按场次看，不提供整库视图：首次进来或原来那段没了，就跳到最近一段 */
+  var changed=false;
+  if(!segByKey(S.sessSel)){applySeg(S.segs[S.segs.length-1]);changed=true}
   var single=!!(S.segs.length===1&&S.segs[0].single);
-  box.innerHTML='<button class="session-item '+(S.sessSel==='all'?'on':'')+
-    '" data-sess="all"><span class="st-t">全部数据</span>'+
-    '<span class="st-m">共 '+S.segs.length+' 段</span></button>'+
-    items.map(function(s){
-      var key=s.kind+'-'+s.index,on=(String(key)===String(S.sessSel));
-      var badge=s.kind==='live'?'场':(s.single?'未分段':(s.lead?'更早':'场间'));
-      var who=s.kind==='live'?'第 '+s.index+' 场'
-        :(s.single?'未记录开播 · 全部数据':(s.lead?'首次开播前':'场间 '+s.index));
-      return '<button class="session-item '+(on?'on':'')+'" data-sess="'+key+'">'+
-        '<span class="st-t">'+esc(segRange(s))+'<i class="'+(s.kind==='live'?'live':'gap')+'">'+
-        esc(badge)+'</i>'+(s.end?'':' ●')+'</span>'+
-        '<span class="st-m">'+esc(who)+' · 流水 ¥'+num(s.sc_amount)+
-        ' · 观众 '+num(s.viewers)+' · 弹幕 '+num(s.danmaku)+'</span></button>';
-    }).join('')+
-    (single?'<div class="st-m" style="padding:6px 6px 0;color:var(--dim-2);font-size:10px">'+
-      '还没有开播记录，采集到的内容先归为一段，下次开播自动切开</div>':'');
+  box.innerHTML=S.segs.slice().reverse().map(function(s){
+    var key=segKeyOf(s),on=(key===String(S.sessSel));
+    var badge=s.kind==='live'?'场':(s.single?'未分段':(s.lead?'更早':'场间'));
+    var who=s.kind==='live'?'第 '+s.index+' 场'
+      :(s.single?'未记录开播 · 全部内容':(s.lead?'首次开播前':'场间 '+s.index));
+    return '<button class="session-item '+(on?'on':'')+'" data-sess="'+key+'">'+
+      '<span class="st-t">'+esc(segRange(s))+'<i class="'+(s.kind==='live'?'live':'gap')+'">'+
+      esc(badge)+'</i>'+(s.end?'':' ●')+'</span>'+
+      '<span class="st-m">'+esc(who)+' · 流水 ¥'+num(s.sc_amount)+
+      ' · 观众 '+num(s.viewers)+' · 弹幕 '+num(s.danmaku)+'</span></button>';
+  }).join('')+
+  (single?'<div class="st-m" style="padding:6px 6px 0;color:var(--dim-2);font-size:10px">'+
+    '还没有开播记录，采集到的内容先归为一段，下次开播自动切开</div>':'');
+  return changed;
 }
-async function loadSessions(){
-  if(!S.roomId){renderSessions([]);return}
-  try{renderSessions((await api('/api/sessions?room_id='+S.roomId)).segments||[])}
-  catch(e){renderSessions([])}
+async function loadSessions(tail){
+  var changed=false;
+  if(!S.roomId)renderSessions([]);
+  else{
+    try{changed=renderSessions((await api('/api/sessions?room_id='+S.roomId)).segments||[])}
+    catch(e){changed=renderSessions([])}
+  }
+  loadFeed(tail&&!changed?{tail:true}:{});
+  return changed;
 }
 function selectSession(key){
-  S.sessSel=String(key);
-  if(S.sessSel==='all'){S.sessStart=0;S.sessEnd=0}
-  else{
-    var s=segByKey(key);
-    S.sessStart=s?s.start:0;S.sessEnd=s?s.end:0;
-  }
+  var s=segByKey(key);if(!s)return;
+  applySeg(s);
   renderSessions(S.segs);
   loadFeed();
 }
-async function loadFeed(){
+async function loadFeed(opts){
+  opts=opts||{};
   if(!S.roomId){
     ['danmaku','sc','events'].forEach(function(k){$('feed-'+k).innerHTML='<div class="empty">请先添加采集器</div>'});
     return;
   }
+  if(!S.sessSel){
+    ['danmaku','sc','events'].forEach(function(k){$('feed-'+k).innerHTML='<div class="empty">先在左侧选一个场次</div>'});
+    return;
+  }
   var types=Object.keys(S.filters).filter(function(k){return S.filters[k]});
-  var qs='/api/feed?room_id='+S.roomId+'&all=1&types='+types.join(',')+
-         '&q='+encodeURIComponent(S.q);
+  /* 自动刷新只问最新的一小页，并进现有列表；手点刷新才重新取整页 */
+  var lim=opts.tail?120:FEED_PAGE;
+  var qs='/api/feed?paged=1&room_id='+S.roomId+'&limit='+lim+
+         '&types='+types.join(',')+'&q='+encodeURIComponent(S.q);
   if(S.sessStart)qs+='&since='+S.sessStart;
   if(S.sessEnd)qs+='&until='+S.sessEnd;
-  try{renderFeed(await api(qs))}catch(e){say('captureHint','读取内容失败：'+e.message,'err')}
+  try{renderFeed(await api(qs),!!opts.tail)}
+  catch(e){say('captureHint','读取内容失败：'+e.message,'err')}
 }
 
 /* ---------- 动态 ---------- */
@@ -1362,12 +1422,12 @@ function renderDynamics(j){
   $('dynAuto').checked=!!cfg.dyn_auto;
   $('dynHour').value=String(cfg.dyn_hour!=null?cfg.dyn_hour:8);
   $('dynMinute').value=String(cfg.dyn_minute!=null?cfg.dyn_minute:0);
-  var st=j.status||{};
   var hh=('0'+(cfg.dyn_hour!=null?cfg.dyn_hour:8)).slice(-2),
       mm=('0'+(cfg.dyn_minute||0)).slice(-2);
+  // 这一位 up 主上次拉取的时间（不是别的 up 主或全局的）
   $('dynInfo').textContent='共 '+(j.total||0)+' 条 · '+
-    (st.ts?('上次 '+fmt(st.ts)+' '+(st.ok?'成功':'失败')):'尚未拉取')+
-    (cfg.dyn_auto?(' · 每天 '+hh+':'+mm):'');
+    (cfg.dyn_last_ts?('上次拉取 '+fmt(cfg.dyn_last_ts)):'还没拉过')+
+    (cfg.dyn_auto?(' · 每天 '+hh+':'+mm+' 定时抓取'):' · 定时抓取已关');
   var list=j.items||[];
   var total=j.total||0,limit=j.limit||S.dynPageSize,offset=j.offset||0;
   var pages=Math.max(1,Math.ceil(total/limit));
@@ -1439,7 +1499,7 @@ async function loadDynamics(keep){
   var off=S.dynPage*S.dynPageSize;
   try{
     renderDynamics(await api('/api/dynamics?limit='+S.dynPageSize+'&offset='+off+
-      '&mid='+mid+(q?'&q='+encodeURIComponent(q):'')));
+      '&room_id='+S.roomId+'&mid='+mid+(q?'&q='+encodeURIComponent(q):'')));
   }catch(e){say('dynHint','读取动态失败：'+e.message,'err')}
 }
 async function fetchDynamics(){
@@ -1449,7 +1509,7 @@ async function fetchDynamics(){
   $('btnDynFetch').disabled=true;
   try{
     var j=await api('/api/dynamics/fetch',{method:'POST',
-      body:JSON.stringify({mid:r.uid||0,limit:20})});
+      body:JSON.stringify({mid:r.uid||0,room_id:r.id,limit:20})});
     say('dynHint',j.message,j.ok?'ok':'err');
     if(j.ok){S.dynPage=0;loadDynamics();loadRooms()}
     else if(S.dyn)renderDynamics(S.dyn);
@@ -1643,7 +1703,8 @@ document.querySelectorAll('.nav button[data-page]').forEach(function(b){
 $('roomGrid').addEventListener('click',function(e){
   var b=e.target.closest('button[data-view]');if(!b)return;
   S.roomId=parseInt(b.dataset.view,10);localStorage.setItem('lc-room',String(S.roomId));
-  S.sessSel='all';S.sessStart=0;S.sessEnd=0;S.collectRoomId=0;
+  S.sessSel=0;S.sessStart=0;S.sessEnd=0;S.collectRoomId=0;
+  jumpRoomPage(S.roomId);
   $('dynList').innerHTML='';$('subN-dyn').textContent='—';
   showPage('rooms');
 });
@@ -1658,19 +1719,43 @@ $('roomTabs').addEventListener('click',function(e){
   var item=e.target.closest('[data-room]');
   if(item)selectRoom(item.dataset.room);
 });
+$('roomPager').addEventListener('click',function(e){
+  var b=e.target.closest('button[data-roompage]');
+  if(!b||b.disabled)return;
+  var n=parseInt(b.getAttribute('data-roompage'),10);
+  if(isNaN(n))return;
+  S.roomPage=Math.max(0,n);
+  renderRooms({items:S.rooms,active:S.active,running:S.running});
+});
 $('tabAdd').onclick=function(){openAddModal(true)};
 $('sessionList').addEventListener('click',function(e){
   var b=e.target.closest('.session-item[data-sess]');
   if(b)selectSession(b.dataset.sess);
 });
-/* 弹幕区「载入更早」：往上追 FEED_PAGE 条，并保持当前视线不跳 */
-document.querySelector('.feeds').addEventListener('click',function(e){
+/* 弹幕区「载入更早」：以这一页最老的一条为游标，向服务端再要一页（含游标那一毫秒，
+   前端按主键去重），拼到现有列表前面，并保持当前视线不跳 */
+document.querySelector('.feeds').addEventListener('click',async function(e){
   var b=e.target.closest('.feed-more[data-more]');if(!b)return;
-  var k=b.getAttribute('data-more'),box=$('feed-'+k);
-  var prevH=box.scrollHeight,prevTop=box.scrollTop;
-  S.feedShown[k]=(S.feedShown[k]||FEED_PAGE)+FEED_PAGE;
-  paintFeed(k);
-  box.scrollTop=prevTop+(box.scrollHeight-prevH);
+  var k=b.getAttribute('data-more'),rows=S.feedRows[k]||[];
+  if(!rows.length||S.loadingMore[k]||!S.sessSel)return;
+  S.loadingMore[k]=true;
+  b.disabled=true;b.textContent='正在载入…';
+  var qs='/api/feed?paged=1&room_id='+S.roomId+'&types='+k+
+    '&limit='+FEED_PAGE+'&before='+rows[0].received_at+'&incl=1'+
+    '&q='+encodeURIComponent(S.q);
+  if(S.sessStart)qs+='&since='+S.sessStart;
+  if(S.sessEnd)qs+='&until='+S.sessEnd;
+  var box=$('feed-'+k),prevH=box.scrollHeight,prevTop=box.scrollTop;
+  try{
+    var j=await api(qs);
+    S.feedRows[k]=mergeFeed(k,rows,(j.items&&j.items[k])||[]);
+    S.feedMore[k]=!!(j.more&&j.more[k]);
+    paintFeed(k,false);
+    box.scrollTop=prevTop+(box.scrollHeight-prevH);
+  }catch(err){
+    say('captureHint','载入更早内容失败：'+err.message,'err');
+    b.disabled=false;b.textContent='↑ 载入更早的 '+FEED_PAGE+' 条';
+  }finally{S.loadingMore[k]=false}
 });
 $('btnCloseModal').onclick=function(){openAddModal(false)};
 $('btnCancelAdd').onclick=function(){openAddModal(false)};
@@ -1699,18 +1784,23 @@ $('btnSaveCollect').onclick=saveCollect;
 $('colLive').addEventListener('change',syncCollectUI);
 $('btnDynFetch').onclick=fetchDynamics;
 $('btnDynSaveCfg').onclick=async function(){
+  var r=currentRoom();if(!r)return;
   try{
     var hh=('0'+(parseInt($('dynHour').value,10)||0)).slice(-2);
     var mm=('0'+(parseInt($('dynMinute').value,10)||0)).slice(-2);
+    // 定时抓取按 up 主各存一份，提交时带上这一位
     var j=await api('/api/dynamics/config',{method:'POST',body:JSON.stringify({
+      room_id:r.id,
       dyn_auto:$('dynAuto').checked,
       dyn_hour:parseInt($('dynHour').value,10)||0,
       dyn_minute:parseInt($('dynMinute').value,10)||0})});
     if(S.dyn)S.dyn.config=j.config;
+    if(j.rooms)renderRooms(j.rooms);
     renderDynamics(Object.assign({items:(S.dyn&&S.dyn.items)||[],
       total:(S.dyn&&S.dyn.total)||0,status:(S.dyn&&S.dyn.status)||{},
       limit:S.dynPageSize,offset:S.dynPage*S.dynPageSize},{config:j.config}));
-    say('dynHint','已保存：'+(j.config.dyn_auto?('每天 '+hh+':'+mm+' 自动拉取'):'已关闭定时拉取'),'ok');
+    say('dynHint',(r.uname||r.label)+'：'+(j.config.dyn_auto?
+      ('每天 '+hh+':'+mm+' 自动拉取'):'已关闭定时拉取'),'ok');
   }catch(e){say('dynHint','保存失败：'+e.message,'err')}
 };
 var dynQTimer=null;
@@ -1867,7 +1957,8 @@ setInterval(function(){
   if(document.hidden)return;
   if(S.page==='home'){loadDashboard();loadSystem()}
   else if(S.page==='rooms'){loadRooms();
-    if(S.subTab==='live'&&$('autoRefresh').checked){loadSessions();loadFeed()}}
+    // 还在播的那一场只把新到的并进来，避免每 4 秒重画整段
+    if(S.subTab==='live'&&$('autoRefresh').checked)loadSessions(true)}
   else if(S.page==='config')loadStatus();
   else if(S.page==='logs')loadLogs();
   loadAccounts();

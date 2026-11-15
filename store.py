@@ -357,24 +357,33 @@ class Store:
             rows = self.db.execute(sql, args + [cap]).fetchall()
         return [dict(r) for r in rows]
 
+    def count_range(self, kind, q="", room_id=None, since=None, until=None):
+        """某一类数据在给定范围内的总条数（分页时用来显示「共 N 条」）。"""
+        kind = kind if kind in TABLE_OF else "danmaku"
+        where, args = self._where(kind, q, room_id, since, None, until)
+        with self.lock:
+            return self.db.execute(
+                "SELECT COUNT(*) FROM " + TABLE_OF[kind] + where,
+                args).fetchone()[0]
+
     def query_page_before(self, kind, before_ms, count=200, room_id=None,
-                          since=None, until=None):
-        """Return the newest ``count`` rows strictly older than ``before_ms``.
+                          since=None, until=None, inclusive=False, q=""):
+        """Return the newest ``count`` rows older than ``before_ms``.
 
         Used by progressive rendering: start with the tail, page backwards on
         scroll so a long session never freezes the browser with one huge DOM
         write. Rows come back chronological (old → new).
+
+        ``before_ms`` 为 0 时不设上限（取最新的 ``count`` 条）。往前翻页时传
+        ``inclusive=True`` 让游标那一毫秒的行也再取一遍，前端按主键去重，
+        避免同一毫秒里的几条被漏掉。
         """
         kind = kind if kind in TABLE_OF else "danmaku"
-        clauses, args = [], []
-        if room_id:
-            clauses.append("room_id=?"); args.append(_as_int(room_id))
-        if since:
-            clauses.append("received_at>=?"); args.append(_as_int(since))
-        if until:
-            clauses.append("received_at<?"); args.append(_as_int(until))
-        clauses.append("received_at<?"); args.append(_as_int(before_ms))
-        where = " WHERE " + " AND ".join(clauses)
+        where, args = self._where(kind, q, room_id, since, None, until)
+        if _as_int(before_ms) > 0:
+            clause = "received_at%s?" % ("<=" if inclusive else "<")
+            where = (where + " AND " + clause) if where else (" WHERE " + clause)
+            args.append(_as_int(before_ms))
         second = "sc_id" if kind == "sc" else "seq"
         sql = ("SELECT * FROM " + TABLE_OF[kind] + where +
                " ORDER BY received_at DESC, " + second + " DESC LIMIT ?")

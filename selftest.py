@@ -230,6 +230,9 @@ def main():
         check("采集器默认同时采直播间与动态",
               r1["collect_live"] is True and r1["collect_dynamics"] is True and
               r1["live_only"] is False, r1)
+        check("定时抓取默认关闭、默认 08:00",
+              r1["dyn_auto"] is False and r1["dyn_hour"] == 8 and
+              r1["dyn_minute"] == 0, r1)
         check("按 uid 找采集器", (rooms.find_by_uid(9) or {}).get("id") == 22748536)
         rooms.settings(22748536, {"collect_dynamics": False})
         check("采集器开关可单独关闭",
@@ -531,7 +534,9 @@ def main():
         imp_path = os.path.join(tmp, "import_target.db")
         imp = Store(imp_path)
         src_conn = sqlite3.connect(src_path)
-        first = import_history.import_room(src_conn, imp, 555, 30 * 60 * 1000)
+        # 测试数据的两段各只有几秒，先关掉「最小时长」门槛，专门验切场逻辑
+        first = import_history.import_room(src_conn, imp, 555, 30 * 60 * 1000,
+                                           min_ms=0)
         check("导入历史弹幕 / SC / 事件",
               first["danmaku"] == 5 and first["sc"] == 1 and first["events"] == 1,
               first)
@@ -544,12 +549,29 @@ def main():
         check("导入保留 SC 译文与金额",
               imp.query("sc")[1][0]["message_trans"] == "打钱啦" and
               imp.range_stats(555, 1)["sc_amount"] >= 30)
-        again = import_history.import_room(src_conn, imp, 555, 30 * 60 * 1000)
+        again = import_history.import_room(src_conn, imp, 555, 30 * 60 * 1000,
+                                           min_ms=0)
         check("同一份历史库重复导入不写重",
               again["danmaku"] == 0 and again["sc"] == 0 and
               again["events"] == 0 and again["sessions"] == 0, again)
         check("重复导入后总数不变", imp.counts()["danmaku"] == 5,
               imp.counts())
+
+        # 太短的一段（零星路过弹幕）不该切出一场一分钟的假场次
+        src_conn.execute(
+            "INSERT INTO danmaku(room_id,uid,uname,text,event_time,received_at,"
+            "medal_name,medal_level,guard_level,is_admin,is_emoticon) VALUES "
+            "(555,3,'丙','路过',0,?,'',0,0,0,0)", (base + 10800000,))
+        src_conn.commit()
+        blip = import_history.import_room(src_conn, imp, 555, 30 * 60 * 1000,
+                                          min_ms=5 * 60 * 1000)
+        check("过短的一段不算一场，只计入跳过数",
+              blip["sessions"] == 0 and blip["skipped"] >= 1 and
+              blip["danmaku"] == 1, blip)
+        check("被跳过的段仍能按「场间」翻到",
+              len(imp.live_segments(555)) >= 3 and
+              sum(x["danmaku"] for x in imp.live_segments(555)) == 6,
+              [(x["kind"], x["danmaku"]) for x in imp.live_segments(555)])
         src_conn.close()
 
         # ---------- 表情图片代理（纯离线，不联网） ----------
@@ -657,19 +679,28 @@ def main():
               isinstance(nx, float) and 0 < nx - time.time() <= 86400 + 2,
               (nx, time.time()))
         pulled = []
-        real_pull = srv.dynamics.pull
-        srv.dynamics.pull = lambda *a, **k: pulled.append(1) or {"ok": True, "ts": 1}
+        real_pull_one = srv.dynamics.pull_one
+        srv.dynamics.pull_one = (lambda mid, reason="手动", limit=20:
+                                 pulled.append(mid) or (1, 1))
         try:
-            cfg.save({"dyn_auto": False, "dyn_hour": 0, "dyn_minute": 0,
-                      "dyn_last_ts": 0})
+            rooms.settings(22748536, {"dyn_auto": False})
             srv.dynamics._tick()
-            check("关掉「每天定时拉取」后定时器不拉", not pulled, pulled)
-            cfg.save({"dyn_auto": True})
+            check("定时抓取默认关闭，没开就不拉", not pulled, pulled)
+            # 00:00 今天早就过了，且 last_ts 为空 → 该补一次
+            rooms.settings(22748536, {"dyn_auto": True, "dyn_hour": 0,
+                                       "dyn_minute": 0, "dyn_last_ts": 0})
             srv.dynamics._tick()
-            check("开着定时且今天还没拉过就补拉一次", len(pulled) == 1, pulled)
+            uid_now = rooms.get(22748536)["uid"]
+            check("只拉打开了定时的那一位 up 主", pulled == [uid_now], pulled)
+            rooms.settings(22748536, {"dyn_last_ts": int(time.time() * 1000)})
+            srv.dynamics._tick()
+            check("今天这个时间点拉过就不再重复", len(pulled) == 1, pulled)
+            rooms.settings(22748536, {"dyn_auto": False, "dyn_last_ts": 0})
+            srv.dynamics._tick()
+            check("关掉这一位的定时抓取后不再拉", len(pulled) == 1, pulled)
         finally:
-            srv.dynamics.pull = real_pull
-            cfg.save({"dyn_last_ts": int(time.time() * 1000)})
+            srv.dynamics.pull_one = real_pull_one
+            rooms.settings(22748536, {"dyn_auto": False, "dyn_last_ts": 0})
 
         def get(path, headers=None):
             req = urllib.request.Request(base + path, headers=headers or {})
@@ -779,12 +810,23 @@ def main():
         check("动态翻译写入接口", status == 200 and
               json.loads(raw)["ok"] is True)
         status, raw = post("/api/dynamics/config",
-                           {"dyn_auto": True, "dyn_hour": 9, "dyn_minute": 25})
-        check("动态定时精确到分钟",
-              status == 200 and
-              json.loads(raw)["config"]["dyn_hour"] == 9 and
-              json.loads(raw)["config"]["dyn_minute"] == 25 and
-              cfg.get()["dyn_auto"] is True and cfg.get()["dyn_minute"] == 25)
+                           {"room_id": 22748536, "dyn_auto": True,
+                            "dyn_hour": 9, "dyn_minute": 25})
+        jc = json.loads(raw)
+        check("定时抓取按 up 主保存、精确到分钟",
+              status == 200 and jc["config"]["dyn_hour"] == 9 and
+              jc["config"]["dyn_minute"] == 25 and
+              rooms.get(22748536)["dyn_auto"] is True and
+              rooms.get(22748536)["dyn_minute"] == 25 and
+              rooms.get(1001)["dyn_auto"] is False, jc.get("config"))
+        check("定时抓取默认关闭（另一位 up 主没被顺带打开）",
+              rooms.get(1001)["dyn_auto"] is False and
+              rooms.get(1001)["dyn_hour"] == 8)
+        status, raw = post("/api/dynamics/config",
+                           {"dyn_auto": True, "dyn_hour": 9})
+        check("不带 room_id 的定时设置被拒（必须指明是哪位 up 主）",
+              status == 400)
+        rooms.settings(22748536, {"dyn_auto": False})
         status, raw = get("/api/dynamics?mid=9")
         check("动态接口按 up 主 uid 过滤",
               status == 200 and json.loads(raw)["total"] == 1)
@@ -814,14 +856,32 @@ def main():
         cfg.save({"dyn_mid": 555})
         check("没有采集器时用 dyn_mid 兜底", sched.targets() == [555])
         rooms.settings(22748536, {"collect_dynamics": True})
-        cfg.save({"dyn_mid": 0, "dyn_hour": 7, "dyn_minute": 45})
-        check("定时配置保存到分钟",
-              cfg.get()["dyn_hour"] == 7 and cfg.get()["dyn_minute"] == 45)
+        cfg.save({"dyn_mid": 0})
+        rooms.settings(22748536, {"dyn_hour": 7, "dyn_minute": 45})
+        check("定时时间按 up 主保存到分钟",
+              rooms.get(22748536)["dyn_hour"] == 7 and
+              rooms.get(22748536)["dyn_minute"] == 45 and
+              rooms.get(1001)["dyn_hour"] == 8)
         status, raw = get("/api/feed?room_id=22748536&types=danmaku,sc")
         j = json.loads(raw)
         check("内容接口按房间返回分栏",
               len(j["items"]["danmaku"]) >= 1 and len(j["items"]["sc"]) == 1 and
               "events" not in j["items"], j["items"].keys())
+        status, raw = get("/api/feed?paged=1&room_id=22748536&types=danmaku&limit=1")
+        jp = json.loads(raw)
+        check("弹幕分页接口：只回这一页，带总数与「还有更早」标记",
+              status == 200 and jp["paged"] is True and
+              len(jp["items"]["danmaku"]) == 1 and
+              isinstance(jp["more"]["danmaku"], bool) and
+              jp["counts"]["danmaku"] >= 1, jp.get("more"))
+        cursor = jp["items"]["danmaku"][0]["received_at"]
+        status, raw = get("/api/feed?paged=1&room_id=22748536&types=danmaku"
+                          "&limit=50&before=%d&incl=1" % cursor)
+        jb = json.loads(raw)
+        check("游标翻页把游标那一毫秒也算上（前端按主键去重，不重不漏）",
+              len(jb["items"]["danmaku"]) >= 1 and
+              jb["items"]["danmaku"][-1]["received_at"] <= cursor,
+              jb["items"]["danmaku"][-1])
         status, raw = get("/api/feed?room_id=1001&types=events")
         check("另一个房间的事件单独可见",
               len(json.loads(raw)["items"]["events"]) == 1)
@@ -1159,12 +1219,12 @@ def main():
                                       "f_dm", "f_sc", "f_ev")) and
               all(k not in page for k in ("roomParamsCard", "btnSaveParams",
                                           "r_proto", "r_hb")))
-        check("直播数据按「场 / 场间」分段：左侧列表 + 全量不截断",
+        check("直播数据只按场次查看：左侧列表 + 服务端分页往前追",
               all(k in page for k in ("sessionPane", "sessionList", "loadSessions",
                                       "selectSession", "data-sess=", "/api/sessions",
-                                      "all=1", "segRange", "segByKey",
-                                      "场间", "sc_amount")) and
-              "S.limit" not in page and "id=\"limit\"" not in page)
+                                      "paged=1", "segRange", "segByKey",
+                                      "场间", "sc_amount", "feed-more")) and
+              'data-sess="all"' not in page and "全部数据" not in page)
         check("旧 chips 与独立删除按钮已移除",
               all(k not in page for k in ("roomChips", "btnDelRoom",
                                           "btnAddToggle", "addForm")))
@@ -1246,11 +1306,15 @@ def main():
                                       "/api/dynamics/trans", "dynAuto", "dynHour",
                                       "dynMinute")) and
               'id="page-dynamics"' not in page)
-        check("弹幕按时间正序展示，越上方越早",
-              "rows.slice(start).map(" in page and
+        check("弹幕按时间正序展示，越上方越早，往前翻页走服务端游标",
+              "rows.map(function(r){return feedRow(k,r)}).join('')" in page and
               "rows.slice().reverse()" not in page and
+              "&before=" in page and "incl=1" in page and
               "feed-more" in page and "载入更早的" in page and
               "FEED_PAGE" in page and "data-more=" in page)
+        check("采集器清单分页：每页 3 个 + 上一页 / 下一页",
+              all(k in page for k in ("ROOM_PAGE=3", "roomPager", "data-roompage",
+                                      "jumpRoomPage", "paintRoomPager")))
         check("动态分页：每页 limit + offset，带上一页 / 下一页",
               all(k in page for k in ("dynPageSize", "dynPager", "data-dynpage",
                                       "offset=", "dynPage=0")) and

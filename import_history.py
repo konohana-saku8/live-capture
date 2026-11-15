@@ -71,9 +71,10 @@ def _clusters(times, gap_ms):
     return out
 
 
-def import_room(conn, store, rid, gap_ms, sessions=True, verbose=True):
+def import_room(conn, store, rid, gap_ms, sessions=True, verbose=True,
+                min_ms=5 * 60 * 1000):
     out = {"room_id": rid, "danmaku": 0, "danmaku_seen": 0, "sc": 0,
-           "events": 0, "sessions": 0}
+           "events": 0, "sessions": 0, "skipped": 0}
 
     # ---------- 弹幕 ----------
     sql = ("SELECT seq, uid, uname, text, event_time, received_at, medal_name,"
@@ -159,7 +160,14 @@ def import_room(conn, store, rid, gap_ms, sessions=True, verbose=True):
                 "SELECT %s FROM %s WHERE room_id=?%s ORDER BY 1" %
                 (col, table, extra), (rid,)) if r[0])
         marks = []
+        kept = []
         for start, end in _clusters(sorted(set(times)), gap_ms):
+            # 太短的一段不算一场：多半是零星几条路过弹幕，切出来只会多出
+            # 一串一分钟的假场次，让它们并进前后的「场间」更实在。
+            if end - start < min_ms:
+                out["skipped"] += 1
+                continue
+            kept.append((start, end))
             # 开播落在第一条数据之前一点点，确保这条数据算进这一场
             marks.append({"room_id": rid, "kind": "live", "detail": "开播",
                           "event_time": start // 1000,
@@ -176,10 +184,12 @@ def import_room(conn, store, rid, gap_ms, sessions=True, verbose=True):
                                                  ensure_ascii=False),
                           "import_key": _key("live", rid, end, "close")})
         out["sessions"] = store.insert_events(marks)
+        out["clusters"] = kept
     if verbose:
-        print("  房间 %s：弹幕 %d（读到 %d）· SC %d · 事件 %d · 场次标记 %d" %
+        print("  房间 %s：弹幕 %d（读到 %d）· SC %d · 事件 %d · 场次标记 %d"
+              "（跳过 %d 段过短的）" %
               (rid, out["danmaku"], out["danmaku_seen"], out["sc"],
-               out["events"], out["sessions"]))
+               out["events"], out["sessions"], out["skipped"]))
     return out
 
 
@@ -218,6 +228,8 @@ def main(argv=None):
     parser.add_argument("--data", default="data", help="本服务数据目录（含 capture.db）")
     parser.add_argument("--gap", type=int, default=30,
                         help="推场次用的空档分钟数，默认 30")
+    parser.add_argument("--min-minutes", type=int, default=5,
+                        help="短于这个分钟数的数据段不算一场（并进前后场间），默认 5")
     parser.add_argument("--no-sessions", action="store_true",
                         help="不补开播 / 下播事件（数据会归成「未分段」）")
     parser.add_argument("--no-rooms", action="store_true",
@@ -254,12 +266,15 @@ def main(argv=None):
     lines, totals = [], {"danmaku": 0, "sc": 0, "events": 0, "sessions": 0,
                          "rooms": 0}
     gap_ms = max(1, args.gap) * 60 * 1000
+    min_ms = max(0, args.min_minutes) * 60 * 1000
     for rid in sorted(rids):
         print("→ 房间 %s" % rid)
         res = import_room(conn, store, rid, gap_ms,
-                          sessions=not args.no_sessions)
+                          sessions=not args.no_sessions, min_ms=min_ms)
         for key in ("danmaku", "sc", "events", "sessions"):
             totals[key] += res[key]
+        for start, end in res.get("clusters") or []:
+            lines.append("session %s %s - %s" % (rid, _fmt(start), _fmt(end)))
         brief = _room_info(conn, rid)
         if not args.no_rooms and rid not in known:
             if not args.offline:

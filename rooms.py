@@ -21,6 +21,8 @@ PARAM_KEYS = ("protover", "heartbeat_seconds", "stale_seconds",
               "record_danmaku", "record_sc", "record_events")
 # 采集器可以选择采哪些数据
 COLLECT_KEYS = ("collect_live", "collect_dynamics", "live_only")
+# 动态定时抓取：按 up 主各存一份（默认关闭），dyn_last_ts 是内部记录的上次成功时间
+SCHED_KEYS = ("dyn_auto", "dyn_hour", "dyn_minute", "dyn_last_ts")
 
 
 def _as_int(value, default=0):
@@ -74,6 +76,11 @@ class RoomStore:
                 "collect_dynamics": item.get("collect_dynamics", True) is not False,
                 # 只在开播期间连弹幕服务器；没开播就只定时探状态
                 "live_only": item.get("live_only", False) is True,
+                # 定时抓取动态：每位 up 主单独设置，默认关闭
+                "dyn_auto": item.get("dyn_auto", False) is True,
+                "dyn_hour": min(23, max(0, _as_int(item.get("dyn_hour"), 8))),
+                "dyn_minute": min(59, max(0, _as_int(item.get("dyn_minute"), 0))),
+                "dyn_last_ts": _as_int(item.get("dyn_last_ts")),
                 "params": {k: params[k] for k in PARAM_KEYS if k in params},
                 "created_at": _as_int(item.get("created_at"))}
 
@@ -137,6 +144,12 @@ class RoomStore:
         with self.lock:
             return [dict(x) for x in self.items if x.get(key, True)]
 
+    def auto_dyn_rooms(self):
+        """打开了「采集动态 + 每天定时拉取」的采集器，各带自己的时/分。"""
+        with self.lock:
+            return [dict(x) for x in self.items
+                    if x.get("collect_dynamics", True) and x.get("dyn_auto")]
+
     @staticmethod
     def _apply_brief(item, brief):
         for key in ("uid", "short_id", "live_status", "live_time", "online"):
@@ -160,6 +173,15 @@ class RoomStore:
                             params[key] = value
                         elif key in COLLECT_KEYS:
                             item[key] = bool(value)
+                        elif key == "dyn_auto":
+                            item["dyn_auto"] = bool(value)
+                        elif key == "dyn_hour":
+                            item["dyn_hour"] = min(23, max(0, _as_int(value, 8)))
+                        elif key == "dyn_minute":
+                            item["dyn_minute"] = min(59,
+                                                     max(0, _as_int(value, 0)))
+                        elif key == "dyn_last_ts":
+                            item["dyn_last_ts"] = _as_int(value)
                     self._save()
                     return dict(item)
         return None
