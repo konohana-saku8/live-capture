@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>直播弹幕 / SC 采集</title>
+<style>
+:root{--bg:#12151a;--card:#1b2028;--line:#2b323d;--fg:#e7ebf0;--dim:#98a2b3;--accent:#6ea8fe;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--radius:12px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC",sans-serif;padding:16px;max-width:1000px;margin:0 auto}
+h1{font-size:19px;margin:0;font-weight:600}
+h2{font-size:15px;margin:0 0 12px;font-weight:600;color:var(--fg)}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
+header .sub{font-size:11px;color:var(--dim);letter-spacing:.12em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:14px;min-width:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.kv{background:#141920;border-radius:8px;padding:8px 10px;min-width:0}
+.kv span{display:block;font-size:11px;color:var(--dim)}
+.kv b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:3px 10px;font-size:12px;border:1px solid var(--line)}
+.badge i{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block}
+.badge.on{border-color:#245c39;color:var(--ok)}.badge.on i{background:var(--ok)}
+.badge.off{color:var(--dim)}
+button{background:#232b36;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 13px;font-size:13px;cursor:pointer;font-family:inherit}
+button:hover{border-color:var(--accent)}
+button.primary{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
+button.danger{border-color:#5b2b2b;color:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+input,select{width:100%;min-width:0;background:#12171e;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.checks{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:13px;color:var(--dim)}
+.checks label{display:flex;align-items:center;gap:6px;margin:0;color:var(--fg)}
+.checks input{width:auto}
+.hint{font-size:12px;color:var(--dim);margin-top:10px;min-height:18px;overflow-wrap:anywhere}
+.hint.err{color:var(--bad)}.hint.ok{color:var(--ok)}
+.tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.tabs button.active{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
+.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:10px;max-height:420px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{position:sticky;top:0;background:#202732;color:var(--dim);font-weight:500;z-index:1}
+td.msg{white-space:pre-wrap;word-break:break-word;max-width:420px}
+td.time{white-space:nowrap;color:var(--dim)}
+.scroll{font-size:12px;color:var(--dim);max-height:180px;overflow:auto;background:#12171e;border-radius:8px;padding:8px 10px;font-family:ui-monospace,monospace}
+.scroll div{border-bottom:1px solid #1e242d;padding:2px 0}
+.scroll .error{color:var(--bad)}.scroll .warn{color:var(--warn)}
+.muted{color:var(--dim);font-size:12px}
+.foot{color:var(--dim);font-size:11px;margin:18px 0 4px;text-align:center}
+@media(max-width:520px){
+  body{padding:10px}
+  .card{padding:12px}
+  .kv b{font-size:13px}
+  header .row{flex:1 1 100%}
+  header .row input{flex:1;width:auto}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .fields{grid-template-columns:1fr}
+  .tablewrap{max-height:340px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>直播弹幕 / SC 采集</h1><div class="sub">LIVE CAPTURE · 手机端服务</div></div>
+  <div class="row">
+    <span class="badge off" id="runBadge"><i></i><span>未启动</span></span>
+    <input id="token" type="password" placeholder="访问口令（如已设置）" style="width:170px">
+  </div>
+</header>
+
+<section class="card">
+  <div class="grid" id="statGrid"></div>
+  <div class="hint" id="runHint"></div>
+</section>
+
+<section class="card">
+  <h2>采集控制</h2>
+  <div class="row">
+    <button class="primary" id="btnStart">启动采集</button>
+    <button id="btnStop">停止</button>
+    <button id="btnRefresh">刷新状态</button>
+    <span class="muted" id="svcInfo"></span>
+  </div>
+  <div class="hint" id="ctrlHint"></div>
+</section>
+
+<section class="card">
+  <h2>配置</h2>
+  <form id="cfgForm">
+    <div class="fields">
+      <div><label>直播间号</label><input id="f_room" type="number" min="1" required></div>
+      <div><label>SESSDATA（可选，登录态更完整）</label><input id="f_sessdata" type="password" autocomplete="off"></div>
+      <div><label>DedeUserID（可选）</label><input id="f_dede" autocomplete="off"></div>
+      <div><label>buvid3（可选，留空自动领取）</label><input id="f_buvid" autocomplete="off"></div>
+      <div><label>压缩协议</label><select id="f_proto"><option value="2">2 · zlib（推荐，无额外依赖）</option><option value="3">3 · brotli（需装 brotli）</option></select></div>
+      <div><label>心跳间隔（秒）</label><input id="f_heartbeat" type="number" min="10" max="120"></div>
+      <div><label>静默重连（秒）</label><input id="f_stale" type="number" min="30" max="600"></div>
+      <div><label>监听地址</label><input id="f_host"></div>
+      <div><label>端口</label><input id="f_port" type="number" min="1" max="65535"></div>
+      <div><label>API 访问口令（可选）</label><input id="f_token" type="password" autocomplete="off"></div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="f_dm" checked>记录弹幕</label>
+      <label><input type="checkbox" id="f_sc" checked>记录 SC</label>
+      <label><input type="checkbox" id="f_ev" checked>记录礼物/上舰</label>
+      <label><input type="checkbox" id="f_auto">启动服务时自动开始采集</label>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" type="submit">保存配置</button>
+      <button type="button" id="btnClearSecret">清除已存凭证</button>
+      <span class="muted">敏感项留空表示不修改</span>
+    </div>
+  </form>
+  <div class="hint" id="cfgHint"></div>
+</section>
+
+<section class="card">
+  <h2>采集数据</h2>
+  <div class="tabs">
+    <button data-tab="danmaku" class="active">弹幕</button>
+    <button data-tab="sc">Super Chat</button>
+    <button data-tab="events">事件</button>
+  </div>
+  <div class="row">
+    <input id="q" placeholder="搜索内容 / 昵称" style="flex:1;min-width:150px">
+    <select id="limit" style="width:100px"><option>50</option><option>100</option><option>200</option></select>
+    <button id="btnLoad">查询</button>
+    <button id="btnJson">导出 JSON</button>
+    <button id="btnCsv">导出 CSV</button>
+    <label style="display:flex;align-items:center;gap:5px;margin:0;color:var(--fg)"><input id="autoRefresh" type="checkbox" checked style="width:auto">自动刷新</label>
+  </div>
+  <div class="tablewrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+  <div class="row" style="margin-top:10px;justify-content:space-between">
+    <span class="muted" id="tableInfo">—</span>
+    <div class="row"><button id="btnPrev">上一页</button><button id="btnNext">下一页</button></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>运行日志</h2>
+  <div class="scroll" id="logs"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="danger" id="btnClear">清空采集数据</button>
+    <span class="muted">需要二次确认；不会删除配置文件</span>
+  </div>
+</section>
+
+<div class="foot">数据仅保存在本机 data/capture.db · API 见 /api/status、/api/danmaku、/api/superchats、/api/export</div>
+
+<script>
+(function(){
+'use strict';
+var S={tab:'danmaku',offset:0,limit:50,q:'',total:0,cfg:null,running:false};
+var $=function(id){return document.getElementById(id)};
+var tokenInput=$('token');
+tokenInput.value=localStorage.getItem('lc-token')||'';
+tokenInput.addEventListener('change',function(){localStorage.setItem('lc-token',tokenInput.value.trim());loadStatus()});
+
+function headers(){var h={'Content-Type':'application/json'};var t=tokenInput.value.trim();if(t)h['X-Access-Token']=t;return h}
+async function api(path,opts){
+  opts=opts||{};
+  var r=await fetch(path,Object.assign({headers:headers()},opts));
+  var j=await r.json().catch(function(){return {ok:false,error:'返回不是 JSON'}});
+  if(r.status===401){say('ctrlHint','需要访问口令：请在右上角填写','err');throw new Error('401')}
+  if(!j.ok&&j.error)throw new Error(j.error);
+  return j;
+}
+function say(id,msg,kind){var e=$(id);e.textContent=msg||'';e.className='hint'+(kind?' '+kind:'')}
+function fmt(ms){if(!ms)return '—';var d=new Date(ms);return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function dur(ms){if(!ms)return '—';var s=Math.floor((Date.now()-ms)/1000);if(s<60)return s+' 秒';if(s<3600)return Math.floor(s/60)+' 分';return Math.floor(s/3600)+' 时 '+Math.floor(s%3600/60)+' 分'}
+
+function kv(k,v){return '<div class="kv"><span>'+esc(k)+'</span><b>'+esc(v)+'</b></div>'}
+function renderStatus(j){
+  var c=j.capture,cfg=j.config,st=j.service;
+  S.running=c.running;S.cfg=cfg;
+  var badge=$('runBadge');
+  badge.className='badge '+(c.running?'on':'off');
+  badge.querySelector('span').textContent=c.running?'采集中':'未启动';
+  var live={0:'未开播',1:'直播中',2:'轮播'}[c.live_status]||'未知';
+  $('statGrid').innerHTML=
+    kv('房间',c.real_room_id||c.room_id||'—')+kv('主播',c.uname||'—')+
+    kv('直播状态',live)+kv('人气',c.popularity||'—')+
+    kv('运行时长',c.started_at?dur(c.started_at):'—')+
+    kv('最后收包',c.last_packet_at?fmt(c.last_packet_at):'—')+
+    kv('本次弹幕',c.counts.danmaku)+kv('本次 SC',c.counts.sc)+
+    kv('本次事件',c.counts.events)+kv('收到消息',c.counts.messages)+
+    kv('库内弹幕',c.storage.danmaku)+kv('库内 SC',c.storage.sc)+
+    kv('重连次数',c.reconnects);
+  var problems=[];
+  if(!st.websockets)problems.push('缺少依赖 websockets，请在 Termux 里执行 pip install -r requirements.txt');
+  if(c.last_error)problems.push('最近错误：'+c.last_error);
+  if(c.warning)problems.push(c.warning);
+  say('runHint',problems.join('　|　'),problems.length?'err':'');
+  $('svcInfo').textContent='http://'+(st.lan_ip||'127.0.0.1')+':'+st.port+' · 数据 '+st.data_dir;
+  $('btnStart').disabled=c.running;
+  $('btnStop').disabled=!c.running;
+  fillConfig(cfg);
+}
+function fillConfig(cfg){
+  if(document.activeElement&&document.activeElement.tagName==='INPUT')return;
+  $('f_room').value=cfg.room_id||'';
+  $('f_proto').value=String(cfg.protover||2);
+  $('f_heartbeat').value=cfg.heartbeat_seconds||30;
+  $('f_stale').value=cfg.stale_seconds||120;
+  $('f_host').value=cfg.host||'0.0.0.0';
+  $('f_port').value=cfg.port||8765;
+  $('f_dm').checked=!!cfg.record_danmaku;
+  $('f_sc').checked=!!cfg.record_sc;
+  $('f_ev').checked=!!cfg.record_events;
+  $('f_auto').checked=!!cfg.auto_start;
+  [['f_sessdata','sessdata'],['f_dede','dede_user_id'],['f_buvid','buvid3'],['f_token','token']].forEach(function(p){
+    var e=$(p[0]);e.placeholder=cfg[p[1]+'_set']?'已配置 · 留空不修改':'可选';
+  });
+}
+function patchFromForm(){
+  var p={room_id:parseInt($('f_room').value,10),protover:parseInt($('f_proto').value,10),
+    heartbeat_seconds:parseInt($('f_heartbeat').value,10),stale_seconds:parseInt($('f_stale').value,10),
+    host:$('f_host').value.trim(),port:parseInt($('f_port').value,10),
+    record_danmaku:$('f_dm').checked,record_sc:$('f_sc').checked,
+    record_events:$('f_ev').checked,auto_start:$('f_auto').checked};
+  [['f_sessdata','sessdata'],['f_dede','dede_user_id'],['f_buvid','buvid3'],['f_token','token']].forEach(function(x){
+    var v=$(x[0]).value.trim();if(v)p[x[1]]=v;
+  });
+  return p;
+}
+var COLS={
+  danmaku:[['时间',function(r){return fmt(r.received_at)}],['昵称',function(r){return esc(r.uname)}],['内容',function(r){return '<div class="msg">'+esc(r.text)+'</div>'}],['牌子',function(r){return esc(r.medal_name||'')+(r.medal_level?' '+r.medal_level:'')}]],
+  sc:[['时间',function(r){return fmt(r.received_at)}],['昵称',function(r){return esc(r.uname)}],['金额',function(r){return '¥'+esc(r.price)}],['原文',function(r){return '<div class="msg">'+esc(r.message)+'</div>'}],['日译',function(r){return '<div class="msg">'+esc(r.message_trans||'—')+'</div>'}]],
+  events:[['时间',function(r){return fmt(r.received_at)}],['类型',function(r){return esc(r.kind)}],['昵称',function(r){return esc(r.uname)}],['详情',function(r){return '<div class="msg">'+esc(r.detail)+'</div>'}]]
+};
+var PATH={danmaku:'/api/danmaku',sc:'/api/superchats',events:'/api/events'};
+async function loadTable(){
+  var cols=COLS[S.tab];
+  $('tbl').tHead.innerHTML='<tr>'+cols.map(function(c){return '<th>'+c[0]+'</th>'}).join('')+'</tr>';
+  var qs='?limit='+S.limit+'&offset='+S.offset+'&q='+encodeURIComponent(S.q);
+  try{
+    var j=await api(PATH[S.tab]+qs);S.total=j.total;
+    $('tbl').tBodies[0].innerHTML=j.items.length?j.items.map(function(r){
+      return '<tr>'+cols.map(function(c){return '<td>'+c[1](r)+'</td>'}).join('')+'</tr>';
+    }).join(''):'<tr><td colspan="'+cols.length+'" class="muted">还没有数据</td></tr>';
+    $('tableInfo').textContent='共 '+S.total+' 条 · 第 '+(Math.floor(S.offset/S.limit)+1)+' 页';
+  }catch(e){say('ctrlHint','查询失败：'+e.message,'err')}
+}
+async function loadLogs(){
+  try{var j=await api('/api/logs?limit=80');
+    $('logs').innerHTML=j.items.slice().reverse().map(function(x){
+      return '<div class="'+esc(x.level)+'">'+fmt(x.ts)+' ['+esc(x.level)+'] '+esc(x.msg)+'</div>';
+    }).join('')||'<div class="muted">暂无日志</div>';
+  }catch(e){}
+}
+async function loadStatus(){try{renderStatus(await api('/api/status'))}catch(e){}}
+async function exportData(fmt){
+  var url='/api/export?type='+S.tab+'&format='+fmt+'&q='+encodeURIComponent(S.q);
+  try{
+    var r=await fetch(url,{headers:headers()});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    var blob=await r.blob(),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=S.tab+'.'+fmt;a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href)},2000);
+  }catch(e){say('ctrlHint','导出失败：'+e.message,'err')}
+}
+
+$('btnStart').onclick=async function(){try{var j=await api('/api/start',{method:'POST',body:'{}'});say('ctrlHint',j.message,j.ok?'ok':'err');loadStatus()}catch(e){say('ctrlHint',e.message,'err')}};
+$('btnStop').onclick=async function(){try{var j=await api('/api/stop',{method:'POST',body:'{}'});say('ctrlHint',j.message,'ok');loadStatus()}catch(e){say('ctrlHint',e.message,'err')}};
+$('btnRefresh').onclick=function(){loadStatus();loadTable();loadLogs()};
+$('cfgForm').onsubmit=async function(e){e.preventDefault();
+  try{var j=await api('/api/config',{method:'POST',body:JSON.stringify(patchFromForm())});
+    say('cfgHint','配置已保存'+(j.restart_required?'；采集正在运行，需停止后重新启动才生效':''),'ok');
+    [['f_sessdata'],['f_dede'],['f_buvid'],['f_token']].forEach(function(x){$(x[0]).value=''});
+    loadStatus();
+  }catch(err){say('cfgHint','保存失败：'+err.message,'err')}
+};
+$('btnClearSecret').onclick=async function(){try{await api('/api/config',{method:'POST',body:JSON.stringify({sessdata:'',dede_user_id:'',buvid3:'',token:''})});say('cfgHint','已清除凭证与访问口令','ok');loadStatus()}catch(e){say('cfgHint',e.message,'err')}};
+document.querySelectorAll('.tabs button').forEach(function(b){b.onclick=function(){
+  document.querySelectorAll('.tabs button').forEach(function(x){x.classList.remove('active')});
+  b.classList.add('active');S.tab=b.dataset.tab;S.offset=0;loadTable();
+}});
+$('q').addEventListener('input',function(e){S.q=e.target.value;S.offset=0});
+$('q').addEventListener('keydown',function(e){if(e.key==='Enter')loadTable()});
+$('limit').onchange=function(e){S.limit=parseInt(e.target.value,10);S.offset=0;loadTable()};
+$('btnLoad').onclick=loadTable;
+$('btnJson').onclick=function(){exportData('json')};
+$('btnCsv').onclick=function(){exportData('csv')};
+$('btnPrev').onclick=function(){S.offset=Math.max(0,S.offset-S.limit);loadTable()};
+$('btnNext').onclick=function(){if(S.offset+S.limit<S.total){S.offset+=S.limit;loadTable()}};
+$('btnClear').onclick=async function(){
+  if(!confirm('确定清空全部弹幕 / SC / 事件记录？此操作不可撤销。'))return;
+  try{await api('/api/clear',{method:'POST',body:JSON.stringify({confirm:'yes'})});say('ctrlHint','数据已清空','ok');loadStatus();loadTable();loadLogs()}catch(e){say('ctrlHint',e.message,'err')}
+};
+setInterval(function(){if(!document.hidden){loadStatus();if($('autoRefresh').checked)loadTable();loadLogs()}},5000);
+loadStatus();loadTable();loadLogs();
+})();
+</script>
+</body>
+</html>
