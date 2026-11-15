@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from accounts import AccountStore
 from capture import WS_IMPORT_ERROR, fetch_room_brief
 from images import EmoteProxy, FALLBACK_PNG
-from rooms import RoomStore
+from rooms import PARAM_KEYS, RoomStore
 
 DEFAULTS = {
     "protover": 2,                 # 2=zlib (no extra deps), 3=brotli
@@ -274,13 +274,26 @@ class Handler(BaseHTTPRequestHandler):
         for room in rooms:
             st = states.get(room["id"]) or {}
             agg = totals.get(room["id"]) or {}
+            live_status = _as_int(st.get("live_status") or
+                                  room.get("live_status"))
+            # 本场直播的数据边界：优先用采集时看到的 LIVE 事件，
+            # 否则用房间接口返回的 live_time（本场开播的 unix 秒）
+            since_ms = _as_int(st.get("live_started_at"))
+            if not since_ms and live_status == 1:
+                since_ms = _as_int(room.get("live_time")) * 1000
+            live_stats = (self.server.store.session_stats(room["id"], since_ms)
+                          if live_status == 1 and since_ms else None)
             items.append(dict(
                 room,
                 running=bool(st.get("running")),
                 configured=True,
                 real_room_id=st.get("real_room_id") or room["id"],
-                live_status=st.get("live_status") or room.get("live_status", 0),
-                uname=st.get("uname", ""),
+                live_status=live_status,
+                uname=st.get("uname") or room.get("uname", ""),
+                face=room.get("face", ""),
+                live_time=_as_int(room.get("live_time")),
+                live_started_at=_as_int(st.get("live_started_at")),
+                live_stats=live_stats,
                 online=st.get("online") or room.get("online", 0),
                 popularity=st.get("popularity", 0),
                 last_packet_at=st.get("last_packet_at", 0),
@@ -359,7 +372,8 @@ class Handler(BaseHTTPRequestHandler):
             items, counts = {}, {}
             for kind in kinds:
                 total, rows = store.query(kind, limit=limit, q=q.get("q") or "",
-                                          room_id=rid or None)
+                                          room_id=rid or None,
+                                          since=q.get("since"))
                 items[kind] = rows
                 counts[kind] = total
             self._json({"ok": True, "room_id": rid, "items": items,
@@ -447,6 +461,40 @@ class Handler(BaseHTTPRequestHandler):
                                  ("成功" if ok else "不存在", rid))
             self._json({"ok": ok, "rooms": self._rooms_payload(),
                         "capture": manager.snapshot()})
+            return
+        if path == "/api/rooms/settings":
+            rid = _as_int(body.get("room_id"))
+            params = body.get("params")
+            if not isinstance(params, dict):
+                self._fail(400, "params 必须是 JSON 对象")
+                return
+            clean = {}
+            for key, value in params.items():
+                if key not in PARAM_KEYS:
+                    continue
+                if key in BOOL_KEYS:
+                    clean[key] = bool(value)
+                elif key in INT_BOUNDS:
+                    low, high = INT_BOUNDS[key]
+                    try:
+                        num = int(value)
+                    except (TypeError, ValueError):
+                        self._fail(400, "%s 必须是数字" % key)
+                        return
+                    if not low <= num <= high:
+                        self._fail(400, "%s 需要在 %s–%s 之间" % (key, low, high))
+                        return
+                    clean[key] = num
+            item = rooms.settings(rid, clean)
+            if not item:
+                self._fail(404, "直播间不存在")
+                return
+            running = any(s["room_id"] == rid and s["running"]
+                          for s in manager.snapshot()["rooms"])
+            self.server.logs.add(
+                "info", "保存直播间参数：%s（%s）" % (item["label"], rid))
+            self._json({"ok": True, "room": item, "restart_required": running,
+                        "rooms": self._rooms_payload()})
             return
         if path == "/api/rooms/refresh":
             updated = 0

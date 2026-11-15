@@ -311,6 +311,27 @@ class Store:
 
     # ---------------- dashboard ----------------
 
+    def session_stats(self, room_id, since_ms):
+        """本场直播（received_at >= since_ms）的按房间统计；用于区分开播前后。"""
+        rid = _as_int(room_id)
+        since = _as_int(since_ms)
+        if not rid or since <= 0:
+            return None
+        with self.lock:
+            dm = self.db.execute(
+                "SELECT COUNT(*) FROM danmaku "
+                "WHERE room_id=? AND received_at>=?", (rid, since)).fetchone()[0]
+            sc = self.db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(price),0) FROM sc_message "
+                "WHERE room_id=? AND received_at>=? AND deleted=0",
+                (rid, since)).fetchone()
+            ev = self.db.execute(
+                "SELECT COUNT(*) FROM room_event "
+                "WHERE room_id=? AND received_at>=? AND kind<>'live'",
+                (rid, since)).fetchone()[0]
+        return {"danmaku": dm, "sc": sc[0], "events": ev,
+                "sc_amount": sc[1], "since": since}
+
     def dashboard(self):
         """Aggregates used by the home page: totals, per-room, recent, timeline."""
         with self.lock:

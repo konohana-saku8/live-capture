@@ -22,6 +22,7 @@ import urllib.request
 import zlib
 
 import capture
+import accounts as accounts_mod
 import server
 from accounts import AccountStore, parse_cookie_csv
 from capture import CaptureManager
@@ -127,7 +128,8 @@ def main():
         room_path = os.path.join(tmp, "rooms.json")
         rooms = RoomStore(room_path)
         r1, created = rooms.add(22748536, "", {"title": "深夜杂谈", "uid": 9,
-                                               "live_status": 1, "online": 123})
+                                               "live_status": 1, "online": 123,
+                                               "live_time": 1794600000})
         check("添加直播间并自动取标题", created and r1["label"] == "深夜杂谈" and
               r1["live_status"] == 1, r1)
         r2, created2 = rooms.add(1001, "备用房间")
@@ -272,6 +274,11 @@ def main():
             check("代理拒绝非法地址", True)
 
         # ---------- HTTP API ----------
+        # 账号昵称/头像走真实 B 站接口，自测里换成假实现保持零联网
+        old_profile = accounts_mod.fetch_profile
+        accounts_mod.fetch_profile = lambda cookies, timeout=6: {
+            "uid": 31373462, "uname": "测试用户",
+            "face": "https://i0.hdslb.com/bfs/face/test.png"}
         cfg = Config(os.path.join(tmp, "config.json"))
         logs = LogBuffer()
         logs.add("info", "selftest")
@@ -280,7 +287,8 @@ def main():
                                  rooms=rooms)
         server.fetch_room_brief = lambda rid, timeout=3: {
             "title": "房间 %s" % rid, "uid": 1, "short_id": 0,
-            "live_status": 1, "online": 10}
+            "live_status": 1, "live_time": 1794600000, "online": 10,
+            "uname": "主播%s" % rid, "face": "https://i0.hdslb.com/bfs/face/%s.png" % rid}
         srv = create_server("127.0.0.1", 0, tmp, os.path.join(HERE, "web"),
                             st, manager, cfg, logs, rooms=rooms)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -326,6 +334,13 @@ def main():
               status == 200 and len(j["items"]) == 2 and j["active"] == 0, j)
         check("直播间列表带按房间统计",
               any(x["totals"]["events"] == 1 for x in j["items"]))
+        check("直播间列表带主播信息与本场边界",
+              all(k in j["items"][0] for k in
+                  ("face", "uname", "live_time", "params", "live_stats")))
+        check("开播中的房间有本场统计",
+              j["items"][0]["live_stats"] is not None and
+              j["items"][0]["live_stats"]["since"] == 1794600000000,
+              j["items"][0].get("live_stats"))
         status, raw = get("/api/dashboard")
         j = json.loads(raw)
         check("仪表盘接口", status == 200 and j["totals"]["sc"] == 1 and
@@ -352,6 +367,20 @@ def main():
               status == 200 and len(json.loads(raw)["rooms"]["items"]) == 3)
         status, raw = post("/api/rooms/refresh", {})
         check("刷新直播间信息接口", json.loads(raw)["updated"] == 3)
+        status, raw = post("/api/rooms/settings", {"room_id": 22748536,
+                                                    "params": {"protover": 3,
+                                                               "heartbeat_seconds": 45}})
+        j = json.loads(raw)
+        check("按房间保存采集参数",
+              status == 200 and j["room"]["params"]["protover"] == 3 and
+              j["room"]["params"]["heartbeat_seconds"] == 45, j.get("room"))
+        check("房间参数持久化",
+              RoomStore(room_path).get(22748536)["params"]["protover"] == 3)
+        check("参数接口对不存在房间 404",
+              post("/api/rooms/settings", {"room_id": 999, "params": {}})[0] == 404)
+        check("参数越界被拒",
+              post("/api/rooms/settings", {"room_id": 22748536,
+                                           "params": {"protover": 9}})[0] == 400)
         status, raw = post("/api/rooms/remove", {"room_id": 3003})
         check("网页删除直播间", len(json.loads(raw)["rooms"]["items"]) == 2)
         status, raw = get("/api/logs?limit=500")
@@ -367,6 +396,9 @@ def main():
         check("上传 CSV 新增账号并自动启用",
               status == 200 and len(j["accounts"]["items"]) == 1 and
               j["accounts"]["items"][0]["active"], j)
+        check("账号带昵称头像（header 展示用）",
+              (j["accounts"]["items"][0].get("profile") or {}).get("uname")
+              == "测试用户", j["accounts"]["items"][0].get("profile"))
         check("账号列表不泄露 cookie 明文",
               b"test-sessdata" not in raw and
               bool(j["accounts"]["items"][0]["sessdata_mask"]), raw[:200])
@@ -439,9 +471,10 @@ def main():
                 return ["wss://fake/sub"]
 
         def frames_for(room_id, tag):
-            business = [{"cmd": "DANMU_MSG",
-                         "info": [head, "%s 弹幕%d" % (tag, i), [123, "小明", 0]]}
-                        for i in range(51)]
+            business = [{"cmd": "LIVE"}]
+            business += [{"cmd": "DANMU_MSG",
+                          "info": [head, "%s 弹幕%d" % (tag, i), [123, "小明", 0]]}
+                         for i in range(51)]
             business.append({"cmd": "SUPER_CHAT_MESSAGE", "data": {
                 "id": "m-%s" % room_id, "uid": 9, "price": 50,
                 "message": "%s SC" % tag, "start_time": 1794672000,
@@ -475,6 +508,16 @@ def main():
                 snap = manager.snapshot()
                 if snap["counts"]["danmaku"] >= 100 and snap["counts"]["sc"] >= 2:
                     break
+            # FakeApi 在各 worker 线程里异步构造，按 room_id 找对应配置
+            cfg_a = next((c for c in FakeApi.seen
+                          if c.get("room_id") == 22748536), None)
+            cfg_b = next((c for c in FakeApi.seen
+                          if c.get("room_id") == 1001), None)
+            check("房间 A 使用本房间参数（protover=3）",
+                  cfg_a and cfg_a.get("protover") == 3 and
+                  cfg_a.get("heartbeat_seconds") == 45, cfg_a)
+            check("房间 B 沿用全局默认（protover=2）",
+                  cfg_b and cfg_b.get("protover") == 2, cfg_b)
             check("两间弹幕都经采集链路入库",
                   snap["counts"]["danmaku"] >= 100, snap["counts"])
             check("两间 SC 都入库并区分房间",
@@ -482,6 +525,25 @@ def main():
                   len(st.query("sc", room_id=1001)[1]) == 1,
                   (st.query("sc", room_id=22748536)[0],
                    st.query("sc", room_id=1001)[0]))
+            states = {s["room_id"]: s for s in snap["rooms"]}
+            check("LIVE 消息记录本场开播时间",
+                  states[22748536]["live_started_at"] > 0 and
+                  states[1001]["live_started_at"] > 0,
+                  {k: v.get("live_started_at") for k, v in states.items()})
+            _, live_rows = st.query("events", room_id=22748536)
+            check("开播事件入库（区分未开播/开播数据）",
+                  any(r["kind"] == "live" and "开播" in (r["detail"] or "")
+                      for r in live_rows), [r["kind"] for r in live_rows])
+            since_ms = int(time.time() * 1000) - 60000
+            sess = st.session_stats(22748536, since_ms)
+            # 第 51 条弹幕还留在写缓冲里，停止时才冲刷，所以是 >=50
+            check("本场统计只数开播后的数据",
+                  sess and sess["danmaku"] >= 50 and sess["sc"] >= 1, sess)
+            check("since 无效时不给本场统计", st.session_stats(22748536, 0) is None)
+            status, raw = get("/api/feed?room_id=1001&types=events&since=%d"
+                              % (int(time.time() * 1000) + 3600000))
+            check("feed 支持本场过滤（since）",
+                  json.loads(raw)["items"]["events"] == [])
             check("启用账号的 cookie 注入采集配置",
                   bool(FakeApi.seen) and
                   FakeApi.seen[-1].get("_cookies", {}).get("SESSDATA") ==
@@ -502,8 +564,9 @@ def main():
 
         check("未知接口 404", get("/api/nope")[0] == 404)
         status, raw = post("/api/clear", {"confirm": "yes", "room_id": 1001})
+        # 剩下房间 22748536 的事件：gift 与 LIVE 开播各 1 条
         check("按房间清空数据", status == 200 and
-              st.counts()["events"] == 1, st.counts())
+              st.counts()["events"] == 2, st.counts())
         status, _ = post("/api/clear", {})
         check("清空需确认", status == 400)
 
@@ -517,10 +580,21 @@ def main():
               all(k in page for k in ('id="page-home"', 'id="page-rooms"',
                                       'id="page-config"', 'id="page-logs"',
                                       'data-page="home"', "loadDashboard")))
-        check("直播间页可增删、切换、按房间启停",
-              all(k in page for k in ("btnAddRoom", "btnDelRoom", "roomChips",
-                                      "/api/rooms", "/api/capture/",
-                                      "/api/capture/stop_all", "btnStopAll")))
+        check("直播间页浏览器标签式：状态点 / ✕ 删除 / ＋ 弹窗添加",
+              all(k in page for k in ("roomTabs", "tabAdd", 'data-x="',
+                                      "addModal", "btnAddRoom", "/api/rooms",
+                                      "/api/capture/", "btnStopAll")))
+        check("采集参数按房间配置，切到直播间才显示",
+              all(k in page for k in ("roomParamsCard", "btnSaveParams",
+                                      "r_proto", "/api/rooms/settings")) and
+              all(k not in page for k in ("f_proto", "f_heartbeat", "f_stale",
+                                          "f_dm\"")))
+        check("旧 chips 与独立删除按钮已移除",
+              all(k not in page for k in ("roomChips", "btnDelRoom",
+                                          "btnAddToggle", "addForm")))
+        check("header 账号栏 + 主播基本信息 + 本场过滤",
+              all(k in page for k in ("acctChip", "anchorFace", "linkRoom",
+                                      "linkSpace", "liveOnly", "live_stats")))
         check("内容纵向分区 + 只看某类勾选",
               all(k in page for k in ('class="feed"', "data-k=\"danmaku\"",
                                       "data-k=\"sc\"", "data-k=\"events\"",
@@ -543,6 +617,7 @@ def main():
               all(k in page for k in ("logBox", "acctFile", "btnUpload",
                                       "/api/export", "btnLogs")))
     finally:
+        accounts_mod.fetch_profile = old_profile
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("\n%d 项全部通过" % len(PASSED), flush=True)

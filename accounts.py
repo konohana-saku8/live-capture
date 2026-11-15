@@ -18,9 +18,41 @@ import json
 import os
 import threading
 import time
+import urllib.request
 
 MAX_CSV_CHARS = 256 * 1024
 LOGIN_KEY = "SESSDATA"
+PROFILE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+
+def fetch_profile(cookies, timeout=6):
+    """用上传的 cookie 换取账号昵称与头像（header 展示用）。
+
+    失败返回 None：匿名/失效 cookie 不影响采集，只是没有头像可显示。
+    selftest 里会被替换成假实现，保持零联网。
+    """
+    keep = {k: v for k, v in (cookies or {}).items()
+            if k in ("SESSDATA", "DedeUserID", "buvid3") and v}
+    if not keep.get("SESSDATA"):
+        return None
+    cookie = "; ".join("%s=%s" % kv for kv in keep.items())
+    req = urllib.request.Request(
+        "https://api.bilibili.com/x/web-interface/nav",
+        headers={"User-Agent": PROFILE_UA,
+                 "Referer": "https://www.bilibili.com/",
+                 "Cookie": cookie})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if data.get("code") != 0:
+        return None
+    payload = data.get("data") or {}
+    try:
+        uid = int(payload.get("mid") or 0)
+    except (TypeError, ValueError):
+        uid = 0
+    return {"uid": uid, "uname": str(payload.get("uname") or ""),
+            "face": str(payload.get("face") or "")}
 
 
 def parse_cookie_csv(text):
@@ -113,7 +145,17 @@ class AccountStore:
                 "has_login": bool(sessdata), "error": error,
                 "cookie_count": len(cookies),
                 "active": item["id"] == self.active_id,
+                "profile": item.get("profile") or None,
                 "created_at": item.get("created_at", 0)}
+
+    def _refresh_profile(self, item):
+        """尽力取一次账号昵称头像；失败静默（结果只影响展示）。"""
+        if item.get("profile") or item.get("error"):
+            return
+        try:
+            item["profile"] = fetch_profile(item.get("cookies") or {})
+        except Exception:
+            pass
 
     def list(self):
         with self.lock:
@@ -142,6 +184,7 @@ class AccountStore:
                 created = True
             if activate and not error:
                 self.active_id = item["id"]
+            self._refresh_profile(item)
             self._save()
             return self.public(item), created, error
 
@@ -167,6 +210,7 @@ class AccountStore:
             if item.get("error"):
                 raise ValueError(item["error"])
             self.active_id = target
+            self._refresh_profile(item)
             self._save()
             return self.list(), item.get("label", "")
 

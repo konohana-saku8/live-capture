@@ -23,6 +23,8 @@ import urllib.parse
 import urllib.request
 import zlib
 
+from rooms import PARAM_KEYS
+
 try:
     import brotli
     HAVE_BROTLI = True
@@ -392,7 +394,11 @@ class BiliApi:
 
 
 def fetch_room_brief(room_id, timeout=3):
-    """Lightweight room info for the room list; no WBI signing required."""
+    """Lightweight room info for the room list; no WBI signing required.
+
+    Also fetches the anchor's name / avatar so the web UI can show basic
+    room info; both extra calls are best-effort.
+    """
     url = ("https://api.live.bilibili.com/room/v1/Room/"
            "get_info?room_id=%d" % _as_int(room_id))
     req = urllib.request.Request(url, headers={
@@ -402,11 +408,28 @@ def fetch_room_brief(room_id, timeout=3):
     if data.get("code") != 0:
         raise RuntimeError("room info code=%s" % data.get("code"))
     info = data.get("data") or {}
-    return {"title": str(info.get("title") or ""),
-            "uid": _as_int(info.get("uid")),
-            "short_id": _as_int(info.get("short_id")),
-            "live_status": _as_int(info.get("live_status")),
-            "online": _as_int(info.get("online"))}
+    out = {"title": str(info.get("title") or ""),
+           "uid": _as_int(info.get("uid")),
+           "short_id": _as_int(info.get("short_id")),
+           "live_status": _as_int(info.get("live_status")),
+           "live_time": _as_int(info.get("live_time")),
+           "online": _as_int(info.get("online")),
+           "uname": "", "face": ""}
+    if out["uid"]:
+        try:
+            mreq = urllib.request.Request(
+                "https://api.live.bilibili.com/live_user/v1/Master/info?uid=%d"
+                % out["uid"],
+                headers={"User-Agent": DEFAULT_UA,
+                         "Referer": "https://live.bilibili.com/"})
+            with urllib.request.urlopen(mreq, timeout=timeout) as mresp:
+                master = json.loads(mresp.read().decode("utf-8"))
+            minfo = (master.get("data") or {}).get("info") or {}
+            out["uname"] = str(minfo.get("uname") or "")
+            out["face"] = str(minfo.get("face") or "")
+        except Exception:
+            pass
+    return out
 
 
 def build_danmaku(room_id, info, now_ms):
@@ -472,6 +495,8 @@ def event_row(room_id, kind, data, now_ms):
 
 
 def _event_detail(kind, data):
+    if kind == "live":
+        return "开播" if data.get("live") else "下播"
     if kind == "guard":
         return "舰长 %s 级 ×%s" % (data.get("guard_level") or "?",
                                   data.get("num") or 1)
@@ -490,6 +515,7 @@ COUNT_KEYS = ("messages", "danmaku", "sc", "events", "duplicates", "sc_trans")
 def blank_state():
     return {"running": False, "room_id": 0, "label": "", "real_room_id": 0,
             "title": "", "uname": "", "live_status": 0, "online": 0,
+            "live_started_at": 0,
             "started_at": 0, "stopped_at": 0, "last_packet_at": 0,
             "last_error": "", "warning": "", "reconnects": 0,
             "popularity": 0, "configured": True,
@@ -771,6 +797,26 @@ class RoomWorker:
             self.store.insert_event(row)
             self._inc("events")
 
+        # 开播 / 下播：区分「未开播期间」与「本场直播」的数据边界
+        if cmd == "LIVE":
+            self._set(live_status=1, live_started_at=now)
+            self.log("info", self.tag + "开播了")
+            row = event_row(room_id, "live", {"live": 1,
+                                              "start_time": now // 1000}, now)
+            row["run_id"] = run_id
+            self.store.insert_event(row)
+            self._inc("events")
+            return
+        if cmd == "PREPARING":
+            self._set(live_status=0)
+            self.log("info", self.tag + "下播了")
+            row = event_row(room_id, "live", {"live": 0,
+                                              "start_time": now // 1000}, now)
+            row["run_id"] = run_id
+            self.store.insert_event(row)
+            self._inc("events")
+            return
+
     def _flush_danmaku(self):
         if not self._dm_buf:
             return
@@ -878,6 +924,11 @@ class CaptureManager:
             return False, "缺少依赖 websockets：%s" % (WS_IMPORT_ERROR or "未安装")
         cfg = self._cookie_cfg(dict(self.config_getter()))
         cfg["room_id"] = rid
+        # 每间直播间的独立参数覆盖全局默认值
+        for key in PARAM_KEYS:
+            value = (room.get("params") or {}).get(key)
+            if value is not None:
+                cfg[key] = value
         label = room.get("label") or ("房间 %s" % rid)
         worker = RoomWorker(self, rid, label, cfg)
         with self.lock:

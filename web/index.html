@@ -61,6 +61,15 @@ input,select,textarea{font-family:inherit}
 #token:focus{outline:none;border-color:rgba(255,122,69,.45)}
 .navinfo{font:10.5px/1.4 var(--mono);color:var(--dim-2);white-space:nowrap}
 @media(max-width:720px){.navinfo{display:none}}
+.acct-chip{display:inline-flex;align-items:center;gap:8px;border-radius:99px;
+  padding:4px 12px 4px 5px;font-size:12px;border:1px solid var(--line-strong);
+  color:var(--ink-2);transition:.2s;white-space:nowrap;min-width:0}
+.acct-chip:hover{border-color:rgba(255,122,69,.5);background:rgba(255,122,69,.07)}
+.acct-chip img{width:26px;height:26px;border-radius:50%;object-fit:cover;
+  border:1px solid var(--line-strong);flex:none;background:rgba(255,255,255,.05)}
+.acct-chip b{max-width:110px;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.acct-chip.anon{border-style:dashed;color:var(--dim-2);padding:6px 12px;cursor:default}
+.acct-chip.anon:hover{background:none;border-color:var(--line-strong)}
 
 main{position:relative;z-index:2;max-width:1080px;margin:0 auto;padding:22px 20px 70px}
 section[hidden],.page[hidden],.feed[hidden]{display:none!important}
@@ -144,16 +153,41 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .recent .rx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--ink-2);min-width:0}
 .recent .rx b{color:var(--ink);font-weight:500}
 
-/* ---------- rooms ---------- */
-.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
-.chip{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:99px;
-  font-size:12px;border:1px solid var(--line);color:var(--dim);transition:.2s;max-width:100%}
-.chip span.n{font:10px/1 var(--mono);color:var(--dim-2)}
-.chip:hover{color:var(--ink);border-color:var(--line-strong)}
-.chip.on{color:#1a0d07;background:linear-gradient(140deg,var(--fire-soft),var(--fire));border-color:transparent;font-weight:600}
-.chip.on span.n{color:rgba(26,13,7,.6)}
-.chip.add{border-style:dashed}
-.add-form{display:grid;grid-template-columns:1fr 1.4fr auto;gap:9px;margin:12px 0 4px;align-items:center}
+/* ---------- rooms: browser tabs ---------- */
+.tabs{display:flex;flex-wrap:wrap;gap:7px;align-items:stretch}
+.tab{display:inline-flex;align-items:center;gap:8px;padding:7px 8px 7px 13px;
+  border-radius:10px;font-size:12.5px;border:1px solid var(--line);
+  color:var(--dim);transition:.18s;max-width:100%;min-width:0;cursor:pointer;
+  background:rgba(255,255,255,.02)}
+.tab .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.tab:hover{color:var(--ink);border-color:var(--line-strong)}
+.tab.on{color:#1a0d07;background:linear-gradient(140deg,var(--fire-soft),var(--fire));
+  border-color:transparent;font-weight:600}
+.tab .st{width:7px;height:7px;border-radius:50%;background:#c96a63;flex:none}
+.tab.on .st,.tab .st.on{background:var(--ok);box-shadow:0 0 0 3px rgba(143,191,139,.18)}
+.tab .x{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;
+  font-size:12px;color:inherit;opacity:.45;flex:none;line-height:1}
+.tab .x:hover{opacity:1;background:rgba(0,0,0,.25)}
+.tab.add{border-style:dashed;padding:7px 13px;font-size:14px}
+.tab-tools{display:flex;gap:8px;margin-left:auto;flex:none;align-items:center}
+.anchor{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+.anchor img{width:56px;height:56px;border-radius:50%;object-fit:cover;
+  border:1px solid var(--line-strong);background:rgba(255,255,255,.04);flex:none}
+.anchor .who{min-width:0;flex:1 1 200px}
+.anchor .who h2{margin:0;font:500 19px/1.35 var(--jp);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.anchor .who .sub{font:10.5px/1.5 var(--mono);color:var(--dim-2);margin-top:2px}
+.live-pill{display:inline-flex;align-items:center;gap:6px;border-radius:99px;
+  padding:5px 12px;font-size:11px;border:1px solid var(--line);color:var(--dim);flex:none}
+.live-pill.on{color:var(--fire-soft);border-color:rgba(255,122,69,.4);
+  background:rgba(255,122,69,.07)}
+.live-pill i{width:7px;height:7px;border-radius:50%;background:var(--dim-2)}
+.live-pill.on i{background:var(--fire);box-shadow:0 0 0 3px rgba(255,122,69,.16)}
+.links{display:flex;flex-wrap:wrap;gap:9px;margin:4px 0 2px}
+.modal{position:fixed;inset:0;z-index:100;background:rgba(6,4,3,.74);
+  display:flex;align-items:center;justify-content:center;padding:20px}
+.modal[hidden]{display:none}
+.modal .box{max-width:430px;width:100%;margin:0;animation:pageIn .2s ease-out}
 .room-title{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
 .room-title h2{margin:0;font:500 20px/1.4 var(--jp)}
 .filters{display:flex;flex-wrap:wrap;gap:18px;margin:4px 0 12px;font-size:12.5px;color:var(--ink-2)}
@@ -205,12 +239,12 @@ footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-siz
   .nav{order:3;width:100%;margin-left:0;justify-content:space-between}
   .nav button{flex:1 1 0;padding:7px 4px;font-size:12px;text-align:center}
   #token{width:104px}
+  .acct-chip b{max-width:64px}
   main{padding:16px 12px 56px}
   .card{padding:14px 14px}
   .stat{flex:1 1 33.33%;padding:12px 10px 12px 0}
   .stat+.stat{padding-left:10px}
   .stat b{font-size:21px}
-  .add-form{grid-template-columns:1fr}
   .bars{height:78px}.bars .bar{height:60px}
   .feed-body{max-height:300px}
 }
@@ -227,6 +261,7 @@ footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-siz
     <button data-page="logs">日志</button>
   </nav>
   <div class="top-right">
+    <a class="acct-chip anon" id="acctChip" hidden>匿名采集</a>
     <span class="badge off" id="runBadge"><i></i><span>未启动</span></span>
     <input id="token" type="password" placeholder="访问口令" autocomplete="off">
   </div>
@@ -275,36 +310,64 @@ footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-siz
 <div class="page" id="page-rooms" hidden>
   <section class="card">
     <div class="sec-head"><h2><i>◆</i>直播间</h2>
-      <button class="btn sm" id="btnAddToggle">＋ 添加直播间</button></div>
-    <div class="chips" id="roomChips"></div>
-    <div class="add-form" id="addForm" hidden>
-      <input id="newRoomId" type="number" min="1" placeholder="房间号，如 22748536">
-      <input id="newRoomName" type="text" placeholder="备注名（留空自动取直播间标题）">
-      <div class="row"><button class="btn primary" id="btnAddRoom">添加</button>
-        <button class="btn" id="btnCancelAdd">取消</button></div>
-    </div>
+      <span class="more">绿点＝采集中 · 红点＝未采集</span></div>
+    <div class="tabs" id="roomTabs"></div>
     <div class="hint" id="roomHint"></div>
   </section>
 
-  <section class="card">
-    <div class="room-title"><h2 id="curRoomTitle">还没有直播间</h2>
-      <span class="mono" id="curRoomId"></span></div>
+  <div class="card" id="emptyRooms" hidden>
+    <div class="empty">还没有直播间。点标签栏右侧「＋」添加一个房间号即可开始。</div>
+  </div>
+
+  <section class="card" id="roomPanel" hidden>
+    <div class="anchor" id="anchorBox">
+      <span id="anchorFace"></span>
+      <div class="who">
+        <h2 id="curRoomTitle">还没有直播间</h2>
+        <div class="sub" id="curRoomId">—</div>
+      </div>
+      <span class="live-pill" id="livePill"><i></i><span>未知</span></span>
+    </div>
+    <div class="links">
+      <a class="btn sm" id="linkRoom" target="_blank" rel="noopener">直播间 ↗</a>
+      <a class="btn sm" id="linkSpace" target="_blank" rel="noopener">个人空间 ↗</a>
+    </div>
     <div class="kv-grid" id="curStats"></div>
     <div class="row" style="margin-top:14px">
       <button class="btn primary" id="btnCapture">开始采集</button>
-      <button class="btn" id="btnStopAll">全部停止</button>
       <button class="btn" id="btnRefreshRooms">刷新直播间信息</button>
-      <button class="btn danger" id="btnDelRoom">删除直播间</button>
+      <button class="btn" id="btnStopAll">全部停止</button>
     </div>
     <div class="hint" id="captureHint"></div>
   </section>
 
-  <section class="card">
+  <section class="card" id="roomParamsCard" hidden>
+    <div class="sec-head"><h2><i>◆</i>采集参数</h2>
+      <span class="more" id="rpRoom">本直播间</span></div>
+    <div class="fields">
+      <div><label>压缩协议</label><select id="r_proto"><option value="2">2 · zlib（推荐，无额外依赖）</option><option value="3">3 · brotli（需装 brotli）</option></select></div>
+      <div><label>心跳间隔（秒）</label><input id="r_hb" type="number" min="10" max="120"></div>
+      <div><label>静默重连（秒）</label><input id="r_stale" type="number" min="30" max="600"></div>
+    </div>
+    <div class="checkline" style="margin-top:12px">
+      <label><input type="checkbox" id="r_dm">记录弹幕</label>
+      <label><input type="checkbox" id="r_sc">记录 SC</label>
+      <label><input type="checkbox" id="r_ev">记录礼物/上舰</label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn primary" id="btnSaveParams">保存本直播间参数</button>
+      <span class="muted">只作用于这一间；正在采集时需停止后重新启动生效</span>
+    </div>
+    <div class="hint" id="rpHint"></div>
+  </section>
+
+  <section class="card" id="contentCard" hidden>
     <div class="sec-head"><h2><i>◆</i>内容</h2><span class="more" id="feedInfo">—</span></div>
     <div class="filters">
       <label><input type="checkbox" data-k="danmaku" checked> 弹幕</label>
       <label><input type="checkbox" data-k="sc" checked> Super Chat</label>
       <label><input type="checkbox" data-k="events" checked> 直播间事件</label>
+      <label><input type="checkbox" id="liveOnly"> 只看本场直播</label>
       <label><input type="checkbox" id="autoRefresh" checked> 自动刷新</label>
     </div>
     <div class="row">
@@ -320,8 +383,26 @@ footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-siz
       <section class="feed" data-k="sc"><h3>Super Chat <span class="n" id="cnt-sc">0</span></h3><div class="feed-body" id="feed-sc"></div></section>
       <section class="feed" data-k="events"><h3>直播间事件 <span class="n" id="cnt-events">0</span></h3><div class="feed-body" id="feed-events"></div></section>
     </div>
-    <div class="hint">三类内容按房间分开纵向展示，勾选即可只看某一类；表情包会直接显示成图片。</div>
+    <div class="hint">三类内容按房间分开纵向展示，勾选即可只看某一类；开播后的数据可用「只看本场直播」与未开播期间区分。</div>
   </section>
+</div>
+
+<!-- 添加直播间对话框 -->
+<div class="modal" id="addModal" hidden>
+  <div class="card box">
+    <div class="sec-head"><h2><i>◆</i>添加直播间</h2>
+      <button class="btn sm" id="btnCloseModal">✕ 关闭</button></div>
+    <label>房间号</label>
+    <input id="newRoomId" type="number" min="1" placeholder="如 22748536" autocomplete="off">
+    <div style="height:10px"></div>
+    <label>备注名（可选）</label>
+    <input id="newRoomName" type="text" placeholder="留空自动取直播间标题" autocomplete="off">
+    <div class="row" style="margin-top:14px">
+      <button class="btn primary" id="btnAddRoom">添加</button>
+      <button class="btn" id="btnCancelAdd">取消</button>
+    </div>
+    <div class="hint" id="addHint"></div>
+  </div>
 </div>
 
 <!-- ============ 配置 ============ -->
@@ -340,20 +421,14 @@ footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-siz
   </section>
 
   <section class="card">
-    <div class="sec-head"><h2><i>◆</i>采集参数</h2><span class="more">房间号在「直播间」页管理</span></div>
+    <div class="sec-head"><h2><i>◆</i>服务参数</h2><span class="more">采集参数在各直播间页按房间配置</span></div>
     <form id="cfgForm">
       <div class="fields">
-        <div><label>压缩协议</label><select id="f_proto"><option value="2">2 · zlib（推荐，无额外依赖）</option><option value="3">3 · brotli（需装 brotli）</option></select></div>
-        <div><label>心跳间隔（秒）</label><input id="f_heartbeat" type="number" min="10" max="120"></div>
-        <div><label>静默重连（秒）</label><input id="f_stale" type="number" min="30" max="600"></div>
         <div><label>监听地址</label><input id="f_host" type="text"></div>
         <div><label>端口</label><input id="f_port" type="number" min="1" max="65535"></div>
         <div><label>API 访问口令</label><input id="f_token" type="password" autocomplete="off"></div>
       </div>
       <div class="checkline" style="margin-top:14px">
-        <label><input type="checkbox" id="f_dm" checked>记录弹幕</label>
-        <label><input type="checkbox" id="f_sc" checked>记录 SC</label>
-        <label><input type="checkbox" id="f_ev" checked>记录礼物/上舰</label>
         <label><input type="checkbox" id="f_auto">启动服务时自动采集所有直播间</label>
       </div>
       <div class="row" style="margin-top:14px">
@@ -401,11 +476,12 @@ footer{position:relative;z-index:2;text-align:center;color:var(--dim-2);font-siz
 (function(){
 'use strict';
 var S={page:'home',rooms:[],roomId:0,active:0,running:false,
-       filters:{danmaku:true,sc:true,events:true},limit:30,q:'',
+       filters:{danmaku:true,sc:true,events:true},limit:30,q:'',liveOnly:false,
        cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
 var $=function(id){return document.getElementById(id)};
 var GUARD={1:'总督',2:'提督',3:'舰长'};
-var KIND={danmaku:'弹幕',sc:'SC',events:'事件',guard:'上舰',gift:'礼物',sc_delete:'删 SC'};
+var KIND={danmaku:'弹幕',sc:'SC',events:'事件',guard:'上舰',gift:'礼物',
+          sc_delete:'删 SC',live:'直播状态'};
 var tokenInput=$('token');
 tokenInput.value=localStorage.getItem('lc-token')||'';
 tokenInput.addEventListener('change',function(){
@@ -497,11 +573,17 @@ function renderDashboard(j){
   $('roomSummary').textContent=S.rooms.length+' 间 · '+S.active+' 间正在采集';
   $('roomGrid').innerHTML=S.rooms.length?S.rooms.map(function(r){
     var c=r.totals||{},live={0:'未开播',1:'直播中',2:'轮播'}[r.live_status]||'未知';
+    var ls=r.live_stats;
+    var sess=ls?('<div class="nums" style="margin:6px 0 0">'+
+      '<span style="color:var(--fire-soft)">本场</span>'+
+      '<span>弹幕 <b>'+num(ls.danmaku)+'</b></span>'+
+      '<span>SC <b>'+num(ls.sc)+'</b></span>'+
+      '<span>¥<b>'+num(ls.sc_amount)+'</b></span></div>'):'';
     return '<div class="room-card '+(r.running?'on':'')+'">'+
       '<h3>'+esc(r.label)+'</h3><div class="sub">ROOM '+esc(r.id)+' · '+esc(live)+'</div>'+
       '<div class="nums"><span>弹幕 <b>'+num(c.danmaku)+'</b></span>'+
       '<span>SC <b>'+num(c.sc)+'</b></span><span>事件 <b>'+num(c.events)+'</b></span>'+
-      '<span>¥<b>'+num(c.sc_amount)+'</b></span></div>'+
+      '<span>¥<b>'+num(c.sc_amount)+'</b></span></div>'+sess+
       '<div class="foot"><span class="dot '+(r.running?'on':'')+'"><i></i>'+
       (r.running?'采集中':'未采集')+'</span>'+
       '<button class="btn sm" data-view="'+esc(r.id)+'">查看内容 →</button></div></div>';
@@ -545,7 +627,18 @@ async function loadDashboard(){
   try{renderDashboard(await api('/api/dashboard'))}catch(e){}
 }
 
-/* ---------- 直播间 ---------- */
+/* ---------- 直播间：浏览器标签式 ---------- */
+function cdnImg(url,cls,alt,style){
+  url=String(url||'');
+  if(!/^(https?:\/\/|\/\/)/i.test(url))return '';
+  return '<img class="'+cls+'" src="'+esc(url)+'" data-src="'+esc(url)+
+    '" referrerpolicy="no-referrer"'+(style?(' style="'+style+'"'):'')+
+    ' alt="'+esc(alt||'')+'">';
+}
+function liveSince(r){
+  if(!r||r.live_status!==1)return 0;
+  return r.live_started_at||(r.live_time||0)*1000;
+}
 function renderRooms(j){
   S.rooms=(j&&j.items)||[];
   S.active=j&&j.active||0;S.running=!!(j&&j.running);
@@ -553,33 +646,64 @@ function renderRooms(j){
   var prevRoom=S.roomId;
   var ids=S.rooms.map(function(r){return r.id});
   if(ids.indexOf(S.roomId)<0){S.roomId=ids.length?ids[0]:0;localStorage.setItem('lc-room',String(S.roomId))}
-  $('roomChips').innerHTML=S.rooms.map(function(r){
-    return '<button class="chip '+(r.id===S.roomId?'on':'')+'" data-room="'+esc(r.id)+'">'+
-      (r.running?'● ':'')+esc(r.label)+'<span class="n">'+esc(r.id)+'</span></button>';
-  }).join('')+'<button class="chip add" id="chipAdd">＋ 添加</button>';
-  var r=currentRoom();
-  $('curRoomTitle').textContent=r?r.label:'还没有直播间';
-  $('curRoomId').textContent=r?('ROOM '+r.id+(r.real_room_id&&r.real_room_id!==r.id?' · 真实 '+r.real_room_id:'')):'—';
-  var live={0:'未开播',1:'直播中',2:'轮播'}[r&&r.live_status]||'未知';
-  var c=(r&&r.counts)||{},t=(r&&r.totals)||{};
-  $('curStats').innerHTML=
-    kv('状态',r&&r.running?'采集中':'未采集')+kv('直播状态',live)+
-    kv('主播',r&&r.uname||'—')+kv('人气',r&&r.popularity||r&&r.online||'—')+
-    kv('本次运行时长',r&&r.started_at?dur(r.started_at):'—')+
-    kv('最后收包',r&&r.last_packet_at?fmt(r.last_packet_at):'—')+
-    kv('本次弹幕',c.danmaku||0)+kv('本次 SC',c.sc||0)+
-    kv('库内弹幕',t.danmaku||0)+kv('库内 SC',t.sc||0)+
-    kv('库内事件',t.events||0)+kv('SC 总额','¥'+num(t.sc_amount||0));
-  setCaptureUI(r&&r.running);
-  $('btnDelRoom').disabled=!r;
-  $('btnCapture').disabled=!r;
-  var problems=[];
-  if(r&&r.last_error)problems.push('最近错误：'+r.last_error);
-  if(r&&r.warning)problems.push(r.warning);
-  if(S.svc&&S.svc.websockets===false)problems.push('缺少依赖 websockets');
-  var h=$('captureHint');h.textContent=problems.join('　|　');h.className='hint'+(problems.length?' err':'');
-  // 首次进入或切换房间时，选中项刚由列表推导出来，这里补一次内容加载
+  $('roomTabs').innerHTML=S.rooms.map(function(r){
+    return '<div class="tab '+(r.id===S.roomId?'on':'')+'" data-room="'+esc(r.id)+'">'+
+      '<i class="st '+(r.running?'on':'')+'" title="'+(r.running?'采集中':'未采集')+'"></i>'+
+      '<span class="lbl">'+esc(r.label)+'</span>'+
+      '<button class="x" data-x="'+esc(r.id)+'" title="删除直播间（保留已采集数据）">✕</button></div>';
+  }).join('')+'<button class="tab add" id="tabAdd" title="添加直播间">＋</button>';
+  renderRoomPanel();
   if(prevRoom!==S.roomId&&S.page==='rooms')loadFeed();
+}
+function renderRoomPanel(){
+  var r=currentRoom(),has=!!r;
+  $('emptyRooms').hidden=has;
+  $('roomPanel').hidden=!has;
+  $('roomParamsCard').hidden=!has;
+  $('contentCard').hidden=!has;
+  if(!has){$('roomHint').textContent='';return}
+  var live={0:'未开播',1:'直播中',2:'轮播'}[r.live_status]||'未知';
+  var pill=$('livePill');
+  pill.className='live-pill'+(r.live_status===1?' on':'');
+  pill.querySelector('span').textContent=live;
+  $('anchorBox').querySelector('#anchorFace').innerHTML=
+    cdnImg(r.face,'anchor-face','主播头像')||
+    '<img alt="主播头像" src="data:," style="width:56px;height:56px">';
+  $('curRoomTitle').textContent=r.label;
+  $('curRoomId').textContent='ROOM '+r.id+
+    (r.real_room_id&&r.real_room_id!==r.id?' · 真实 '+r.real_room_id:'')+
+    (r.title?' · '+r.title:'');
+  $('linkRoom').href='https://live.bilibili.com/'+esc(r.id);
+  var uid=r.uid||0;
+  $('linkSpace').style.display=uid?'':'none';
+  if(uid)$('linkSpace').href='https://space.bilibili.com/'+esc(uid);
+  var since=liveSince(r);
+  $('curStats').innerHTML=
+    kv('主播',r.uname||'—')+kv('人气',r.online||'—')+
+    kv('房间号',r.id)+
+    (since?kv('本场开播于',fmtFull(since)):'');
+  setCaptureUI(r.running);
+  $('btnCapture').disabled=false;
+  var problems=[];
+  if(r.last_error)problems.push('最近错误：'+r.last_error);
+  if(r.warning)problems.push(r.warning);
+  if(S.svc&&S.svc.websockets===false)problems.push('缺少依赖 websockets');
+  var h=$('captureHint');h.textContent=problems.join('　|　');
+  h.className='hint'+(problems.length?' err':'');
+  fillRoomParams(r);
+  syncLiveOnly();
+}
+function fillRoomParams(r){
+  if(document.activeElement&&document.activeElement.tagName==='INPUT'&&
+     document.activeElement.closest&&document.activeElement.closest('#roomParamsCard'))return;
+  var p=(r&&r.params)||{},g=S.cfg||{};
+  $('rpRoom').textContent=r?r.label+' · ROOM '+r.id:'';
+  $('r_proto').value=String(p.protover!=null?p.protover:(g.protover||2));
+  $('r_hb').value=p.heartbeat_seconds!=null?p.heartbeat_seconds:(g.heartbeat_seconds||30);
+  $('r_stale').value=p.stale_seconds!=null?p.stale_seconds:(g.stale_seconds||120);
+  $('r_dm').checked=p.record_danmaku!=null?!!p.record_danmaku:(g.record_danmaku!==false);
+  $('r_sc').checked=p.record_sc!=null?!!p.record_sc:(g.record_sc!==false);
+  $('r_ev').checked=p.record_events!=null?!!p.record_events:(g.record_events!==false);
 }
 function setCaptureUI(running,label){
   var b=$('btnCapture');
@@ -593,6 +717,17 @@ function selectRoom(id){
   S.roomId=parseInt(id,10)||0;
   localStorage.setItem('lc-room',String(S.roomId));
   loadRooms();loadFeed();
+}
+async function removeRoom(id){
+  var r=null;
+  for(var i=0;i<S.rooms.length;i++)if(S.rooms[i].id===parseInt(id,10))r=S.rooms[i];
+  if(!r)return;
+  if(!confirm('删除直播间「'+r.label+'」？\n已采集的历史数据会保留，可随时重新添加。'))return;
+  try{
+    var j=await api('/api/rooms/remove',{method:'POST',body:JSON.stringify({room_id:r.id})});
+    renderRooms(j.rooms);loadFeed();
+    say('roomHint','已删除「'+r.label+'」（数据保留）','ok');
+  }catch(e){say('roomHint','删除失败：'+e.message,'err')}
 }
 async function controlCapture(kind){
   if(!S.roomId){say('captureHint','请先添加直播间','err');return}
@@ -611,19 +746,24 @@ async function controlCapture(kind){
     say('captureHint','操作失败：'+e.message,'err');await loadRooms();
   }finally{S.busy=false}
 }
+function openAddModal(open){
+  $('addModal').hidden=!open;
+  if(open){$('newRoomId').value='';$('newRoomName').value='';
+    $('addHint').textContent='';setTimeout(function(){$('newRoomId').focus()},50)}
+}
 async function addRoom(){
   var rid=parseInt($('newRoomId').value,10);
-  if(!rid||rid<1){say('roomHint','请填写有效的房间号','err');return}
+  if(!rid||rid<1){say('addHint','请填写有效的房间号','err');return}
   $('btnAddRoom').disabled=true;
-  say('roomHint','正在添加并读取直播间信息…');
+  say('addHint','正在添加并读取直播间信息…');
   try{
     var j=await api('/api/rooms',{method:'POST',body:JSON.stringify({
       room_id:rid,label:$('newRoomName').value.trim()})});
     S.roomId=j.room.id;localStorage.setItem('lc-room',String(S.roomId));
-    $('newRoomId').value='';$('newRoomName').value='';$('addForm').hidden=true;
+    openAddModal(false);
     say('roomHint','已添加：'+j.room.label+(j.warning?'（'+j.warning+'）':''),'ok');
     await loadRooms();loadFeed();
-  }catch(e){say('roomHint','添加失败：'+e.message,'err')}
+  }catch(e){say('addHint','添加失败：'+e.message,'err')}
   finally{$('btnAddRoom').disabled=false}
 }
 
@@ -690,7 +830,8 @@ function renderFeed(j){
     if(atBottom)box.scrollTop=box.scrollHeight;
   });
   var r=currentRoom();
-  $('feedInfo').textContent=(r?r.label+' · ':'')+'每栏最近 '+S.limit+' 条 · 无分页';
+  $('feedInfo').textContent=(r?r.label+' · ':'')+
+    (S.liveOnly&&liveSince(r)?'本场 · ':'')+'每栏最近 '+S.limit+' 条 · 无分页';
 }
 async function loadFeed(){
   if(!S.roomId){
@@ -698,14 +839,36 @@ async function loadFeed(){
     return;
   }
   var types=Object.keys(S.filters).filter(function(k){return S.filters[k]});
+  var r=currentRoom(),since=0;
+  if(S.liveOnly)since=liveSince(r);
   var qs='/api/feed?room_id='+S.roomId+'&limit='+S.limit+'&types='+types.join(',')+
          '&q='+encodeURIComponent(S.q);
+  if(since)qs+='&since='+since;
   try{renderFeed(await api(qs))}catch(e){say('captureHint','读取内容失败：'+e.message,'err')}
 }
 
 /* ---------- 配置 ---------- */
+function renderAcctChip(){
+  var chip=$('acctChip');
+  var act=null;
+  for(var i=0;i<S.accounts.length;i++)if(S.accounts[i].active)act=S.accounts[i];
+  if(!act){
+    chip.hidden=false;chip.className='acct-chip anon';
+    chip.removeAttribute('href');chip.textContent='匿名采集';
+    return;
+  }
+  var p=act.profile||{};
+  var uid=p.uid||act.uid||0;
+  chip.hidden=false;chip.className='acct-chip';
+  chip.innerHTML=(p.face?cdnImg(p.face,'','账号头像'):'')+
+    '<b>'+esc(p.uname||act.label)+'</b>';
+  if(uid){chip.href='https://space.bilibili.com/'+uid;chip.target='_blank';chip.rel='noopener'}
+  else{chip.removeAttribute('href')}
+  chip.title=act.label+'（uid '+(uid||'—')+'）';
+}
 function renderAccounts(data){
   S.accounts=(data&&data.items)||[];
+  renderAcctChip();
   var box=$('acctList');
   if(!S.accounts.length){
     box.innerHTML='<div class="hint">还没有账号。上传一个 cookie CSV 即可启用登录态；不上传则匿名采集（昵称可能显示成 ***）。</div>';
@@ -746,16 +909,14 @@ async function uploadAccount(){
 function fillConfig(cfg){
   if(!cfg)return;
   if(document.activeElement&&document.activeElement.tagName==='INPUT')return;
-  $('f_proto').value=String(cfg.protover||2);
-  $('f_heartbeat').value=cfg.heartbeat_seconds||30;
-  $('f_stale').value=cfg.stale_seconds||120;
   $('f_host').value=cfg.host||'0.0.0.0';
   $('f_port').value=cfg.port||8765;
-  $('f_dm').checked=!!cfg.record_danmaku;
-  $('f_sc').checked=!!cfg.record_sc;
-  $('f_ev').checked=!!cfg.record_events;
   $('f_auto').checked=!!cfg.auto_start;
   $('f_token').placeholder=cfg.token_set?'已设置 · 留空不修改':'可选';
+  // 全局配置里的采集参数只作为各直播间的默认值
+  S.cfg=cfg;
+  var r=currentRoom();
+  if(r)fillRoomParams(r);
 }
 async function loadStatus(){
   try{
@@ -802,22 +963,27 @@ function showPage(name){
 }
 
 /* ---------- 事件绑定 ---------- */
-/* 表情图被 CDN 拒绝时自动改走同源代理；代理也失败就退化成表情名文字。
-   error 不冒泡，所以必须用捕获阶段监听。 */
+/* CDN 图片被防盗链拒绝时自动改走同源代理；代理也失败：
+   表情退化成 [名字] 文字，头像直接隐藏。error 不冒泡，必须捕获阶段监听。 */
 document.addEventListener('error',function(e){
   var t=e.target;
-  if(!t||t.tagName!=='IMG'||!t.classList.contains('emote'))return;
+  if(!t||t.tagName!=='IMG')return;
+  var raw=t.getAttribute('data-src');
+  if(!raw)return;
   if(!t.dataset.fallback){
     t.dataset.fallback='1';
-    var raw=t.getAttribute('data-src')||t.getAttribute('src')||'';
     t.src='/api/emote?u='+encodeURIComponent(raw);
     return;
   }
-  var span=document.createElement('span');
-  span.className='emote-fallback';
-  span.textContent='['+String(t.getAttribute('alt')||'表情')+']';
-  span.title='表情图片加载失败';
-  if(t.parentNode)t.parentNode.replaceChild(span,t);
+  if(t.classList.contains('emote')){
+    var span=document.createElement('span');
+    span.className='emote-fallback';
+    span.textContent='['+String(t.getAttribute('alt')||'表情')+']';
+    span.title='表情图片加载失败';
+    if(t.parentNode)t.parentNode.replaceChild(span,t);
+  }else{
+    t.style.visibility='hidden';
+  }
 },true);
 document.querySelectorAll('.nav button[data-page]').forEach(function(b){
   b.onclick=function(){showPage(b.dataset.page)};
@@ -827,15 +993,37 @@ $('roomGrid').addEventListener('click',function(e){
   S.roomId=parseInt(b.dataset.view,10);localStorage.setItem('lc-room',String(S.roomId));
   showPage('rooms');
 });
-$('roomChips').addEventListener('click',function(e){
-  var b=e.target.closest('button[data-room]');
-  if(b){selectRoom(b.dataset.room);return}
-  if(e.target.closest('#chipAdd'))$('addForm').hidden=false;
+$('roomTabs').addEventListener('click',function(e){
+  var x=e.target.closest('button[data-x]');
+  if(x){removeRoom(x.dataset.x);return}
+  if(e.target.closest('#tabAdd')){openAddModal(true);return}
+  var tab=e.target.closest('.tab[data-room]');
+  if(tab)selectRoom(tab.dataset.room);
 });
-$('btnAddToggle').onclick=function(){$('addForm').hidden=!$('addForm').hidden};
-$('btnCancelAdd').onclick=function(){$('addForm').hidden=true};
+$('btnCloseModal').onclick=function(){openAddModal(false)};
+$('btnCancelAdd').onclick=function(){openAddModal(false)};
 $('btnAddRoom').onclick=addRoom;
 $('newRoomId').addEventListener('keydown',function(e){if(e.key==='Enter')addRoom()});
+$('newRoomName').addEventListener('keydown',function(e){if(e.key==='Enter')addRoom()});
+$('addModal').addEventListener('click',function(e){if(e.target===this)openAddModal(false)});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&!$('addModal').hidden)openAddModal(false);
+});
+$('btnSaveParams').onclick=async function(){
+  var r=currentRoom();if(!r)return;
+  var params={protover:parseInt($('r_proto').value,10),
+    heartbeat_seconds:parseInt($('r_hb').value,10),
+    stale_seconds:parseInt($('r_stale').value,10),
+    record_danmaku:$('r_dm').checked,record_sc:$('r_sc').checked,
+    record_events:$('r_ev').checked};
+  try{
+    var j=await api('/api/rooms/settings',{method:'POST',
+      body:JSON.stringify({room_id:r.id,params:params})});
+    say('rpHint','「'+r.label+'」的采集参数已保存'+
+      (j.restart_required?'；正在采集，停止后重新启动才生效':''),'ok');
+    if(j.rooms)renderRooms(j.rooms);
+  }catch(e){say('rpHint','保存失败：'+e.message,'err')}
+};
 $('btnCapture').onclick=function(){
   var r=currentRoom();controlCapture(r&&r.running?'stop':'start');
 };
@@ -852,15 +1040,6 @@ $('btnRefreshRooms').onclick=async function(){
     renderRooms(j.rooms);say('roomHint','已刷新 '+j.updated+' 个直播间','ok');
   }catch(e){say('roomHint','刷新失败：'+e.message,'err')}
 };
-$('btnDelRoom').onclick=async function(){
-  var r=currentRoom();if(!r)return;
-  if(!confirm('从列表删除「'+r.label+'」？采集到的历史数据会保留。'))return;
-  try{
-    var j=await api('/api/rooms/remove',{method:'POST',body:JSON.stringify({room_id:r.id})});
-    S.roomId=0;localStorage.setItem('lc-room','0');
-    renderRooms(j.rooms);loadFeed();say('roomHint','已删除直播间','ok');
-  }catch(e){say('roomHint','删除失败：'+e.message,'err')}
-};
 document.querySelectorAll('.filters input[data-k]').forEach(function(cb){
   cb.checked=!!S.filters[cb.dataset.k];
   cb.onchange=function(){
@@ -869,6 +1048,17 @@ document.querySelectorAll('.filters input[data-k]').forEach(function(cb){
     loadFeed();
   };
 });
+$('liveOnly').onchange=function(){
+  S.liveOnly=this.checked;
+  loadFeed();
+};
+function syncLiveOnly(){
+  var r=currentRoom(),live=!!(r&&r.live_status===1);
+  var cb=$('liveOnly');
+  cb.disabled=!live;
+  cb.parentNode.title=live?'':'主播未开播时不可用';
+  if(!live&&S.liveOnly){S.liveOnly=false;cb.checked=false}
+}
 $('limit').value=String(S.limit);
 $('limit').onchange=function(){S.limit=parseInt(this.value,10)||30;
   localStorage.setItem('lc-limit',String(S.limit));loadFeed()};
@@ -923,12 +1113,8 @@ $('btnNoAccount').onclick=async function(){
 };
 $('cfgForm').onsubmit=async function(e){
   e.preventDefault();
-  var p={protover:parseInt($('f_proto').value,10),
-    heartbeat_seconds:parseInt($('f_heartbeat').value,10),
-    stale_seconds:parseInt($('f_stale').value,10),
-    host:$('f_host').value.trim(),port:parseInt($('f_port').value,10),
-    record_danmaku:$('f_dm').checked,record_sc:$('f_sc').checked,
-    record_events:$('f_ev').checked,auto_start:$('f_auto').checked};
+  var p={host:$('f_host').value.trim(),port:parseInt($('f_port').value,10),
+    auto_start:$('f_auto').checked};
   var t=$('f_token').value.trim();if(t)p.token=t;
   try{
     var j=await api('/api/config',{method:'POST',body:JSON.stringify(p)});
@@ -958,10 +1144,12 @@ setInterval(function(){
   else if(S.page==='rooms'){loadRooms();if($('autoRefresh').checked)loadFeed()}
   else if(S.page==='config')loadStatus();
   else if(S.page==='logs')loadLogs();
+  loadAccounts();
 },4000);
 document.addEventListener('visibilitychange',function(){
-  if(!document.hidden){loadStatus();showPage(S.page)}
+  if(!document.hidden){loadStatus();loadAccounts();showPage(S.page)}
 });
+loadAccounts();
 showPage(S.page);
 })();
 </script>
