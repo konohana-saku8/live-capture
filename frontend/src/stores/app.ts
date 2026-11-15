@@ -28,7 +28,7 @@ const savedFilters = (() => {
 
 export const state = reactive({
   ready: false,
-  gate: { open: true, mode: 'unlock' as 'unlock' | 'setup' },
+  gate: { open: false, mode: 'unlock' as 'unlock' | 'setup' },
 
   rooms: [] as Room[],
   active: 0,

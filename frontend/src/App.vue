@@ -35,6 +35,20 @@ const runLabel = computed(() => (state.running ? '采集中 ' + (state.active ||
 /* ---------------- 门禁 ---------------- */
 
 async function bootGate() {
+  // 验证期间先隐藏 header / main：本地口令有效就直进，
+  // 不再把密码弹窗「先闪一下」再关掉。
+  document.body.classList.add('gated')
+  const saved = getToken()
+  if (saved) {
+    try {
+      const vr = await fetch('/api/status', { headers: { 'X-Access-Token': saved } })
+      if (vr.ok && (await vr.json()).ok) {
+        unlockApp(saved)
+        return
+      }
+      setToken('') // 口令失效，清掉重新来
+    } catch { /* 网络失败继续探测门禁 */ }
+  }
   let need = false
   try {
     const r = await fetch('/api/gate')
@@ -42,20 +56,8 @@ async function bootGate() {
   } catch {
     need = true // 探测失败按「需要密码」处理，避免裸奔
   }
-  const saved = getToken()
-  if (need && saved) {
-    // 本地记住的口令先试一次，通过就直接放行
-    try {
-      const vr = await fetch('/api/status', { headers: { 'X-Access-Token': saved } })
-      if (vr.ok && (await vr.json()).ok) {
-        unlockApp(saved)
-        return
-      }
-    } catch { /* 落到表单 */ }
-  }
   state.gate.mode = need ? 'unlock' : 'setup'
   state.gate.open = true
-  document.body.classList.add('gated')
   gatePass.value = ''
   gatePass2.value = ''
   gateErr.value = ''
