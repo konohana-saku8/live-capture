@@ -314,9 +314,19 @@ def main():
                                 "text": "老数据", "received_at": run_start + 500,
                                 "is_emoticon": 0}])
         rstore.end_run(rr)
+        # 第二个批次：把 started_at 往后挪 1 小时，避免与上一批重叠
+        rr2 = rstore.start_run(22748536, {"room_id": 22748536})
+        base2 = run_start + 3600 * 1000
+        rstore.db.execute("UPDATE runs SET started_at=? WHERE id=?", (base2, rr2))
+        rstore.db.commit()
+        rstore.insert_danmaku([{"room_id": 22748536, "uid": 10, "uname": "新观众",
+                                "text": "新数据", "received_at": base2 + 500,
+                                "is_emoticon": 0}])
+        rstore.end_run(rr2)
         rsess = rstore.live_sessions(22748536)
-        check("无开播事件时按采集批次兜底分段", len(rsess) == 1 and
-              rsess[0].get("approx") is True and rsess[0]["danmaku"] == 1, rsess)
+        check("无开播事件时按采集批次兜底分段", len(rsess) == 2 and
+              rsess[0].get("approx") is True and
+              rsess[0]["danmaku"] == 1 and rsess[1]["danmaku"] == 1, rsess)
 
         # ---------- 动态存储（独立库） ----------
         dyn_rows = [

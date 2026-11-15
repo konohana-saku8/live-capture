@@ -439,12 +439,16 @@ class Store:
         if not rid:
             return []
         with self.lock:
-            starts = [r[0] for r in self.db.execute(
+            live_starts = [r[0] for r in self.db.execute(
                 "SELECT received_at FROM room_event "
                 "WHERE room_id=? AND kind='live' AND detail='开播' "
                 "ORDER BY received_at ASC", (rid,))]
         approx = False
-        if not starts:
+        if live_starts:
+            starts = live_starts
+        else:
+            # 兜底：按采集批次切分。用下一批次的开始作终点，区间更宽，
+            # 不会因为 stopped_at 缺失（强杀/异常退出）而丢掉尾巴数据。
             with self.lock:
                 starts = [r[0] for r in self.db.execute(
                     "SELECT started_at FROM runs WHERE room_id=? "
