@@ -978,8 +978,9 @@ function renderRooms(j){
     var colLive=r.collect_live!==false,colDyn=r.collect_dynamics!==false;
     // 采集目标这一行：采谁 + 在采什么 + 采了多少
     var goalLive=colLive
-      ? '<span class="goal live"><em>直播间</em>累计开播 <b>'+num(c.sessions)+'</b> 次 · '+
-        '最近开播 <b>'+(r.last_live_at?fmtFull(r.last_live_at):'—')+'</b>'+
+      ? '<span class="goal live"><em>直播间</em>累计开播 <b>'+num(c.sessions)+'</b> 次'+
+        (c.sessions_approx?'<span class="off" title="历史数据没有开播事件，按采集批次统计">近似</span>':'')+
+        ' · 最近开播 <b>'+(r.last_live_at?fmtFull(r.last_live_at):'—')+'</b>'+
         (r.running?' · <b>实时采集中</b>':'')+'</span>'
       : '<span class="goal live"><em>直播间</em><span class="off">已关闭</span></span>';
     var goalDyn=colDyn

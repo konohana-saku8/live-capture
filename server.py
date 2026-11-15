@@ -474,6 +474,7 @@ class Handler(BaseHTTPRequestHandler):
                         "events": agg.get("events", 0),
                         "sc_amount": agg.get("sc_amount", 0),
                         "sessions": agg.get("sessions", 0),
+                        "sessions_approx": bool(agg.get("sessions_approx")),
                         "viewers": agg.get("viewers", 0),
                         "interactions": agg.get("interactions", 0),
                         "sc_peak": agg.get("sc_peak", 0),

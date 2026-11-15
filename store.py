@@ -646,10 +646,21 @@ class Store:
             # 以直播间为单位的聚合：开播次数、去重观众数、互动总量、场次流水峰值
             for item in by_room.values():
                 rid = item["room_id"]
-                item["sessions"] = self.db.execute(
-                    "SELECT COUNT(*) FROM room_event "
+                live_row = self.db.execute(
+                    "SELECT COUNT(*), COALESCE(MAX(received_at),0) FROM room_event "
                     "WHERE room_id=? AND kind='live' AND detail='开播'",
-                    (rid,)).fetchone()[0]
+                    (rid,)).fetchone()
+                item["sessions"] = live_row[0]
+                item["last_live_at"] = live_row[1]
+                item["sessions_approx"] = False
+                if not item["sessions"]:
+                    # 旧版采集的数据没有开播事件，退回按采集批次统计（与分段口径一致）
+                    run_row = self.db.execute(
+                        "SELECT COUNT(*), COALESCE(MAX(started_at),0) FROM runs "
+                        "WHERE room_id=?", (rid,)).fetchone()
+                    item["sessions"] = run_row[0]
+                    item["last_live_at"] = run_row[1]
+                    item["sessions_approx"] = bool(run_row[0])
                 item["viewers"] = self.db.execute(
                     "SELECT COUNT(*) FROM ("
                     "SELECT uid FROM danmaku WHERE uid>0 AND room_id=? UNION "
@@ -660,11 +671,6 @@ class Store:
                 item["sc_peak"] = self.db.execute(
                     "SELECT COALESCE(MAX(price),0) FROM sc_message "
                     "WHERE room_id=? AND deleted=0", (rid,)).fetchone()[0]
-                # 最近一次开播（采集到的 LIVE 开播事件），采集器清单上显示
-                item["last_live_at"] = self.db.execute(
-                    "SELECT COALESCE(MAX(received_at),0) FROM room_event "
-                    "WHERE room_id=? AND kind='live' AND detail='开播'",
-                    (rid,)).fetchone()[0]
 
             top_sc = [dict(r) for r in self.db.execute(
                 "SELECT room_id, uname, price, message, message_trans, received_at "

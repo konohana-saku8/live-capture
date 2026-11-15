@@ -345,6 +345,11 @@ def main():
         check("无开播事件时按采集批次兜底分段", len(rsess) == 2 and
               rsess[0].get("approx") is True and
               rsess[0]["danmaku"] == 1 and rsess[1]["danmaku"] == 1, rsess)
+        rby = {x["room_id"]: x for x in rstore.dashboard()["by_room"]}
+        check("无开播事件时开播次数与最近开播也按采集批次兜底",
+              rby[22748536]["sessions"] == 2 and
+              rby[22748536]["sessions_approx"] is True and
+              rby[22748536]["last_live_at"] > 0, rby[22748536])
 
         # ---------- 场 / 场间 交替分段（独立库） ----------
         gst = Store(os.path.join(tmp, "segments.db"))
