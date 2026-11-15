@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from accounts import AccountStore
 from capture import WS_IMPORT_ERROR, fetch_room_brief
+from images import EmoteProxy, FALLBACK_PNG
 from rooms import RoomStore
 
 DEFAULTS = {
@@ -154,15 +155,17 @@ class Handler(BaseHTTPRequestHandler):
               headers=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
+        out = {
+            "Content-Type": ctype,
+            "Content-Length": str(len(body)),
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type, X-Access-Token",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        }
+        out.update(headers or {})       # allow callers to override Cache-Control
         self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers",
-                         "Content-Type, X-Access-Token")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        for key, value in (headers or {}).items():
+        for key, value in out.items():
             self.send_header(key, value)
         self.end_headers()
         if self.command != "HEAD":
@@ -222,6 +225,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             self._json({"ok": True, "ts": int(time.time() * 1000)})
+            return
+        if path == "/api/emote":
+            # <img> cannot send X-Access-Token, and this endpoint only ever
+            # serves whitelisted public CDN pictures, so it stays public.
+            self._serve_emote(query)
             return
         if not path.startswith("/api/"):
             self._fail(404, "没有这个地址")
@@ -296,6 +304,26 @@ class Handler(BaseHTTPRequestHandler):
     def _first_room_id(self):
         items = self.server.rooms.list().get("items") or []
         return _as_int(items[0]["id"]) if items else 0
+
+    # ---------- image proxy ----------
+
+    def _serve_emote(self, query):
+        """Return a CDN picture from our own origin (no Referer trap).
+
+        A 502 with a transparent PNG (instead of JSON) lets the browser fire
+        a second ``error`` event, so the UI can replace the broken image with
+        its alt text.
+        """
+        try:
+            ctype, body = self.server.images.get(query.get("u") or "")
+        except Exception:
+            self._send(502, FALLBACK_PNG, "image/png",
+                       {"Cache-Control": "no-store",
+                        "X-Content-Type-Options": "nosniff"})
+            return
+        self._send(200, body, ctype,
+                   {"Cache-Control": "public, max-age=21600",
+                    "X-Content-Type-Options": "nosniff"})
 
     # ---------- api GET ----------
 
@@ -523,6 +551,7 @@ def create_server(host, port, data_dir, web_dir, store, manager, config, logs,
     srv.accounts = accounts or AccountStore(
         os.path.join(data_dir, "accounts.json"))
     srv.rooms = rooms or RoomStore(os.path.join(data_dir, "rooms.json"))
+    srv.images = EmoteProxy()
     # 采集线程在用户点「启动」时才读账号与房间列表，这里挂上即可
     if getattr(manager, "accounts", None) is None:
         manager.accounts = srv.accounts

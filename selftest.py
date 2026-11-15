@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 
@@ -24,6 +25,7 @@ import capture
 import server
 from accounts import AccountStore, parse_cookie_csv
 from capture import CaptureManager
+from images import EmoteProxy, FALLBACK_PNG, ImageError, normalize_image_url
 from rooms import RoomStore
 from server import Config, LogBuffer, create_server
 from store import Store
@@ -193,6 +195,82 @@ def main():
         check("旧库自动补表情列", {"emote_url", "emote_px", "emote_map"} <= cols)
         check("旧库旧数据保留", old.query("danmaku")[1][0]["text"] == "旧")
 
+        # ---------- 表情图片代理（纯离线，不联网） ----------
+        good = ("https://i0.hdslb.com/bfs/garb/item/"
+                "dce31c5d95b632f6a0bd0d4e5159bdc532fb31b4.png")
+        check("CDN 地址白名单放行",
+              normalize_image_url(good) == good and
+              normalize_image_url("//i0.hdslb.com/bfs/emote/a.png") ==
+              "https://i0.hdslb.com/bfs/emote/a.png" and
+              normalize_image_url("http://static.hdslb.com/x.png@100w_100h_1c.webp")
+              is not None)
+        bad_urls = ["https://example.com/a.png", "file:///etc/passwd",
+                    "http://127.0.0.1:8765/a.png",
+                    "https://i0.hdslb.com.evil.com/a.png",
+                    "https://user@i0.hdslb.com/a.png",
+                    "https://i0.hdslb.com:8080/a.png",
+                    "javascript:alert(1)", ""]
+        check("拒绝非 CDN / 内网 / 伪装域名地址",
+              all(normalize_image_url(u) is None for u in bad_urls), bad_urls)
+        check("占位图是合法 PNG",
+              FALLBACK_PNG.startswith(b"\x89PNG\r\n\x1a\n") and b"IEND" in FALLBACK_PNG)
+
+        class FakeResp:
+            def __init__(self, body, ctype="image/png"):
+                self.body = body
+                self.headers = {"Content-Type": ctype}
+
+            def read(self, size=-1):
+                return self.body[:size] if size and size > 0 else self.body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def req_headers(req):
+            return {k.lower(): v for k, v in req.header_items()}
+
+        calls = []
+
+        def fake_opener(req, timeout=None):
+            calls.append(req_headers(req))
+            return FakeResp(b"PNGDATA")
+
+        proxy = EmoteProxy(opener=fake_opener)
+        ctype, body = proxy.get(good)
+        check("代理取图并带官方 Referer",
+              ctype == "image/png" and body == b"PNGDATA" and
+              calls[0].get("referer") == "https://live.bilibili.com/", calls[0])
+        proxy.get(good)
+        check("同一图片命中缓存不再联网",
+              len(calls) == 1 and proxy.stats()["bytes"] == len(b"PNGDATA"),
+              proxy.stats())
+
+        def reject_first(req, timeout=None):
+            if req_headers(req).get("referer"):
+                raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+            return FakeResp(b"OK2")
+
+        check("CDN 返回 403 时去掉 Referer 重试",
+              EmoteProxy(opener=reject_first).get(good)[1] == b"OK2")
+        for label, resp in [
+            ("非图片响应被拒", FakeResp(b"<html>", "text/html")),
+            ("SVG 被拒（同源可执行脚本）", FakeResp(b"<svg/>", "image/svg+xml")),
+        ]:
+            p = EmoteProxy(opener=lambda req, timeout=None, r=resp: r)
+            try:
+                p.get(good)
+                check(label, False)
+            except ImageError:
+                check(label, True)
+        try:
+            EmoteProxy(opener=fake_opener).get("https://example.com/a.png")
+            check("代理拒绝非法地址", False)
+        except ImageError:
+            check("代理拒绝非法地址", True)
+
         # ---------- HTTP API ----------
         cfg = Config(os.path.join(tmp, "config.json"))
         logs = LogBuffer()
@@ -231,6 +309,17 @@ def main():
         status, html = get("/")
         check("网页可访问", status == 200 and "直播采集" in html.decode("utf-8", "replace"))
         check("健康检查", json.loads(get("/api/health")[1])["ok"])
+
+        # 图片代理走 HTTP 路由（mock opener，全程零联网）
+        png = b"PNGDATA-HTTP"
+        srv.images.opener = lambda req, timeout=None: FakeResp(png)
+        status, raw = get("/api/emote?u=" + urllib.parse.quote(good, safe=""))
+        check("同源表情代理返回图片", status == 200 and raw == png)
+        status, raw = get("/api/emote?u=" +
+                          urllib.parse.quote("https://example.com/a.png", safe=""))
+        check("非白名单地址返回 502 占位图",
+              status == 502 and raw == FALLBACK_PNG)
+        check("缺参数不会 500", get("/api/emote")[0] == 502)
         status, raw = get("/api/rooms")
         j = json.loads(raw)
         check("直播间列表含两间且都未采集",
@@ -299,6 +388,8 @@ def main():
 
         post("/api/config", {"token": "abc"})
         check("口令拦截", get("/api/status")[0] == 401)
+        check("图片代理不受口令影响（<img> 无法带请求头）",
+              get("/api/emote?u=" + urllib.parse.quote(good, safe=""))[0] == 200)
         check("口令放行", json.loads(get("/api/status",
                                         {"X-Access-Token": "abc"})[1])["ok"])
         post("/api/config", {"token": ""}, {"X-Access-Token": "abc"})
@@ -441,6 +532,10 @@ def main():
         check("表情直接渲染为图片",
               "emoteImg" in page and 'class="emote"' in page and
               "emote_map" in page and "is_emoticon" in page)
+        check("表情图不发 Referer 且失败自动走同源代理",
+              all(k in page for k in ('referrerpolicy="no-referrer"',
+                                      "data-src=", "/api/emote?u=",
+                                      "dataset.fallback", "emote-fallback")))
         check("沿用 live-archive 配色与字体变量",
               all(k in page for k in ("--fire:#ff7a45", "--jp:", "--bg:#0a0807",
                                       "--gold:#e8c489")))

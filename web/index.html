@@ -177,6 +177,7 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .feed-body .price{color:var(--fire-soft);font-weight:600;margin-right:7px;font-variant-numeric:tabular-nums}
 .feed-body .trans{display:block;color:var(--dim);margin-top:3px}
 .emote{display:inline-block;vertical-align:middle;max-width:180px;max-height:80px;margin:0 2px;object-fit:contain}
+.emote-fallback{display:inline-block;color:var(--dim-2);font-size:12px;padding:0 2px}
 .empty{padding:18px 4px;color:var(--dim-2);font-size:12px;text-align:center}
 
 /* ---------- accounts / logs ---------- */
@@ -631,7 +632,11 @@ function emoteImg(url,px,alt){
   url=String(url||'');
   if(!/^(https?:\/\/|\/\/)/i.test(url))return '';
   var h=Math.max(16,Math.min(80,parseInt(px,10)||20));
-  return '<img class="emote" src="'+esc(url)+'" style="height:'+h+'px" alt="'+esc(alt||'表情')+'" loading="lazy">';
+  /* B 站 CDN 会拒绝带本地来源 Referer 的图片；先直连且不带 Referer，
+     仍失败时由下方捕获阶段的 error 监听改走同源 /api/emote 代理。 */
+  return '<img class="emote" src="'+esc(url)+'" data-src="'+esc(url)+
+    '" referrerpolicy="no-referrer" style="height:'+h+'px" alt="'+esc(alt||'表情')+
+    '" loading="lazy" decoding="async">';
 }
 function rich(text,row){
   text=String(text==null?'':text);
@@ -797,6 +802,23 @@ function showPage(name){
 }
 
 /* ---------- 事件绑定 ---------- */
+/* 表情图被 CDN 拒绝时自动改走同源代理；代理也失败就退化成表情名文字。
+   error 不冒泡，所以必须用捕获阶段监听。 */
+document.addEventListener('error',function(e){
+  var t=e.target;
+  if(!t||t.tagName!=='IMG'||!t.classList.contains('emote'))return;
+  if(!t.dataset.fallback){
+    t.dataset.fallback='1';
+    var raw=t.getAttribute('data-src')||t.getAttribute('src')||'';
+    t.src='/api/emote?u='+encodeURIComponent(raw);
+    return;
+  }
+  var span=document.createElement('span');
+  span.className='emote-fallback';
+  span.textContent='['+String(t.getAttribute('alt')||'表情')+']';
+  span.title='表情图片加载失败';
+  if(t.parentNode)t.parentNode.replaceChild(span,t);
+},true);
 document.querySelectorAll('.nav button[data-page]').forEach(function(b){
   b.onclick=function(){showPage(b.dataset.page)};
 });
