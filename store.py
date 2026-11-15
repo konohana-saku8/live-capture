@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS danmaku (
   emote_url    TEXT NOT NULL DEFAULT '',
   emote_px     INTEGER NOT NULL DEFAULT 20,
   emote_map    TEXT NOT NULL DEFAULT '{}',
-  raw_json     TEXT
+  raw_json     TEXT,
+  import_key   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dm_time ON danmaku(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dm_room ON danmaku(room_id, received_at DESC);
@@ -69,7 +70,8 @@ CREATE TABLE IF NOT EXISTS room_event (
   detail      TEXT,
   event_time  INTEGER,
   received_at INTEGER NOT NULL,
-  raw_json    TEXT
+  raw_json    TEXT,
+  import_key  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ev_time ON room_event(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ev_room ON room_event(room_id, received_at DESC);
@@ -97,12 +99,22 @@ CREATE TABLE IF NOT EXISTS dynamics (
 CREATE INDEX IF NOT EXISTS idx_dyn_time ON dynamics(pub_ts DESC);
 """
 
-# 升级旧库：早期版本没有表情图片字段
+# 升级旧库：早期版本没有表情图片字段，历史导入也需要一个去重键
 MIGRATIONS = {
     "danmaku": {"emote_url": "TEXT NOT NULL DEFAULT ''",
                 "emote_px": "INTEGER NOT NULL DEFAULT 20",
-                "emote_map": "TEXT NOT NULL DEFAULT '{}'"},
+                "emote_map": "TEXT NOT NULL DEFAULT '{}'",
+                "import_key": "TEXT"},
+    "room_event": {"import_key": "TEXT"},
 }
+
+# 历史导入去重：同一份历史库反复导入不会重复写（NULL 不参与唯一约束）
+POST_SCHEMA = """
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dm_import
+  ON danmaku(import_key) WHERE import_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ev_import
+  ON room_event(import_key) WHERE import_key IS NOT NULL;
+"""
 
 TABLE_OF = {"danmaku": "danmaku", "sc": "sc_message", "events": "room_event"}
 SEARCH_OF = {
@@ -147,6 +159,7 @@ class Store:
                 if name not in existing:
                     self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" %
                                     (table, name, decl))
+        self.db.executescript(POST_SCHEMA)
         self.db.commit()
 
     def _write(self, sql, args=()):
@@ -158,13 +171,14 @@ class Store:
     # ---------------- writes ----------------
 
     def insert_danmaku(self, rows):
+        """批量写弹幕；带 import_key 的行按去重键幂等（历史导入反复跑不重复）。"""
         if not rows:
             return 0
-        sql = """INSERT INTO danmaku
+        sql = """INSERT OR IGNORE INTO danmaku
             (run_id, room_id, uid, uname, text, event_time, received_at,
              medal_name, medal_level, guard_level, is_admin, is_emoticon,
-             emote_url, emote_px, emote_map, raw_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+             emote_url, emote_px, emote_map, raw_json, import_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
         data = []
         for r in rows:
             emote_map = r.get("emote_map") or {}
@@ -177,11 +191,12 @@ class Store:
                          r.get("guard_level", 0), r.get("is_admin", 0),
                          r.get("is_emoticon", 0), r.get("emote_url", ""),
                          _as_int(r.get("emote_px"), 20), emote_map,
-                         r.get("raw_json", "")))
+                         r.get("raw_json", ""), r.get("import_key")))
         with self.lock:
+            before = self.db.total_changes
             self.db.executemany(sql, data)
             self.db.commit()
-        return len(data)
+            return self.db.total_changes - before
 
     def insert_sc(self, row):
         sql = """INSERT INTO sc_message
@@ -219,17 +234,34 @@ class Store:
         return out
 
     def insert_event(self, row):
-        sql = """INSERT INTO room_event
-            (run_id, room_id, kind, uid, uname, detail, event_time, received_at, raw_json)
-            VALUES (?,?,?,?,?,?,?,?,?)"""
+        sql = """INSERT OR IGNORE INTO room_event
+            (run_id, room_id, kind, uid, uname, detail, event_time, received_at, raw_json, import_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?)"""
         args = (row.get("run_id"), row.get("room_id", 0), row.get("kind", ""),
                 row.get("uid", 0), row.get("uname", ""), row.get("detail", ""),
                 row.get("event_time", 0), row.get("received_at", 0),
-                row.get("raw_json", ""))
+                row.get("raw_json", ""), row.get("import_key"))
         with self.lock:
             cur = self.db.execute(sql, args)
             self.db.commit()
-            return cur.lastrowid
+            return cur.rowcount > 0
+
+    def insert_events(self, rows):
+        """批量写事件（礼物 / 上舰 / 开播下播），返回真正新增的条数。"""
+        if not rows:
+            return 0
+        sql = """INSERT OR IGNORE INTO room_event
+            (run_id, room_id, kind, uid, uname, detail, event_time, received_at, raw_json, import_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?)"""
+        data = [(r.get("run_id"), r.get("room_id", 0), r.get("kind", ""),
+                 r.get("uid", 0), r.get("uname", ""), r.get("detail", ""),
+                 r.get("event_time", 0), r.get("received_at", 0),
+                 r.get("raw_json", ""), r.get("import_key")) for r in rows]
+        with self.lock:
+            before = self.db.total_changes
+            self.db.executemany(sql, data)
+            self.db.commit()
+            return self.db.total_changes - before
 
     def start_run(self, room_id, config):
         cur = self._write(
@@ -571,8 +603,10 @@ class Store:
             self.db.commit()
         return len(data)
 
-    def list_dynamics(self, limit=200, q="", mid=0):
+    def list_dynamics(self, limit=200, offset=0, q="", mid=0):
+        """按发布时间倒序取一页动态；返回 (总数, 这一页的条目)。"""
         limit = max(1, min(1000, _as_int(limit, 200)))
+        offset = max(0, _as_int(offset))
         clauses, args = [], []
         if _as_int(mid) > 0:
             clauses.append("mid=?")
@@ -584,7 +618,8 @@ class Store:
         with self.lock:
             rows = self.db.execute(
                 "SELECT * FROM dynamics" + where +
-                " ORDER BY pub_ts DESC LIMIT ?", args + [limit]).fetchall()
+                " ORDER BY pub_ts DESC, dyn_id DESC LIMIT ? OFFSET ?",
+                args + [limit, offset]).fetchall()
             total = self.db.execute(
                 "SELECT COUNT(*) FROM dynamics" + where, args).fetchone()[0]
         items = []

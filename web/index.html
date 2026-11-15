@@ -304,6 +304,10 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .feed-body .sc-card{border-left:2px solid rgba(255,122,69,.5);padding:8px 0 9px 11px;margin:7px 0}
 .feed-body .price{color:var(--fire-soft);font-weight:600;margin-right:7px;font-variant-numeric:tabular-nums}
 .feed-body .trans{display:block;color:var(--dim);margin-top:3px}
+.feed-more{display:block;width:100%;margin:2px 0 8px;padding:7px 10px;border:1px dashed var(--line);
+  border-radius:9px;background:rgba(255,255,255,.03);color:var(--ink-2);cursor:pointer;
+  font:11.5px/1.3 var(--jp);letter-spacing:.04em}
+.feed-more:hover{border-color:rgba(255,122,69,.45);color:var(--fire-soft)}
 .emote{display:inline-block;vertical-align:middle;max-width:180px;max-height:80px;margin:0 2px;object-fit:contain}
 .emote-fallback{display:inline-block;color:var(--dim-2);font-size:12px;padding:0 2px}
 .empty{padding:18px 4px;color:var(--dim-2);font-size:12px;text-align:center}
@@ -347,6 +351,11 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .dyn-card .dyn-edit.dirty textarea{border-color:rgba(255,122,69,.55)}
 .dyn-card .dyn-edit.dirty .unsaved{display:block}
 .dyn-card .dyn-actions{display:flex;gap:7px;flex-wrap:wrap}
+.dyn-pager{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;
+  padding:6px 0 2px;border-top:1px solid var(--line);margin-top:4px}
+.dyn-pager .pg{font:11px/1.5 var(--mono);color:var(--dim-2);letter-spacing:.02em}
+.dyn-pager .pg b{color:var(--fire-soft);font-weight:600}
+.dyn-pager .btn[disabled]{opacity:.35;cursor:default}
 .dyn-card .dyn-tools{margin-top:9px}
 .dyn-card .dyn-tools[hidden]{display:none!important}
 
@@ -482,7 +491,11 @@ body.gated .top,body.gated main{display:none!important}
 <div class="page" id="page-rooms" hidden>
   <section class="card">
     <div class="sec-head"><h2><i>◆</i>采集目标</h2>
-      <span class="more">绿点＝采集中 · 红点＝未采集</span></div>
+      <div class="tab-tools">
+        <span class="more">绿点＝采集中 · 红点＝未采集</span>
+        <button class="btn sm" id="btnRefreshRooms">刷新信息</button>
+        <button class="btn sm" id="btnStopAll">全部停止</button>
+      </div></div>
     <div class="collector-list" id="roomTabs"></div>
     <div class="collector-add">
       <button class="btn sm" id="tabAdd">＋ 添加采集器</button>
@@ -504,10 +517,6 @@ body.gated .top,body.gated main{display:none!important}
         <span class="sub" id="curRoomId">—</span>
       </div>
       <span class="live-pill" id="livePill"><i></i><span>未知</span></span>
-      <div class="tab-tools">
-        <button class="btn sm" id="btnRefreshRooms">刷新信息</button>
-        <button class="btn sm" id="btnStopAll">全部停止</button>
-      </div>
     </div>
     <div class="anchor-meta" id="curStats"></div>
     <div class="row">
@@ -554,7 +563,7 @@ body.gated .top,body.gated main{display:none!important}
           <section class="feed" data-k="events"><h3>直播间事件 <span class="n" id="cnt-events">0</span></h3><div class="feed-body" id="feed-events"></div></section>
         </div>
       </div>
-      <div class="hint">「场」＝开播到下播；「场间」＝上一次下播到这次开播，期间收到的弹幕同样完整保留。还没有开过播时，采集到的内容先归为「未分段」，下次开播自动切开。</div>
+      <div class="hint">「场」＝开播到下播；「场间」＝上一次下播到这次开播，期间收到的弹幕同样完整保留。还没有开过播时，采集到的内容先归为「未分段」，下次开播自动切开。弹幕按时间正序，越上方越早；一段太长时先显示最新的 800 条，点列表顶部的按钮往前追。</div>
     </div>
 
     <div class="room-block" data-panel="dyn" hidden>
@@ -673,8 +682,13 @@ body.gated .top,body.gated main{display:none!important}
 var S={page:'home',rooms:[],roomId:0,active:0,running:false,
        filters:{danmaku:true,sc:true,events:true},q:'',
        segs:[],sessSel:'all',sessStart:0,sessEnd:0,collectRoomId:0,panelRoom:0,
+       feedRows:{},feedShown:{danmaku:0,sc:0,events:0},feedRowsKey:{},
+       dynPage:0,dynPageSize:10,dynQuery:'',
        subTab:localStorage.getItem('lc-subtab')||'live',cfgSnap:null,
        cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
+/* 弹幕区一次铺多少条：整场动辄两万条，全塞进 DOM 手机会卡，先给尾部的这么多，
+   点顶部按钮再往前追。时间正序——越上方越早。 */
+var FEED_PAGE=800;
 var $=function(id){return document.getElementById(id)};
 var GUARD={1:'总督',2:'提督',3:'舰长'};
 var KIND={danmaku:'弹幕',sc:'SC',events:'事件',guard:'上舰',gift:'礼物',
@@ -974,6 +988,13 @@ function renderRooms(j){
   S.rooms=(j&&j.items)||[];
   S.active=j&&j.active||0;S.running=!!(j&&j.running);
   setBadge(S.active,S.running);
+  /* 这两个按钮管的是「整张采集器清单」，所以放清单头部：没采集器时不能刷新，
+     没有一处在采集时「全部停止」没意义，直接置灰。 */
+  var anyRun=S.rooms.some(function(r){return r.running});
+  $('btnRefreshRooms').disabled=!S.rooms.length;
+  $('btnStopAll').disabled=!anyRun;
+  $('btnRefreshRooms').title=S.rooms.length?'重新拉取每个采集器的直播间信息':'还没有采集器';
+  $('btnStopAll').title=anyRun?'停止所有正在采集的采集器':'当前没有在采集的采集器';
   /* 面板上一次画的是哪一间：selectRoom 会先改 S.roomId，所以这里不能拿
      S.roomId 当「上一间」，否则切换采集器后内容不会重新拉。 */
   var prevRoom=S.panelRoom;
@@ -1220,11 +1241,14 @@ function renderFeed(j){
     var sec=document.querySelector('.feed[data-k="'+k+'"]');
     sec.hidden=!S.filters[k];
     var rows=(j.items&&j.items[k])||[];
+    S.feedRows[k]=rows;
+    // 换了场次 / 换了采集器 / 搜索条件变了，窗口从小重来
+    if(S.feedRowsKey[k]!==S.roomId+'|'+S.sessSel+'|'+S.q){
+      S.feedRowsKey[k]=S.roomId+'|'+S.sessSel+'|'+S.q;
+      S.feedShown[k]=0;
+    }
     $('cnt-'+k).textContent=num((j.counts&&j.counts[k])||0);
-    var box=$('feed-'+k),atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
-    box.innerHTML=rows.length?rows.slice().reverse().map(function(r){return feedRow(k,r)}).join(''):
-      '<div class="empty">这一类暂时没有数据</div>';
-    if(atBottom)box.scrollTop=box.scrollHeight;
+    paintFeed(k);
   });
   var r=currentRoom(),label='全部数据';
   if(S.sessSel&&S.sessSel!=='all'){
@@ -1232,7 +1256,30 @@ function renderFeed(j){
     if(s)label=(s.kind==='live'?'第 '+s.index+' 场'
       :(s.single?'未分段':(s.lead?'首次开播前':'场间 '+s.index)))+' · '+segRange(s);
   }
-  $('feedInfo').textContent=(r?(r.uname||r.label)+' · ':'')+label+' · 全部显示不截断';
+  $('feedInfo').textContent=(r?(r.uname||r.label)+' · ':'')+label;
+}
+/* 时间正序渲染：接口给的已经是「早 → 晚」，不要再 reverse。
+   一次最多铺 FEED_PAGE 条（取尾部最新的），更早的点按钮追加。 */
+function paintFeed(k){
+  var rows=S.feedRows[k]||[],box=$('feed-'+k);
+  if(!rows.length){
+    box.innerHTML='<div class="empty">这一类暂时没有数据</div>';
+    return;
+  }
+  var shown=S.feedShown[k]||FEED_PAGE;
+  shown=Math.min(Math.max(shown,FEED_PAGE),rows.length);
+  S.feedShown[k]=shown;
+  var start=rows.length-shown;
+  var atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
+  var fresh=!box.childNodes.length;
+  var html='';
+  if(start>0){
+    html+='<button class="feed-more" data-more="'+k+'">↑ 载入更早的 '+FEED_PAGE+
+      ' 条（前面还有 '+num(start)+' 条）</button>';
+  }
+  html+=rows.slice(start).map(function(r){return feedRow(k,r)}).join('');
+  box.innerHTML=html;
+  if(fresh||atBottom)box.scrollTop=box.scrollHeight;
 }
 function segByKey(key){
   for(var i=0;i<S.segs.length;i++)
@@ -1322,8 +1369,13 @@ function renderDynamics(j){
     (st.ts?('上次 '+fmt(st.ts)+' '+(st.ok?'成功':'失败')):'尚未拉取')+
     (cfg.dyn_auto?(' · 每天 '+hh+':'+mm):'');
   var list=j.items||[];
+  var total=j.total||0,limit=j.limit||S.dynPageSize,offset=j.offset||0;
+  var pages=Math.max(1,Math.ceil(total/limit));
+  S.dynPage=Math.min(Math.max(0,Math.floor(offset/limit)),pages-1);
   if(!list.length){
-    $('dynList').innerHTML='<div class="empty" style="padding:14px 4px">还没有动态。点「立即拉取」从 B 站获取这位 up 主的最新动态。</div>';
+    $('dynList').innerHTML='<div class="empty" style="padding:14px 4px">'+
+      (S.dynQuery?'没有匹配「'+esc(S.dynQuery)+'」的动态。'
+        :'还没有动态。点「立即拉取」从 B 站获取这位 up 主的最新动态。')+'</div>';
     return;
   }
   var groups={},order=[];
@@ -1362,16 +1414,32 @@ function renderDynamics(j){
           '</div>'+
         '</div>';
       }).join('')+'</div>';
-  }).join('');
+  }).join('')+dynPager(total,pages,S.dynPage,list.length,offset);
 }
-async function loadDynamics(){
+/* 动态分页条：上一页 / 第 x / y 页 / 下一页，顺带标出这一页看的是第几条 */
+function dynPager(total,pages,page,count,offset){
+  if(pages<=1)return '';
+  var from=offset+1,to=offset+count;
+  return '<div class="dyn-pager">'+
+    '<button class="btn sm" data-dynpage="'+Math.max(0,page-1)+'"'+
+      (page<=0?' disabled':'')+'>‹ 上一页</button>'+
+    '<span class="pg">第 <b>'+(page+1)+'</b> / '+pages+' 页 · 第 '+
+      num(from)+'–'+num(to)+' 条 / 共 '+num(total)+' 条</span>'+
+    '<button class="btn sm" data-dynpage="'+(Math.min(pages-1,page+1))+'"'+
+      (page>=pages-1?' disabled':'')+'>下一页 ›</button></div>';
+}
+async function loadDynamics(keep){
   var r=currentRoom();
   if(!r){$('dynList').innerHTML='';$('subN-dyn').textContent='—';return}
   var q=$('dynQ')?$('dynQ').value.trim():'';
+  /* 搜索词变了回到第一页；翻页时保留当前页 */
+  if(q!==S.dynQuery){S.dynQuery=q;S.dynPage=0}
+  else if(!keep)S.dynPage=0;
   var mid=r.uid||0;
+  var off=S.dynPage*S.dynPageSize;
   try{
-    renderDynamics(await api('/api/dynamics?limit=300&mid='+mid+
-      (q?'&q='+encodeURIComponent(q):'')));
+    renderDynamics(await api('/api/dynamics?limit='+S.dynPageSize+'&offset='+off+
+      '&mid='+mid+(q?'&q='+encodeURIComponent(q):'')));
   }catch(e){say('dynHint','读取动态失败：'+e.message,'err')}
 }
 async function fetchDynamics(){
@@ -1382,10 +1450,9 @@ async function fetchDynamics(){
   try{
     var j=await api('/api/dynamics/fetch',{method:'POST',
       body:JSON.stringify({mid:r.uid||0,limit:20})});
-    renderDynamics({items:j.items,total:j.total,status:j.status,
-                    config:(S.dyn&&S.dyn.config)||{}});
     say('dynHint',j.message,j.ok?'ok':'err');
-    if(j.ok)loadRooms();
+    if(j.ok){S.dynPage=0;loadDynamics();loadRooms()}
+    else if(S.dyn)renderDynamics(S.dyn);
   }catch(e){say('dynHint','拉取失败：'+e.message,'err')}
   finally{$('btnDynFetch').disabled=false}
 }
@@ -1596,6 +1663,15 @@ $('sessionList').addEventListener('click',function(e){
   var b=e.target.closest('.session-item[data-sess]');
   if(b)selectSession(b.dataset.sess);
 });
+/* 弹幕区「载入更早」：往上追 FEED_PAGE 条，并保持当前视线不跳 */
+document.querySelector('.feeds').addEventListener('click',function(e){
+  var b=e.target.closest('.feed-more[data-more]');if(!b)return;
+  var k=b.getAttribute('data-more'),box=$('feed-'+k);
+  var prevH=box.scrollHeight,prevTop=box.scrollTop;
+  S.feedShown[k]=(S.feedShown[k]||FEED_PAGE)+FEED_PAGE;
+  paintFeed(k);
+  box.scrollTop=prevTop+(box.scrollHeight-prevH);
+});
 $('btnCloseModal').onclick=function(){openAddModal(false)};
 $('btnCancelAdd').onclick=function(){openAddModal(false)};
 $('btnAddRoom').onclick=addRoom;
@@ -1609,10 +1685,11 @@ $('btnCapture').onclick=function(){
   var r=currentRoom();controlCapture(r&&r.running?'stop':'start');
 };
 $('btnStopAll').onclick=async function(){
+  if(!S.rooms.some(function(r){return r.running}))return;
   try{
     var j=await api('/api/capture/stop_all',{method:'POST',body:'{}'});
-    renderRooms(j.rooms);say('captureHint',j.message,'ok');
-  }catch(e){say('captureHint','停止失败：'+e.message,'err')}
+    renderRooms(j.rooms);say('roomHint',j.message,'ok');
+  }catch(e){say('roomHint','停止失败：'+e.message,'err')}
 };
 /* 点 header 账号头像 → 配置页管理账号 */
 $('acctChip').onclick=function(){if(!$('acctChip').classList.contains('anon'))showPage('config')};
@@ -1631,7 +1708,8 @@ $('btnDynSaveCfg').onclick=async function(){
       dyn_minute:parseInt($('dynMinute').value,10)||0})});
     if(S.dyn)S.dyn.config=j.config;
     renderDynamics(Object.assign({items:(S.dyn&&S.dyn.items)||[],
-      total:(S.dyn&&S.dyn.total)||0,status:(S.dyn&&S.dyn.status)||{}},{config:j.config}));
+      total:(S.dyn&&S.dyn.total)||0,status:(S.dyn&&S.dyn.status)||{},
+      limit:S.dynPageSize,offset:S.dynPage*S.dynPageSize},{config:j.config}));
     say('dynHint','已保存：'+(j.config.dyn_auto?('每天 '+hh+':'+mm+' 自动拉取'):'已关闭定时拉取'),'ok');
   }catch(e){say('dynHint','保存失败：'+e.message,'err')}
 };
@@ -1647,6 +1725,13 @@ $('dynList').addEventListener('input',function(e){
   box.classList.toggle('dirty',ta.value.trim()!==orig.trim());
 });
 $('dynList').addEventListener('click',async function(e){
+  var pg=e.target.closest('button[data-dynpage]');
+  if(pg){
+    if(!confirmDynDirty('译文还没保存，翻页会丢掉这次修改，继续吗？'))return;
+    S.dynPage=parseInt(pg.dataset.dynpage,10)||0;
+    loadDynamics(true);
+    return;
+  }
   var edit=e.target.closest('button[data-dynedit]');
   if(edit){
     var card=dynCardOf(edit);
@@ -1673,7 +1758,7 @@ $('dynList').addEventListener('click',async function(e){
         ta=cc.querySelector('.dyn-edit textarea');
     try{
       await api('/api/dynamics/trans',{method:'POST',body:JSON.stringify({dyn_id:id,text:ta.value.trim()})});
-      say('dynHint','译文已保存','ok');loadDynamics();
+      say('dynHint','译文已保存','ok');loadDynamics(true);
     }catch(err){say('dynHint','保存译文失败：'+err.message,'err')}
   }
 });

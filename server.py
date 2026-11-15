@@ -587,11 +587,14 @@ class Handler(BaseHTTPRequestHandler):
                         "sessions": segs, "total": len(segs)})
             return
         if path == "/api/dynamics":
+            limit = max(1, min(200, _as_int(q.get("limit"), 10)))
+            offset = max(0, _as_int(q.get("offset")))
             total, items = store.list_dynamics(
-                limit=q.get("limit") or 200, q=q.get("q") or "",
+                limit=limit, offset=offset, q=q.get("q") or "",
                 mid=q.get("mid") or 0)
             cfg = config.get()
             self._json({"ok": True, "total": total, "items": items,
+                        "limit": limit, "offset": offset,
                         "status": self.server.dynamics.status(),
                         "config": {"dyn_auto": bool(cfg.get("dyn_auto")),
                                    "dyn_hour": _as_int(cfg.get("dyn_hour"), 8),

@@ -24,6 +24,7 @@ import zlib
 import capture
 import accounts as accounts_mod
 import dynamics as dynamics_mod
+import import_history
 import server
 import sysinfo
 from accounts import AccountStore, parse_cookie_csv
@@ -444,6 +445,24 @@ def main():
         check("动态删除", sst.delete_dynamic("d2") is True and
               sst.list_dynamics()[0] == 1)
 
+        # 动态分页：offset 生效，越界给空页
+        page_rows = [{"id": "p%02d" % i, "mid": 77, "pub_ts": now // 1000 - i,
+                      "type": "DYNAMIC_TYPE_WORD", "text": "分页 %d" % i,
+                      "pics": [], "jump_url": ""} for i in range(25)]
+        sst.upsert_dynamics(page_rows)
+        p_total, p1 = sst.list_dynamics(limit=10, offset=0, mid=77)
+        _, p2 = sst.list_dynamics(limit=10, offset=10, mid=77)
+        _, p3 = sst.list_dynamics(limit=10, offset=20, mid=77)
+        _, p9 = sst.list_dynamics(limit=10, offset=90, mid=77)
+        check("动态分页：总数与首页条数",
+              p_total == 25 and len(p1) == 10 and len(p2) == 10 and len(p3) == 5,
+              (p_total, len(p1), len(p2), len(p3)))
+        check("动态分页：页间不重叠且按时间倒序",
+              not ({x["dyn_id"] for x in p1} & {x["dyn_id"] for x in p2}) and
+              p1[0]["dyn_id"] == "p00" and p2[0]["dyn_id"] == "p10" and
+              p3[-1]["dyn_id"] == "p24", (p1[0]["dyn_id"], p2[0]["dyn_id"]))
+        check("动态分页：翻过头给空页", p9 == [])
+
         name, ctype, csv_body = st.export("danmaku", "csv", room_id=22748536)
         check("CSV 导出带 BOM 且含表情地址",
               csv_body.startswith("\ufeff") and "emote_url" in csv_body and
@@ -462,6 +481,76 @@ def main():
         cols = {r[1] for r in old.db.execute("PRAGMA table_info(danmaku)")}
         check("旧库自动补表情列", {"emote_url", "emote_px", "emote_map"} <= cols)
         check("旧库旧数据保留", old.query("danmaku")[1][0]["text"] == "旧")
+        check("旧库也补上导入去重列", "import_key" in cols)
+
+        # ---------- 历史库导入（translate_history.db 那种结构） ----------
+        src_path = os.path.join(tmp, "history_src.db")
+        src = sqlite3.connect(src_path)
+        src.execute("CREATE TABLE danmaku (seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    " room_id INTEGER NOT NULL, uid INTEGER, uname TEXT,"
+                    " text TEXT NOT NULL, event_time INTEGER,"
+                    " received_at INTEGER NOT NULL, medal_name TEXT,"
+                    " medal_level INTEGER, guard_level INTEGER,"
+                    " is_admin INTEGER DEFAULT 0, is_emoticon INTEGER DEFAULT 0)")
+        src.execute("CREATE TABLE sc_message (sc_id TEXT PRIMARY KEY,"
+                    " room_id INTEGER NOT NULL, uid INTEGER, uname TEXT,"
+                    " price INTEGER, message TEXT, start_time INTEGER,"
+                    " end_time INTEGER, received_at INTEGER NOT NULL,"
+                    " guard_level INTEGER, medal_name TEXT, medal_level INTEGER,"
+                    " raw_json TEXT NOT NULL, message_trans TEXT)")
+        src.execute("CREATE TABLE room_event (seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    " room_id INTEGER NOT NULL, event_type TEXT NOT NULL,"
+                    " event_key TEXT NOT NULL, uid INTEGER, uname TEXT,"
+                    " gift_name TEXT, gift_num INTEGER, price INTEGER,"
+                    " coin_type TEXT, event_time INTEGER,"
+                    " received_at INTEGER NOT NULL, raw_json TEXT NOT NULL)")
+        base = 1790000000000
+        rows = []
+        # 两场：中间隔 2 小时（> 30 分钟，应当切成两段）
+        for i in range(3):
+            rows.append((555, 1, "甲", "第一场 %d" % i, 0, base + i * 1000,
+                         "", 0, 0, 0, 0))
+        for i in range(2):
+            rows.append((555, 2, "乙", "第二场 %d" % i, 0, base + 7200000 + i * 1000,
+                         "", 0, 0, 0, 0))
+        src.executemany("INSERT INTO danmaku(room_id,uid,uname,text,event_time,"
+                        "received_at,medal_name,medal_level,guard_level,is_admin,"
+                        "is_emoticon) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+        src.execute("INSERT INTO sc_message(sc_id,room_id,uid,uname,price,message,"
+                    "start_time,end_time,received_at,guard_level,medal_name,"
+                    "medal_level,raw_json,message_trans) VALUES "
+                    "('s1',555,1,'甲',30,'打钱',1,60,?,3,'牌',7,'{}','打钱啦')",
+                    (base + 500,))
+        src.execute("INSERT INTO room_event(room_id,event_type,event_key,uid,uname,"
+                    "gift_name,gift_num,price,coin_type,event_time,received_at,"
+                    "raw_json) VALUES (555,'gift','k1',1,'甲','辣条',3,300,'gold',"
+                    "1,?,'{\"guard_level\":0}')", (base + 800,))
+        src.commit()
+        src.close()
+
+        imp_path = os.path.join(tmp, "import_target.db")
+        imp = Store(imp_path)
+        src_conn = sqlite3.connect(src_path)
+        first = import_history.import_room(src_conn, imp, 555, 30 * 60 * 1000)
+        check("导入历史弹幕 / SC / 事件",
+              first["danmaku"] == 5 and first["sc"] == 1 and first["events"] == 1,
+              first)
+        check("导入按空档补出两场开播记录", first["sessions"] == 4, first)
+        imp_segs = imp.live_segments(555)
+        check("导入后切出两场，弹幕数对得上",
+              len(imp_segs) == 2 and imp_segs[0]["danmaku"] == 3 and
+              imp_segs[0]["kind"] == "live" and imp_segs[1]["danmaku"] == 2,
+              imp_segs)
+        check("导入保留 SC 译文与金额",
+              imp.query("sc")[1][0]["message_trans"] == "打钱啦" and
+              imp.range_stats(555, 1)["sc_amount"] >= 30)
+        again = import_history.import_room(src_conn, imp, 555, 30 * 60 * 1000)
+        check("同一份历史库重复导入不写重",
+              again["danmaku"] == 0 and again["sc"] == 0 and
+              again["events"] == 0 and again["sessions"] == 0, again)
+        check("重复导入后总数不变", imp.counts()["danmaku"] == 5,
+              imp.counts())
+        src_conn.close()
 
         # ---------- 表情图片代理（纯离线，不联网） ----------
         good = ("https://i0.hdslb.com/bfs/garb/item/"
@@ -671,6 +760,21 @@ def main():
         check("动态接口返回列表与定时配置",
               status == 200 and "items" in jd and "status" in jd and
               "dyn_hour" in jd["config"] and "dyn_minute" in jd["config"])
+        srv.store.upsert_dynamics([
+            {"id": "api-%d" % i, "mid": 4242, "pub_ts": now // 1000 - i,
+             "type": "DYNAMIC_TYPE_WORD", "text": "接口动态 %d" % i,
+             "pics": [], "jump_url": ""} for i in range(3)])
+        status, raw = get("/api/dynamics?mid=4242&limit=1&offset=0")
+        jp0 = json.loads(raw)
+        status, raw = get("/api/dynamics?mid=4242&limit=1&offset=1")
+        jpg = json.loads(raw)
+        check("动态接口支持分页（limit / offset 原样回传）",
+              status == 200 and jp0["total"] == jpg["total"] and
+              jpg["total"] >= 3 and len(jpg["items"]) == 1 and
+              jpg["limit"] == 1 and jpg["offset"] == 1 and
+              jpg["items"][0]["dyn_id"] != jp0["items"][0]["dyn_id"],
+              {"items": jpg.get("items"), "offset": jpg.get("offset"),
+               "limit": jpg.get("limit"), "total": jpg.get("total")})
         status, raw = post("/api/dynamics/trans", {"dyn_id": "d1", "text": "接口译文"})
         check("动态翻译写入接口", status == 200 and
               json.loads(raw)["ok"] is True)
@@ -1047,6 +1151,9 @@ def main():
               all(k in page for k in ("roomTabs", "tabAdd", 'data-x="',
                                       "addModal", "btnAddRoom", "/api/rooms",
                                       "/api/capture/", "btnStopAll")))
+        check("「刷新信息 / 全部停止」挂在采集器清单头部，不在单个 up 主面板里",
+              page.index('id="btnRefreshRooms"') < page.index('id="roomPanel"') and
+              page.index('id="btnStopAll"') < page.index('id="roomPanel"'))
         check("采集参数全局统一（配置页），采集器页不再有每房间参数卡",
               all(k in page for k in ("f_proto", "f_heartbeat", "f_stale",
                                       "f_dm", "f_sc", "f_ev")) and
@@ -1139,6 +1246,15 @@ def main():
                                       "/api/dynamics/trans", "dynAuto", "dynHour",
                                       "dynMinute")) and
               'id="page-dynamics"' not in page)
+        check("弹幕按时间正序展示，越上方越早",
+              "rows.slice(start).map(" in page and
+              "rows.slice().reverse()" not in page and
+              "feed-more" in page and "载入更早的" in page and
+              "FEED_PAGE" in page and "data-more=" in page)
+        check("动态分页：每页 limit + offset，带上一页 / 下一页",
+              all(k in page for k in ("dynPageSize", "dynPager", "data-dynpage",
+                                      "offset=", "dynPage=0")) and
+              "btnPrev" not in page and "btnNext" not in page)
         check("译文编辑框默认收起（hidden 不被 flex 覆盖）",
               ".dyn-edit[hidden]" in page and "display:none!important" in page)
         check("取消译文编辑后按钮回到可见（dyn-tools 单独隐藏）",
