@@ -296,16 +296,21 @@ def main():
                                  "text": text, "received_at": ts,
                                  "is_emoticon": 0}])
         sess = sst.live_segments(22748536)
-        check("按开播事件切分场次", len(sess) == 2 and
-              sess[0]["start"] == base and sess[1]["start"] == t2ms, sess)
-        check("首场以下一场开播为终点", sess[0]["end"] == t2ms)
-        check("最后一场至今（end=0）", sess[1]["end"] == 0)
-        check("每场弹幕数正确", sess[0]["danmaku"] == 2 and
-              sess[1]["danmaku"] == 1, sess)
-        check("场次去重观众数", sess[0]["viewers"] == 2 and
-              sess[1]["viewers"] == 1, sess)
+        lives = [x for x in sess if x["kind"] == "live"]
+        check("首次开播前的数据单独成段（更早）",
+              sess[0]["kind"] == "gap" and sess[0].get("lead") is True and
+              sess[0]["danmaku"] == 1, sess[0])
+        check("按开播事件切分场次", len(lives) == 2 and
+              lives[0]["start"] == base and lives[1]["start"] == t2ms, sess)
+        check("首场以下一场开播为终点", lives[0]["end"] == t2ms)
+        check("最后一场至今（end=0）", lives[1]["end"] == 0)
+        check("每场弹幕数正确", lives[0]["danmaku"] == 2 and
+              lives[1]["danmaku"] == 1, sess)
+        check("场次去重观众数", lives[0]["viewers"] == 2 and
+              lives[1]["viewers"] == 1, sess)
         check("没有下播事件时不产生场间段",
-              [s["kind"] for s in sess] == ["live", "live"], sess)
+              [x["kind"] for x in sess if not x.get("lead")] == ["live", "live"],
+              sess)
         rng = sst.range_stats(22748536, base, t2ms)
         check("区间统计含互动总数", rng["danmaku"] == 2 and
               rng["interactions"] >= 2, rng)
@@ -596,10 +601,10 @@ def main():
                                     ("cpu", "memory", "disk", "network", "load")))
         status, raw = get("/api/sessions?room_id=22748536")
         jj = json.loads(raw)
+        jl = [s for s in (jj.get("segments") or []) if s["kind"] == "live"]
         check("场次接口返回场 / 场间分段",
-              status == 200 and jj["total"] == 2 and
-              jj["segments"][0]["kind"] == "live" and
-              jj["segments"][0]["danmaku"] == 2, jj.get("segments"))
+              status == 200 and len(jl) == 2 and jl[0]["danmaku"] == 2 and
+              jj["segments"][0].get("lead") is True, jj.get("segments"))
         status, raw = get("/api/feed?room_id=22748536&types=danmaku&all=1")
         jall = json.loads(raw)
         check("全量接口不截断（all=1）",

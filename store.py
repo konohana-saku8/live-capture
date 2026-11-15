@@ -469,20 +469,30 @@ class Store:
         if not shows:
             return self._segment_by_runs(rid)
 
-        segs = []           # [(kind, start, end)]
+        segs = []           # [(kind, start, end, lead)]
         last_end = 0
+        # 第一次开播之前采集到的数据（服务中途启动）单独给一段，避免只能从
+        # 「全部数据」里翻——那段时间同样属于「上一次直播结束之后」。
+        with self.lock:
+            first_ts = self.db.execute(
+                "SELECT MIN(t) FROM (SELECT MIN(received_at) AS t FROM danmaku "
+                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM sc_message "
+                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM room_event "
+                "WHERE room_id=? AND kind<>'live')", (rid, rid, rid)).fetchone()[0]
+        if first_ts and first_ts < shows[0][0]:
+            segs.append(("gap", first_ts, shows[0][0], True))
         for start, end in shows:
             # 上一场下播到这一场开播之间就是场间
             if last_end and start > last_end:
-                segs.append(("gap", last_end, start))
-            segs.append(("live", start, end))
+                segs.append(("gap", last_end, start, False))
+            segs.append(("live", start, end, False))
             if end:
                 last_end = end
         if last_end and shows[-1][1]:
-            segs.append(("gap", last_end, 0))     # 下播之后到现在（还在收弹幕）
+            segs.append(("gap", last_end, 0, False))   # 下播之后到现在（还在收弹幕）
 
         out, seq_live, seq_gap = [], 0, 0
-        for kind, start, end in segs:
+        for kind, start, end, lead in segs:
             stat = self.range_stats(rid, start, end) or {}
             if kind == "live":
                 seq_live += 1
@@ -490,11 +500,11 @@ class Store:
             else:
                 seq_gap += 1
                 index = seq_gap
-            # 只保留确实有数据的尾部场间，避免空行噪声
+            # 只保留确实有数据的场间，避免空行噪声
             if kind == "gap" and not stat.get("interactions"):
                 continue
             out.append({"kind": kind, "index": index, "start": start,
-                        "end": end, "approx": False,
+                        "end": end, "approx": False, "lead": bool(lead),
                         "danmaku": stat.get("danmaku", 0),
                         "sc": stat.get("sc", 0),
                         "sc_amount": stat.get("sc_amount", 0),
@@ -513,7 +523,7 @@ class Store:
             end = starts[i + 1] if i + 1 < len(starts) else 0
             stat = self.range_stats(rid, start, end) or {}
             out.append({"kind": "live", "index": i + 1, "start": start,
-                        "end": end, "approx": True,
+                        "end": end, "approx": True, "lead": False,
                         "danmaku": stat.get("danmaku", 0),
                         "sc": stat.get("sc", 0),
                         "sc_amount": stat.get("sc_amount", 0),

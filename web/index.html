@@ -1108,7 +1108,8 @@ function renderFeed(j){
   var r=currentRoom(),label='全部数据';
   if(S.sessSel&&S.sessSel!=='all'){
     var s=segByKey(S.sessSel);
-    if(s)label=(s.kind==='live'?'第 '+s.index+' 场':'场间 '+s.index)+' · '+segRange(s);
+    if(s)label=(s.kind==='live'?'第 '+s.index+' 场'
+      :(s.lead?'首次开播前':'场间 '+s.index))+' · '+segRange(s);
   }
   $('feedInfo').textContent=(r?(r.uname||r.label)+' · ':'')+label+' · 全部显示不截断';
 }
@@ -1132,8 +1133,10 @@ function renderSessions(list){
     '<span class="st-m">共 '+S.segs.length+' 段</span></button>'+
     items.map(function(s){
       var key=s.kind+'-'+s.index,on=(String(key)===String(S.sessSel));
-      var badge=s.kind==='live'?(approx?'第 '+s.index+' 段':'场'):'场间';
-      var who=s.kind==='live'?(approx?'第 '+s.index+' 段':'第 '+s.index+' 场'):'场间 '+s.index;
+      var badge=s.kind==='live'?(approx?'第 '+s.index+' 段':'场')
+        :(s.lead?'更早':'场间');
+      var who=s.kind==='live'?(approx?'第 '+s.index+' 段':'第 '+s.index+' 场')
+        :(s.lead?'首次开播前':'场间 '+s.index);
       return '<button class="session-item '+(on?'on':'')+'" data-sess="'+key+'">'+
         '<span class="st-t">'+esc(segRange(s))+'<i class="'+(s.kind==='live'?'live':'gap')+'">'+
         esc(badge)+'</i>'+(s.end?'':' ●')+'</span>'+
