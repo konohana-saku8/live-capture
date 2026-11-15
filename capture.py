@@ -416,20 +416,47 @@ def fetch_room_brief(room_id, timeout=3):
            "online": _as_int(info.get("online")),
            "uname": "", "face": ""}
     if out["uid"]:
-        try:
-            mreq = urllib.request.Request(
-                "https://api.live.bilibili.com/live_user/v1/Master/info?uid=%d"
-                % out["uid"],
-                headers={"User-Agent": DEFAULT_UA,
-                         "Referer": "https://live.bilibili.com/"})
-            with urllib.request.urlopen(mreq, timeout=timeout) as mresp:
-                master = json.loads(mresp.read().decode("utf-8"))
-            minfo = (master.get("data") or {}).get("info") or {}
-            out["uname"] = str(minfo.get("uname") or "")
-            out["face"] = str(minfo.get("face") or "")
-        except Exception:
-            pass
+        # card 是无需登录态的公开接口，最稳；先取它，头像/名字缺失再用直播区接口兜底。
+        _fill_identity_from_card(out, timeout)
+        if not out["face"] or not out["uname"]:
+            try:
+                mreq = urllib.request.Request(
+                    "https://api.live.bilibili.com/live_user/v1/Master/info?uid=%d"
+                    % out["uid"],
+                    headers={"User-Agent": DEFAULT_UA,
+                             "Referer": "https://live.bilibili.com/"})
+                with urllib.request.urlopen(mreq, timeout=timeout) as mresp:
+                    master = json.loads(mresp.read().decode("utf-8"))
+                minfo = (master.get("data") or {}).get("info") or {}
+                out["uname"] = out["uname"] or str(minfo.get("uname") or "")
+                out["face"] = out["face"] or str(minfo.get("face") or "")
+            except Exception:
+                pass
     return out
+
+
+def fetch_identity(uid, timeout=3):
+    """按 uid 取头像昵称（公开接口），给账号/直播间共用。失败返回空串。"""
+    out = {"uid": _as_int(uid), "uname": "", "face": ""}
+    if out["uid"]:
+        _fill_identity_from_card(out, timeout)
+    return out
+
+
+def _fill_identity_from_card(out, timeout):
+    """用 x/web-interface/card 公开接口把 uname/face 填进 out（原地修改）。"""
+    try:
+        req = urllib.request.Request(
+            "https://api.bilibili.com/x/web-interface/card?mid=%d" % out["uid"],
+            headers={"User-Agent": DEFAULT_UA,
+                     "Referer": "https://www.bilibili.com/"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        card = (data.get("data") or {}).get("card") or {}
+        out["uname"] = str(card.get("name") or "")
+        out["face"] = str(card.get("face") or "")
+    except Exception:
+        pass
 
 
 def build_danmaku(room_id, info, now_ms):

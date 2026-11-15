@@ -226,6 +226,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self._json({"ok": True, "ts": int(time.time() * 1000)})
             return
+        if path == "/api/gate":
+            # 公开：进站锁屏用它判断"是否需要密码 / 是否已设置密码"。
+            # 复用 config.token 作为访问密码；未设置时前端进入首次设置流程。
+            need = bool(str(self.server.config.get().get("token") or ""))
+            self._json({"ok": True, "need": need})
+            return
         if path == "/api/emote":
             # <img> cannot send X-Access-Token, and this endpoint only ever
             # serves whitelisted public CDN pictures, so it stays public.

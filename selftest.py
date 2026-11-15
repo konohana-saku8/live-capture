@@ -64,6 +64,38 @@ def main():
     pop = capture.Packet(3, 1, b"\x00\x00\x01\x00")
     check("人气值解析", capture.parse_popularity(pop) == 256)
 
+    # ---------- 头像昵称：公开 card 接口（mock urlopen，零联网） ----------
+    old_urlopen = urllib.request.urlopen
+
+    class _CardResp:
+        def __init__(self, obj): self._obj = obj
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps(self._obj).encode("utf-8")
+
+    seen_cards = []
+    def card_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        seen_cards.append(url)
+        if "web-interface/card" in url:
+            return _CardResp({"code": 0, "data": {"card": {
+                "mid": "2094031249", "name": "火羽ひのめ",
+                "face": "https://i1.hdslb.com/bfs/face/a.jpg"}}})
+        return _CardResp({"code": -404, "data": {}})
+    urllib.request.urlopen = card_urlopen
+    try:
+        ident = capture.fetch_identity(2094031249)
+        check("按 uid 从 card 接口取头像昵称",
+              ident["uname"] == "火羽ひのめ" and
+              ident["face"] == "https://i1.hdslb.com/bfs/face/a.jpg", ident)
+        check("card 接口调用地址正确",
+              any("web-interface/card?mid=2094031249" in u for u in seen_cards), seen_cards)
+        prof = accounts_mod.fetch_profile({"SESSDATA": "x", "DedeUserID": "2094031249"})
+        check("账号 profile 用 uid 走 card 接口",
+              prof and prof["uid"] == 2094031249 and prof["uname"] == "火羽ひのめ", prof)
+    finally:
+        urllib.request.urlopen = old_urlopen
+
     # ---------- cookie CSV ----------
     netscape = "\n".join([
         "# Netscape HTTP Cookie File",
@@ -317,6 +349,8 @@ def main():
         status, html = get("/")
         check("网页可访问", status == 200 and "直播采集" in html.decode("utf-8", "replace"))
         check("健康检查", json.loads(get("/api/health")[1])["ok"])
+        gate = json.loads(get("/api/gate")[1])
+        check("门禁探测接口公开且初始无需密码", gate.get("ok") and gate.get("need") is False, gate)
 
         # 图片代理走 HTTP 路由（mock opener，全程零联网）
         png = b"PNGDATA-HTTP"
@@ -420,6 +454,9 @@ def main():
 
         post("/api/config", {"token": "abc"})
         check("口令拦截", get("/api/status")[0] == 401)
+        check("设置口令后门禁探测报告需要密码",
+              json.loads(get("/api/gate")[1]).get("need") is True)
+        check("门禁探测接口无需口令即可访问", get("/api/gate")[0] == 200)
         check("图片代理不受口令影响（<img> 无法带请求头）",
               get("/api/emote?u=" + urllib.parse.quote(good, safe=""))[0] == 200)
         check("口令放行", json.loads(get("/api/status",
@@ -616,6 +653,10 @@ def main():
         check("保留日志页与 CSV 账号上传",
               all(k in page for k in ("logBox", "acctFile", "btnUpload",
                                       "/api/export", "btnLogs")))
+        check("进站门禁锁屏：探测/验证/设置/解锁",
+              all(k in page for k in ('class="gated"', 'id="gate"', "bootGate",
+                                      "submitGate", "unlockApp", "/api/gate",
+                                      "gatePass2", "gateForm", "initApp")))
     finally:
         accounts_mod.fetch_profile = old_profile
         shutil.rmtree(tmp, ignore_errors=True)

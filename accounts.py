@@ -27,12 +27,29 @@ PROFILE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 def fetch_profile(cookies, timeout=6):
-    """用上传的 cookie 换取账号昵称与头像（header 展示用）。
+    """取账号昵称与头像（header 展示用）。
 
-    失败返回 None：匿名/失效 cookie 不影响采集，只是没有头像可显示。
+    优先用 cookie 里的 uid 调 card 公开接口 —— 不依赖登录态，cookie 过期也能
+    拿到头像昵称；拿不到 uid 才退回 nav（需要有效 SESSDATA）。失败返回 None。
     selftest 里会被替换成假实现，保持零联网。
     """
-    keep = {k: v for k, v in (cookies or {}).items()
+    cookies = cookies or {}
+    uid = _uid(cookies)
+    if uid:
+        try:
+            req = urllib.request.Request(
+                "https://api.bilibili.com/x/web-interface/card?mid=%d" % uid,
+                headers={"User-Agent": PROFILE_UA,
+                         "Referer": "https://www.bilibili.com/"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            card = (data.get("data") or {}).get("card") or {}
+            if card:
+                return {"uid": uid, "uname": str(card.get("name") or ""),
+                        "face": str(card.get("face") or "")}
+        except Exception:
+            pass
+    keep = {k: v for k, v in cookies.items()
             if k in ("SESSDATA", "DedeUserID", "buvid3") and v}
     if not keep.get("SESSDATA"):
         return None
@@ -150,15 +167,24 @@ class AccountStore:
 
     def _refresh_profile(self, item):
         """尽力取一次账号昵称头像；失败静默（结果只影响展示）。"""
-        if item.get("profile") or item.get("error"):
+        if item.get("error"):
             return
         try:
-            item["profile"] = fetch_profile(item.get("cookies") or {})
+            profile = fetch_profile(item.get("cookies") or {})
         except Exception:
-            pass
+            profile = None
+        if profile:
+            item["profile"] = profile
 
     def list(self):
         with self.lock:
+            # 历史账号（老版本添加的）没有 profile，补拉一次；带节流避免每次轮询都联网。
+            now = time.time()
+            for item in self.items:
+                if (not item.get("profile") and not item.get("error")
+                        and now - float(item.get("_profile_try", 0)) > 60):
+                    item["_profile_try"] = now
+                    self._refresh_profile(item)
             return {"ok": True, "active_id": self.active_id,
                     "items": [self.public(x) for x in self.items]}
 
