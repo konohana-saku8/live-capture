@@ -126,7 +126,7 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
 .kv span{display:block;font-size:10.5px;color:var(--dim-2);letter-spacing:.06em}
 .kv b{display:block;font-size:13px;font-weight:500;margin-top:2px;
   overflow-wrap:anywhere;line-height:1.5}
-/* 服务信息：条目更宽，长路径整行铺满，不做省略号 */
+/* 设备信息：条目更宽，长路径整行铺满，不做省略号 */
 .kv-grid.wide{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
 .kv-grid.wide .kv b{white-space:normal;overflow:visible;text-overflow:clip;font-size:12.5px}
 .kv-grid.wide .kv.full{grid-column:1/-1}
@@ -282,6 +282,10 @@ label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:4px}
   padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.02)}
 .collect-row .lab{font:10.5px/1.4 var(--mono);letter-spacing:.1em;color:var(--dim-2)}
 .collect-row label{display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px}
+/* 子标签已经写明这是哪一类数据，块内不再重复大标题，只留一行状态 */
+.block-meta{font:10.5px/1.6 var(--mono);color:var(--dim-2);letter-spacing:.02em;
+  margin:0 0 12px;padding-left:10px;border-left:2px solid rgba(255,122,69,.35);
+  overflow-wrap:anywhere}
 .feeds{display:flex;flex-direction:column;gap:14px;min-width:0}
 .feed{border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.16);overflow:hidden}
 .feed>h3{display:flex;align-items:baseline;gap:9px;margin:0;padding:10px 14px;
@@ -516,6 +520,7 @@ body.gated .top,body.gated main{display:none!important}
     <div class="collect-row">
       <span class="lab">采集内容</span>
       <label><input type="checkbox" id="colLive"> 直播间（弹幕 / SC / 事件）</label>
+      <label title="没开播就不连弹幕服务器，只定时探一次直播状态"><input type="checkbox" id="colOnly"> 只在开播时采集</label>
       <label><input type="checkbox" id="colDyn"> up 主动态</label>
       <button class="btn sm" id="btnSaveCollect">保存开关</button>
       <span class="muted" id="collectHint"></span>
@@ -527,7 +532,7 @@ body.gated .top,body.gated main{display:none!important}
     </div>
 
     <div class="room-block" id="contentCard" data-panel="live">
-      <div class="sec-head"><h2><i>◆</i>直播间数据</h2><span class="more" id="feedInfo">—</span></div>
+      <div class="block-meta" id="feedInfo">—</div>
       <div class="filters">
         <label><input type="checkbox" data-k="danmaku" checked> 弹幕</label>
         <label><input type="checkbox" data-k="sc" checked> Super Chat</label>
@@ -549,11 +554,11 @@ body.gated .top,body.gated main{display:none!important}
           <section class="feed" data-k="events"><h3>直播间事件 <span class="n" id="cnt-events">0</span></h3><div class="feed-body" id="feed-events"></div></section>
         </div>
       </div>
-      <div class="hint">「场」＝开播到下播；「场间」＝上一次下播到这次开播，期间收到的弹幕同样完整保留。选中某段即显示该段全部内容，不截断。</div>
+      <div class="hint">「场」＝开播到下播；「场间」＝上一次下播到这次开播，期间收到的弹幕同样完整保留。还没有开过播时，采集到的内容先归为「未分段」，下次开播自动切开。</div>
     </div>
 
     <div class="room-block" data-panel="dyn" hidden>
-      <div class="sec-head"><h2><i>◆</i>up 主动态</h2><span class="more" id="dynInfo">—</span></div>
+      <div class="block-meta" id="dynInfo">—</div>
       <div class="row">
         <button class="btn sm primary" id="btnDynFetch">立即拉取</button>
         <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
@@ -657,10 +662,6 @@ body.gated .top,body.gated main{display:none!important}
     <div class="logbox" id="logBox"></div>
     <div class="hint">服务端运行日志 + 网页上的操作结果都集中在这里，最新 1000 条。</div>
   </section>
-  <section class="card">
-    <div class="sec-head"><h2><i>◆</i>服务信息</h2></div>
-    <div class="kv-grid wide" id="logSvcGrid"></div>
-  </section>
 </div>
 
 <footer>LIVE CAPTURE · 数据仅保存在本机 · 弹幕 / SC / 事件</footer>
@@ -671,7 +672,7 @@ body.gated .top,body.gated main{display:none!important}
 'use strict';
 var S={page:'home',rooms:[],roomId:0,active:0,running:false,
        filters:{danmaku:true,sc:true,events:true},q:'',
-       segs:[],sessSel:'all',sessStart:0,sessEnd:0,collectRoomId:0,
+       segs:[],sessSel:'all',sessStart:0,sessEnd:0,collectRoomId:0,panelRoom:0,
        subTab:localStorage.getItem('lc-subtab')||'live',cfgSnap:null,
        cfg:null,svc:null,accounts:[],serverLogs:[],webLogs:[],busy:false};
 var $=function(id){return document.getElementById(id)};
@@ -893,7 +894,7 @@ function renderDashboard(j){
     kv2('最后收包',j.last_received_at?fmtFull(j.last_received_at):'—')+
     kv2('访问口令',S.cfg&&S.cfg.token_set?'已设置':'无')+
     kv2('数据目录',S.svc.data_dir,'full');
-  $('svcGrid').innerHTML=grid;$('logSvcGrid').innerHTML=grid;
+  $('svcGrid').innerHTML=grid;
 }
 async function loadDashboard(){
   try{renderDashboard(await api('/api/dashboard'))}catch(e){}
@@ -907,8 +908,9 @@ function bytes(n){
 function devBar(label,value,sub,warnAt,badAt){
   var pct=Math.max(0,Math.min(100,Number(value)||0));
   var cls=pct>=(badAt||90)?'bad':(pct>=(warnAt||70)?'warn':'');
+  var txt=pct>=10?pct.toFixed(0):pct.toFixed(1);   // 小数值保留一位，别显示成 0%
   return '<div class="dev"><div class="dev-h"><span>'+esc(label)+'</span><b>'+
-    (pct?pct.toFixed(0):'0')+'%</b></div>'+
+    txt+'%</b></div>'+
     '<div class="bar"><i class="'+cls+'" style="width:'+pct+'%"></i></div>'+
     '<div class="dev-sub">'+esc(sub||'')+'</div></div>';
 }
@@ -917,9 +919,11 @@ function renderSystem(j){
   var cpu=s.cpu||{},mem=s.memory||{},disk=s.disk||{},net=s.network||{},load=s.load||{};
   $('devInfo').textContent=s.ts?(' · 更新于 '+fmt(s.ts)):'';
   var online=!!net.online;
+  var cpuSub=cpu.scope==='process'
+    ? '本服务占用 · '+(cpu.cores||0)+' 核机器'
+    : (cpu.cores||0)+' 核 · 负载 '+(load['1']||0)+' / '+(load['5']||0)+' / '+(load['15']||0);
   $('devGrid').innerHTML=
-    devBar('CPU 占用',cpu.percent,(cpu.cores||0)+' 核 · 负载 '+
-      (load['1']||0)+' / '+(load['5']||0)+' / '+(load['15']||0))+
+    devBar('CPU 占用',cpu.percent,cpuSub)+
     devBar('内存占用',mem.percent,mem.total?bytes(mem.used)+' / '+bytes(mem.total):'此系统不提供内存信息')+
     devBar('存储占用',disk.percent,bytes(disk.used)+' / '+bytes(disk.total)+
       '（剩 '+bytes(disk.free)+'）')+
@@ -970,7 +974,9 @@ function renderRooms(j){
   S.rooms=(j&&j.items)||[];
   S.active=j&&j.active||0;S.running=!!(j&&j.running);
   setBadge(S.active,S.running);
-  var prevRoom=S.roomId;
+  /* 面板上一次画的是哪一间：selectRoom 会先改 S.roomId，所以这里不能拿
+     S.roomId 当「上一间」，否则切换采集器后内容不会重新拉。 */
+  var prevRoom=S.panelRoom;
   var ids=S.rooms.map(function(r){return r.id});
   if(ids.indexOf(S.roomId)<0){S.roomId=ids.length?ids[0]:0;localStorage.setItem('lc-room',String(S.roomId))}
   $('roomTabs').innerHTML=S.rooms.map(function(r){
@@ -981,7 +987,8 @@ function renderRooms(j){
       ? '<span class="goal live"><em>直播间</em>累计开播 <b>'+num(c.sessions)+'</b> 次'+
         (c.sessions_approx?'<span class="off" title="历史数据没有开播事件，按采集批次统计">近似</span>':'')+
         ' · 最近开播 <b>'+(r.last_live_at?fmtFull(r.last_live_at):'—')+'</b>'+
-        (r.running?' · <b>实时采集中</b>':'')+'</span>'
+        (r.running?(r.waiting?' · <b>等开播</b>':' · <b>采集中</b>'):'')+
+        (r.live_only?' · <span class="off">只在开播时采</span>':'')+'</span>'
       : '<span class="goal live"><em>直播间</em><span class="off">已关闭</span></span>';
     var goalDyn=colDyn
       ? '<span class="goal dyn"><em>动态</em>累计 <b>'+num(r.dyns)+'</b> 条 · '+
@@ -993,8 +1000,9 @@ function renderRooms(j){
         '<span class="cface"></span>')+
       '<div class="cmain">'+
         '<div class="crow"><b>'+esc(name)+'</b>'+
-          '<span class="dot '+(r.running?'on':'')+'" title="'+(r.running?'采集中':'未采集')+
-            '"><i></i>'+(r.running?'采集中':'未采集')+'</span>'+
+          '<span class="dot '+(r.running?'on':'')+'" title="'+
+            (r.running?(r.waiting?'已启动，等开播':'采集中'):'未采集')+
+            '"><i></i>'+(r.running?(r.waiting?'等开播':'采集中'):'未采集')+'</span>'+
           '<span class="cid">UID '+esc(r.uid||'—')+' · ROOM '+esc(r.id)+'</span>'+
           '<button class="cx" data-x="'+esc(r.id)+'" title="删除采集器（保留已采集数据）">✕</button>'+
         '</div>'+
@@ -1011,7 +1019,8 @@ function renderRoomPanel(){
   var r=currentRoom(),has=!!r;
   $('emptyRooms').hidden=has;
   $('roomPanel').hidden=!has;
-  if(!has){$('roomHint').textContent='';return}
+  if(!has){$('roomHint').textContent='';S.panelRoom=0;return}
+  S.panelRoom=r.id;    // 记下面板当前画的是哪一间，供 renderRooms 判断是否要重拉
   var live={0:'未开播',1:'直播中',2:'轮播'}[r.live_status]||'未知';
   var pill=$('livePill');
   pill.className='live-pill'+(r.live_status===1?' on':'');
@@ -1033,15 +1042,18 @@ function renderRoomPanel(){
   meta.push('人气 <b>'+esc(r.online||'—')+'</b>');
   meta.push('房间号 <b>'+esc(r.id)+'</b>');
   meta.push('动态 <b>'+num(r.dyns||0)+'</b>');
+  if(r.running&&r.waiting)meta.push('采集 <b>等开播</b>');
   if(since)meta.push('本场开播 <b>'+esc(fmtFull(since))+'</b>');
   $('curStats').innerHTML=meta.map(function(x){return '<span>'+x+'</span>'}).join('');
   // 采集开关：这一位 up 主要采哪些数据。
   // 只在切换采集器时回填，避免 4 秒自动刷新把用户刚勾的选项覆盖掉。
-  var colLive=r.collect_live!==false,colDyn=r.collect_dynamics!==false;
+  var colLive=r.collect_live!==false,colDyn=r.collect_dynamics!==false,
+      colOnly=r.live_only===true;
   if(S.collectRoomId!==r.id){
-    $('colLive').checked=colLive;$('colDyn').checked=colDyn;
+    $('colLive').checked=colLive;$('colDyn').checked=colDyn;$('colOnly').checked=colOnly;
     S.collectRoomId=r.id;
   }
+  syncCollectUI();
   $('collectHint').textContent=runningHint(r,colLive,colDyn);
   setCaptureUI(r.running);
   $('btnCapture').disabled=!colLive;
@@ -1056,9 +1068,16 @@ function renderRoomPanel(){
 }
 function runningHint(r,colLive,colDyn){
   var parts=[];
-  parts.push(colLive?'直播间已开':'直播间已关');
+  parts.push(colLive?(r.live_only?'直播间已开（只在开播时采）':'直播间已开'):'直播间已关');
   parts.push(colDyn?'动态已开':'动态已关');
+  if(r.running&&r.waiting)parts.push('未开播 · 等开播');
   return parts.join(' · ');
+}
+/* 「只在开播时采集」依附于「采集直播间」，关了直播间就一并灰掉 */
+function syncCollectUI(){
+  var live=$('colLive').checked;
+  $('colOnly').disabled=!live;
+  if(!live)$('colOnly').checked=false;
 }
 function setCaptureUI(running,label){
   var b=$('btnCapture');
@@ -1129,14 +1148,18 @@ async function addRoom(){
 }
 async function saveCollect(){
   var r=currentRoom();if(!r)return;
-  var live=$('colLive').checked,dyn=$('colDyn').checked;
+  var live=$('colLive').checked,dyn=$('colDyn').checked,
+      only=live&&$('colOnly').checked;
   try{
     var j=await api('/api/rooms/settings',{method:'POST',body:JSON.stringify({
-      room_id:r.id,params:{collect_live:live,collect_dynamics:dyn}})});
+      room_id:r.id,params:{collect_live:live,collect_dynamics:dyn,
+        live_only:only}})});
     S.collectRoomId=0;               // 以服务端回填为准
     if(j.rooms)renderRooms(j.rooms);
-    say('collectHint','已保存：'+(live?'采集直播间':'不采直播间')+' · '+
-      (dyn?'采集动态':'不采动态'),'ok');
+    say('collectHint','已保存：'+(live?'采集直播间':'不采直播间')+
+      (only?'（只在开播时）':'')+' · '+(dyn?'采集动态':'不采动态')+
+      (r.running&&only!==(r.live_only===true)?' · 采集中改了这项，需停止后重新启动才生效':''),
+      'ok');
     if(dyn)loadDynamics();
   }catch(e){say('collectHint','保存失败：'+e.message,'err')}
 }
@@ -1207,7 +1230,7 @@ function renderFeed(j){
   if(S.sessSel&&S.sessSel!=='all'){
     var s=segByKey(S.sessSel);
     if(s)label=(s.kind==='live'?'第 '+s.index+' 场'
-      :(s.lead?'首次开播前':'场间 '+s.index))+' · '+segRange(s);
+      :(s.single?'未分段':(s.lead?'首次开播前':'场间 '+s.index)))+' · '+segRange(s);
   }
   $('feedInfo').textContent=(r?(r.uname||r.label)+' · ':'')+label+' · 全部显示不截断';
 }
@@ -1226,24 +1249,23 @@ function renderSessions(list){
     return;
   }
   var items=S.segs.slice().reverse();
-  var approx=!!(S.segs[0]&&S.segs[0].approx);
+  var single=!!(S.segs.length===1&&S.segs[0].single);
   box.innerHTML='<button class="session-item '+(S.sessSel==='all'?'on':'')+
     '" data-sess="all"><span class="st-t">全部数据</span>'+
     '<span class="st-m">共 '+S.segs.length+' 段</span></button>'+
     items.map(function(s){
       var key=s.kind+'-'+s.index,on=(String(key)===String(S.sessSel));
-      var badge=s.kind==='live'?(approx?'第 '+s.index+' 段':'场')
-        :(s.lead?'更早':'场间');
-      var who=s.kind==='live'?(approx?'第 '+s.index+' 段':'第 '+s.index+' 场')
-        :(s.lead?'首次开播前':'场间 '+s.index);
+      var badge=s.kind==='live'?'场':(s.single?'未分段':(s.lead?'更早':'场间'));
+      var who=s.kind==='live'?'第 '+s.index+' 场'
+        :(s.single?'未记录开播 · 全部数据':(s.lead?'首次开播前':'场间 '+s.index));
       return '<button class="session-item '+(on?'on':'')+'" data-sess="'+key+'">'+
         '<span class="st-t">'+esc(segRange(s))+'<i class="'+(s.kind==='live'?'live':'gap')+'">'+
         esc(badge)+'</i>'+(s.end?'':' ●')+'</span>'+
         '<span class="st-m">'+esc(who)+' · 流水 ¥'+num(s.sc_amount)+
         ' · 观众 '+num(s.viewers)+' · 弹幕 '+num(s.danmaku)+'</span></button>';
     }).join('')+
-    (approx?'<div class="st-m" style="padding:6px 6px 0;color:var(--dim-2);font-size:10px">'+
-      '历史数据无开播记录，按采集批次近似分段</div>':'');
+    (single?'<div class="st-m" style="padding:6px 6px 0;color:var(--dim-2);font-size:10px">'+
+      '还没有开播记录，采集到的内容先归为一段，下次开播自动切开</div>':'');
 }
 async function loadSessions(){
   if(!S.roomId){renderSessions([]);return}
@@ -1597,6 +1619,7 @@ $('acctChip').onclick=function(){if(!$('acctChip').classList.contains('anon'))sh
 
 /* 采集器页：采集开关 / 动态 */
 $('btnSaveCollect').onclick=saveCollect;
+$('colLive').addEventListener('change',syncCollectUI);
 $('btnDynFetch').onclick=fetchDynamics;
 $('btnDynSaveCfg').onclick=async function(){
   try{

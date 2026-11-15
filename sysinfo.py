@@ -35,20 +35,54 @@ def cpu_times():
     return sum(vals), idle
 
 
+def proc_cpu_ticks():
+    """本进程累计 CPU ticks（utime + stime），读 /proc/self/stat。
+
+    系统级 /proc/stat 在 Android 上对普通应用可能是拒绝访问的，这时候只能
+    退到「本服务自己用了多少 CPU」——对这台只跑采集服务的机器反而更直观。
+    """
+    text = _read("/proc/self/stat")
+    if not text:
+        return 0
+    try:
+        # comm 字段可能带空格和括号，从最后一个 ")" 之后开始数
+        rest = text[text.rindex(")") + 1:].split()
+        return int(rest[11]) + int(rest[12])
+    except (ValueError, IndexError):
+        return 0
+
+
 class CpuSampler:
     """CPU% needs two samples; keep the previous one between calls."""
 
     def __init__(self):
         self._prev = cpu_times()
+        self._prev_proc = (proc_cpu_ticks(), time.monotonic())
+        self._last_pct = 0.0
 
     def usage(self):
+        """返回 {percent, scope}：scope=system 是全机占用，process 是本服务。"""
         total, idle = cpu_times()
         pt, pi = self._prev
         self._prev = (total, idle)
         dt, di = total - pt, idle - pi
-        if dt <= 0:
-            return 0.0
-        return round(max(0.0, min(100.0, (dt - di) * 100.0 / dt)), 1)
+        if dt > 0:
+            return {"percent": round(max(0.0, min(100.0, (dt - di) * 100.0 / dt)), 1),
+                    "scope": "system"}
+        # 系统级读数拿不到（Android 常见）：改报本进程的单核占用
+        ticks, now = proc_cpu_ticks(), time.monotonic()
+        prev_ticks, prev_now = self._prev_proc
+        span = now - prev_now
+        if span < 0.5:
+            # 两次请求挨得太近（网页 4 秒轮询撞上手动刷新），除出来的数没意义，
+            # 保留上一次的读数，也不推进基准点。
+            return {"percent": self._last_pct, "scope": "process"}
+        self._prev_proc = (ticks, now)
+        if ticks < prev_ticks:
+            return {"percent": 0.0, "scope": "process"}
+        pct = (ticks - prev_ticks) / 100.0 / span * 100.0  # USER_HZ 恒为 100
+        self._last_pct = round(max(0.0, min(100.0, pct)), 1)
+        return {"percent": self._last_pct, "scope": "process"}
 
 
 def memory():
@@ -133,9 +167,11 @@ def snapshot(data_dir, cpu_sampler=None, app_started_at=0):
             db_size = os.path.getsize(db)
         except OSError:
             db_size = 0
+    cpu = cpu_sampler.usage()
     return {
         "ts": int(time.time() * 1000),
-        "cpu": {"percent": cpu_sampler.usage(), "cores": os.cpu_count() or 0},
+        "cpu": {"percent": cpu["percent"], "scope": cpu["scope"],
+                "cores": os.cpu_count() or 0},
         "memory": mem,
         "disk": disk(data_dir),
         "load": loadavg(),

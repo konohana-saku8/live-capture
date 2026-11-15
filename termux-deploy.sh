@@ -56,3 +56,20 @@ except Exception as exc:
     print("HEALTH FAIL", repr(exc))
 PY
 say "done"
+
+# 部署后顺带记一行设备读数，方便从 adb 侧确认 CPU / 内存能不能读到
+"$PY" - >> "$ST" 2>&1 <<'PY'
+import json, os, sys, time
+sys.path.insert(0, os.path.expanduser("~/live-capture"))
+try:
+    import sysinfo
+    stat_bytes = len(sysinfo._read("/proc/stat"))
+    self_ok = bool(sysinfo._read("/proc/self/stat"))
+    sampler = sysinfo.CpuSampler()
+    time.sleep(1)
+    print("SYS proc_stat=%d proc_self=%s cpu=%s" % (
+        stat_bytes, self_ok, json.dumps(sampler.usage())))
+    print("SYS mem=%s" % json.dumps(sysinfo.memory()))
+except Exception as exc:
+    print("SYS FAIL %r" % (exc,))
+PY

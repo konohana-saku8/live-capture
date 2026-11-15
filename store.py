@@ -441,7 +441,9 @@ class Store:
         - 场间：上一场下播 → 这一场开播，也就是「上一次直播结束到这次开播前」
           收到的弹幕；最后一场之后到至今的场间同样会给出（只要有数据）。
         每段都返回时间边界与弹幕数 / SC 流水 / 去重观众数，前端列表直接展示。
-        旧版本采集的数据没有 LIVE 事件，退回按采集批次切分并标 approx。
+
+        一次开播记录都没有时（服务是开播中途才启动的、或旧版本数据），不去猜
+        批次：所有采集到的内容归成一个「未分段」，等下一次开播才切开。
         """
         rid = _as_int(room_id)
         if not rid:
@@ -452,7 +454,7 @@ class Store:
                 "WHERE room_id=? AND kind='live' "
                 "ORDER BY received_at ASC, seq ASC", (rid,))]
         if not marks:
-            return self._segment_by_runs(rid)
+            return self._segment_unsegmented(rid)
 
         shows = []          # [(start, end)]，end=0 表示还没下播
         open_at = 0
@@ -467,18 +469,13 @@ class Store:
         if open_at:
             shows.append((open_at, 0))
         if not shows:
-            return self._segment_by_runs(rid)
+            return self._segment_unsegmented(rid)
 
         segs = []           # [(kind, start, end, lead)]
         last_end = 0
         # 第一次开播之前采集到的数据（服务中途启动）单独给一段，避免只能从
         # 「全部数据」里翻——那段时间同样属于「上一次直播结束之后」。
-        with self.lock:
-            first_ts = self.db.execute(
-                "SELECT MIN(t) FROM (SELECT MIN(received_at) AS t FROM danmaku "
-                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM sc_message "
-                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM room_event "
-                "WHERE room_id=? AND kind<>'live')", (rid, rid, rid)).fetchone()[0]
+        first_ts = self.first_data_at(rid)
         if first_ts and first_ts < shows[0][0]:
             segs.append(("gap", first_ts, shows[0][0], True))
         for start, end in shows:
@@ -512,24 +509,41 @@ class Store:
                         "interactions": stat.get("interactions", 0)})
         return out
 
-    def _segment_by_runs(self, rid):
-        """没有 LIVE 事件时的兜底：按采集批次切分，用下一批次的开始作终点。"""
+    def first_data_at(self, rid):
+        """这条采集器最早一条数据的 received_at（不含开播/下播事件本身）。"""
         with self.lock:
-            starts = [r[0] for r in self.db.execute(
-                "SELECT started_at FROM runs WHERE room_id=? "
-                "ORDER BY started_at ASC", (rid,))]
-        out = []
-        for i, start in enumerate(starts):
-            end = starts[i + 1] if i + 1 < len(starts) else 0
-            stat = self.range_stats(rid, start, end) or {}
-            out.append({"kind": "live", "index": i + 1, "start": start,
-                        "end": end, "approx": True, "lead": False,
-                        "danmaku": stat.get("danmaku", 0),
-                        "sc": stat.get("sc", 0),
-                        "sc_amount": stat.get("sc_amount", 0),
-                        "viewers": stat.get("viewers", 0),
-                        "interactions": stat.get("interactions", 0)})
-        return out
+            return self.db.execute(
+                "SELECT MIN(t) FROM (SELECT MIN(received_at) AS t FROM danmaku "
+                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM sc_message "
+                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM room_event "
+                "WHERE room_id=? AND kind<>'live')", (rid, rid, rid)).fetchone()[0]
+
+    def last_live_mark(self, rid):
+        """最近一条开播 / 下播记录：(received_at, detail)，没有则 None。"""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT received_at, detail FROM room_event "
+                "WHERE room_id=? AND kind='live' "
+                "ORDER BY received_at DESC, seq DESC LIMIT 1", (rid,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def _segment_unsegmented(self, rid):
+        """一次开播都还没记录：所有采集到的内容归为一段，等下次开播再切开。
+
+        不按采集批次去猜——批次是服务重启的时间，不是直播的边界。这一段通常
+        是「首次开播之前」，也可能是服务在开播中途才启动的那一场。
+        """
+        start = self.first_data_at(rid)
+        stat = self.range_stats(rid, start, 0) if start else None
+        if not start or not stat or not stat.get("interactions"):
+            return []
+        return [{"kind": "gap", "index": 1, "start": start, "end": 0,
+                 "approx": True, "lead": True, "single": True,
+                 "danmaku": stat.get("danmaku", 0),
+                 "sc": stat.get("sc", 0),
+                 "sc_amount": stat.get("sc_amount", 0),
+                 "viewers": stat.get("viewers", 0),
+                 "interactions": stat.get("interactions", 0)}]
 
     # ---------------- dynamics ----------------
 
@@ -652,15 +666,8 @@ class Store:
                     (rid,)).fetchone()
                 item["sessions"] = live_row[0]
                 item["last_live_at"] = live_row[1]
+                # 没有开播事件就是「还没记录过开播」，不拿采集批次冒充场次
                 item["sessions_approx"] = False
-                if not item["sessions"]:
-                    # 旧版采集的数据没有开播事件，退回按采集批次统计（与分段口径一致）
-                    run_row = self.db.execute(
-                        "SELECT COUNT(*), COALESCE(MAX(started_at),0) FROM runs "
-                        "WHERE room_id=?", (rid,)).fetchone()
-                    item["sessions"] = run_row[0]
-                    item["last_live_at"] = run_row[1]
-                    item["sessions_approx"] = bool(run_row[0])
                 item["viewers"] = self.db.execute(
                     "SELECT COUNT(*) FROM ("
                     "SELECT uid FROM danmaku WHERE uid>0 AND room_id=? UNION "

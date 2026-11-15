@@ -362,6 +362,9 @@ class BiliApi:
                 "title": room.get("title") or "",
                 "uname": anchor.get("uname") or "",
                 "live_status": _as_int(room.get("live_status")),
+                # 本场开播的 unix 秒（只在播时有意义），用于补记开播时间
+                "live_time": _as_int(room.get("live_start_time") or
+                                     room.get("live_time")),
                 "online": _as_int(room.get("online"))}
 
     def get_danmu_info(self, room_id):
@@ -573,12 +576,14 @@ def _event_detail(kind, data):
 
 
 COUNT_KEYS = ("messages", "danmaku", "sc", "events", "duplicates", "sc_trans")
+# 「只在开播时采集」时，没开播就只隔一会儿探一次直播状态
+WATCH_INTERVAL = 45
 
 
 def blank_state():
     return {"running": False, "room_id": 0, "label": "", "real_room_id": 0,
             "title": "", "uname": "", "live_status": 0, "online": 0,
-            "live_started_at": 0,
+            "live_started_at": 0, "waiting": False, "live_only": False,
             "started_at": 0, "stopped_at": 0, "last_packet_at": 0,
             "last_error": "", "warning": "", "reconnects": 0,
             "popularity": 0, "configured": True,
@@ -646,16 +651,20 @@ class RoomWorker:
     async def _main(self):
         room, cfg = self.room_id, self.cfg
         api = BiliApi(cfg)
+        live_only = bool(cfg.get("live_only"))
+        self._set(live_only=live_only)
         self.run_id = self.store.start_run(room, cfg)
         backoff = 1.0
         try:
             while not self._stop.is_set():
                 try:
+                    known = True
                     try:
                         info = await asyncio.to_thread(api.resolve_room, room)
                     except Exception as exc:
                         info = {"real_room_id": room, "title": "", "uname": "",
                                 "live_status": 0, "online": 0}
+                        known = False
                         self._set(warning="房间信息获取失败，直接用输入房间号：%s" % exc)
                     self._set(real_room_id=info["real_room_id"],
                               title=info.get("title", ""),
@@ -663,13 +672,21 @@ class RoomWorker:
                               live_status=info.get("live_status", 0),
                               online=info.get("online", 0),
                               warning=api.warning)
+                    # 只在开播时采集：没开播就不连弹幕服务器，只定时探状态。
+                    # 探状态失败（known=False）时照旧尝试连接，别把人饿死。
+                    if live_only and known and info.get("live_status") != 1:
+                        self._wait_for_live()
+                        await self._sleep(WATCH_INTERVAL)
+                        continue
                     token, hosts = await asyncio.to_thread(
                         api.get_danmu_info, info["real_room_id"])
                     urls = api.websocket_urls(hosts)
                     ws = await self._connect(api, info["real_room_id"],
                                              token, urls, cfg)
                     backoff = 1.0
-                    self._set(last_error="")
+                    self._set(last_error="", waiting=False)
+                    if live_only:
+                        self._note_live_start(info)
                     await self._serve(ws, info["real_room_id"], self.run_id, cfg)
                 except Exception as exc:
                     if self._stop.is_set():
@@ -684,6 +701,40 @@ class RoomWorker:
         finally:
             if self.run_id:
                 self.store.end_run(self.run_id)
+
+    def _wait_for_live(self):
+        """没开播：状态标成「等待开播」，由外层循环隔一会儿再探一次。"""
+        with self.lock:
+            was_waiting = self.state["waiting"]
+            self.state["waiting"] = True
+            self.state["live_status"] = 0
+        if not was_waiting:
+            self.log("info", self.tag + "未开播，等开播后再连（每 %d 秒探一次）" %
+                     WATCH_INTERVAL)
+
+    def _note_live_start(self, info):
+        """只在开播时采集：连上时按开播时间补一条「开播」记录。
+
+        B 站不会在我们连上时补发 LIVE 消息，没有这条记录，这一场的数据就会
+        落进「场间」。已经处在「开播」状态时不重复写，避免把同一场切两半。
+        """
+        last = self.store.last_live_mark(self.room_id)
+        if last and last[1] == "开播":
+            return
+        now = int(time.time() * 1000)
+        ts = _as_int(info.get("live_time")) * 1000
+        if not ts or ts > now or now - ts > 24 * 3600 * 1000:
+            ts = now
+        row = event_row(self.room_id, "live", {"live": 1, "start_time": ts // 1000},
+                        ts)
+        row["run_id"] = self.run_id
+        try:
+            self.store.insert_event(row)
+            self._inc("events")
+            self._set(live_started_at=ts)
+            self.log("info", self.tag + "在播，补记开播时间")
+        except Exception as exc:
+            self.log("warn", self.tag + "补记开播时间失败：%s" % exc)
 
     async def _connect(self, api, room_id, token, urls, cfg):
         protover = _as_int(cfg.get("protover"), 2)
@@ -736,9 +787,14 @@ class RoomWorker:
     async def _serve(self, ws, room_id, run_id, cfg):
         heartbeat = asyncio.create_task(self._heartbeat(ws, cfg))
         stale = max(30, _as_int(cfg.get("stale_seconds"), 120))
+        live_only = bool(cfg.get("live_only"))
         last = time.time()
         try:
             while not self._stop.is_set():
+                # 只在开播时采集：收到下播就断开，回去等下一场
+                if live_only and not self.state.get("live_status"):
+                    self.log("info", self.tag + "已下播，断开连接等下一场")
+                    break
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=5)
                 except (asyncio.TimeoutError, TimeoutError):
@@ -862,8 +918,12 @@ class RoomWorker:
 
         # 开播 / 下播：区分「未开播期间」与「本场直播」的数据边界
         if cmd == "LIVE":
-            self._set(live_status=1, live_started_at=now)
+            self._set(live_status=1, live_started_at=now, waiting=False)
             self.log("info", self.tag + "开播了")
+            # 刚补记过开播（连上时就记了）就别再插一条，否则同一场被切两半
+            last = self.store.last_live_mark(room_id)
+            if last and last[1] == "开播" and now - last[0] < 180000:
+                return
             row = event_row(room_id, "live", {"live": 1,
                                               "start_time": now // 1000}, now)
             row["run_id"] = run_id
@@ -924,6 +984,7 @@ class CaptureManager:
                 st["label"] = room.get("label") or ("房间 %s" % rid)
                 st["live_status"] = _as_int(room.get("live_status"))
                 st["title"] = room.get("title") or ""
+                st["live_only"] = bool(room.get("live_only"))
             st["counts"] = dict(st["counts"])
             st["configured"] = True
             states.append(st)
@@ -992,6 +1053,7 @@ class CaptureManager:
             value = (room.get("params") or {}).get(key)
             if value is not None:
                 cfg[key] = value
+        cfg["live_only"] = bool(room.get("live_only"))
         label = room.get("label") or ("房间 %s" % rid)
         worker = RoomWorker(self, rid, label, cfg)
         with self.lock:

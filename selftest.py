@@ -108,6 +108,8 @@ def main():
     check("设备快照百分比在合法范围",
           0 <= snap["memory"]["percent"] <= 100 and
           0 <= snap["disk"]["percent"] <= 100)
+    check("CPU 占用标明口径（全机 / 本服务）",
+          snap["cpu"].get("scope") in ("system", "process"), snap["cpu"])
     check("设备网络字段存在",
           "lan_ip" in snap["network"] and "online" in snap["network"])
 
@@ -225,12 +227,18 @@ def main():
         check("同名房间号重复添加为更新", not created3 and
               rooms.get(22748536)["label"] == "改名")
         check("采集器默认同时采直播间与动态",
-              r1["collect_live"] is True and r1["collect_dynamics"] is True, r1)
+              r1["collect_live"] is True and r1["collect_dynamics"] is True and
+              r1["live_only"] is False, r1)
         check("按 uid 找采集器", (rooms.find_by_uid(9) or {}).get("id") == 22748536)
         rooms.settings(22748536, {"collect_dynamics": False})
         check("采集器开关可单独关闭",
               rooms.get(22748536)["collect_dynamics"] is False and
               rooms.get(22748536)["collect_live"] is True)
+        rooms.settings(22748536, {"live_only": True})
+        check("可以只选「仅在开播时采集」",
+              rooms.get(22748536)["live_only"] is True and
+              RoomStore(room_path).get(22748536)["live_only"] is True)
+        rooms.settings(22748536, {"live_only": False})
         check("采集动态的目标列表随开关变化",
               [x["id"] for x in rooms.collect_targets("collect_dynamics")]
               == [1001])
@@ -323,7 +331,7 @@ def main():
         check("向前翻页取更早数据", len(page) == 2 and
               all(x["received_at"] < t2ms + 1000 for x in page))
 
-        # 老数据无 LIVE 事件 → 按采集批次（runs）兜底分段
+        # 没有任何开播记录 → 所有采集到的内容归成一段，不按批次猜
         rstore = Store(os.path.join(tmp, "runs-only.db"))
         rr = rstore.start_run(22748536, {"room_id": 22748536})
         run_start = rstore.db.execute(
@@ -342,14 +350,25 @@ def main():
                                 "is_emoticon": 0}])
         rstore.end_run(rr2)
         rsess = rstore.live_segments(22748536)
-        check("无开播事件时按采集批次兜底分段", len(rsess) == 2 and
-              rsess[0].get("approx") is True and
-              rsess[0]["danmaku"] == 1 and rsess[1]["danmaku"] == 1, rsess)
+        check("无开播记录时所有数据归为一段",
+              len(rsess) == 1 and rsess[0].get("single") is True and
+              rsess[0]["kind"] == "gap" and rsess[0]["start"] == run_start + 500 and
+              rsess[0]["danmaku"] == 2, rsess)
         rby = {x["room_id"]: x for x in rstore.dashboard()["by_room"]}
-        check("无开播事件时开播次数与最近开播也按采集批次兜底",
-              rby[22748536]["sessions"] == 2 and
-              rby[22748536]["sessions_approx"] is True and
-              rby[22748536]["last_live_at"] > 0, rby[22748536])
+        check("无开播记录时开播次数为 0（不拿采集批次冒充）",
+              rby[22748536]["sessions"] == 0 and
+              rby[22748536]["sessions_approx"] is False and
+              rby[22748536]["last_live_at"] == 0, rby[22748536])
+        # 之后真的开播了 → 那一段被切开，之前的全部归「更早」
+        live_ev = capture.event_row(22748536, "live", {"live": 1},
+                                    base2 + 7200 * 1000)
+        live_ev["event_time"] = (base2 + 7200 * 1000) // 1000
+        rstore.insert_event(live_ev)
+        rsplit = rstore.live_segments(22748536)
+        check("下一次开播把未分段切开",
+              [s["kind"] for s in rsplit] == ["gap", "live"] and
+              rsplit[0].get("lead") is True and rsplit[0]["danmaku"] == 2 and
+              rsplit[0].get("single") is None, rsplit)
 
         # ---------- 场 / 场间 交替分段（独立库） ----------
         gst = Store(os.path.join(tmp, "segments.db"))
@@ -590,7 +609,8 @@ def main():
         check("采集器列表带 up 主信息与采集开关",
               all(k in j["items"][0] for k in
                   ("face", "uname", "uid", "live_time", "params", "live_stats",
-                   "collect_live", "collect_dynamics", "dyns")))
+                   "collect_live", "collect_dynamics", "live_only", "waiting",
+                   "dyns")))
         check("采集器列表带采集目标摘要：最近开播 / 动态定时 / 上次拉取",
               all(k in j["items"][0] for k in
                   ("last_live_at", "dyn_last_at", "dyn_schedule", "dyn_auto")) and
@@ -714,6 +734,15 @@ def main():
               j["room"]["collect_live"] is True, j.get("room"))
         post("/api/rooms/settings", {"room_id": 22748536,
                                      "params": {"collect_dynamics": True}})
+        status, raw = post("/api/rooms/settings", {"room_id": 22748536,
+                                                    "params": {"live_only": True}})
+        j = json.loads(raw)
+        check("采集器开关接口：只在开播时采集",
+              status == 200 and j["room"]["live_only"] is True and
+              any(x["live_only"] for x in j["rooms"]["items"]),
+              j.get("room"))
+        post("/api/rooms/settings", {"room_id": 22748536,
+                                     "params": {"live_only": False}})
         status, raw = post("/api/rooms/settings", {"room_id": 22748536,
                                                     "params": {"protover": 3,
                                                                "heartbeat_seconds": 45}})
@@ -915,6 +944,53 @@ def main():
                     break
                 time.sleep(0.1)
             check("停止时冲刷剩余缓冲", st.counts()["danmaku"] == expect_dm, st.counts())
+
+            # ---------- 只在开播时采集（mock，零联网） ----------
+            class FlippedApi(FakeApi):
+                status = 0
+
+                def resolve_room(self, room):
+                    out = dict(FakeApi.resolve_room(self, room))
+                    out["live_status"] = FlippedApi.status
+                    out["live_time"] = 0
+                    return out
+
+            old_watch = capture.WATCH_INTERVAL
+            capture.BiliApi, capture.WATCH_INTERVAL = FlippedApi, 1
+            try:
+                rooms.settings(1001, {"live_only": True})
+                before = st.counts()["danmaku"]
+                ok, message = manager.start(1001)
+                check("只在开播时采集：可以启动", ok, message)
+                time.sleep(0.8)
+                st1001 = {s["room_id"]: s
+                          for s in manager.snapshot()["rooms"]}[1001]
+                check("没开播时标成等开播，且没有连弹幕服务器",
+                      st1001["running"] and st1001["waiting"] and
+                      st1001["last_packet_at"] == 0 and st1001["live_status"] == 0,
+                      st1001)
+                check("没开播时不产生任何数据",
+                      st.counts()["danmaku"] == before, st.counts())
+                FlippedApi.status = 1
+                frame_pool.insert(0, frames_for(1001, "C"))
+                for _ in range(60):
+                    time.sleep(0.1)
+                    if st.counts()["danmaku"] > before:
+                        break
+                st1001 = {s["room_id"]: s
+                          for s in manager.snapshot()["rooms"]}[1001]
+                check("开播后自动连上并开始入库",
+                      st.counts()["danmaku"] > before and
+                      st1001["waiting"] is False and st1001["live_status"] == 1,
+                      (st.counts(), st1001["waiting"]))
+                opens = st.db.execute(
+                    "SELECT COUNT(*) FROM room_event WHERE room_id=1001 "
+                    "AND kind='live' AND detail='开播'").fetchone()[0]
+                check("连上时不重复补记开播（同一场不被切两半）", opens == 1, opens)
+                manager.stop(1001)
+            finally:
+                capture.BiliApi, capture.WATCH_INTERVAL = FakeApi, old_watch
+                rooms.settings(1001, {"live_only": False})
         finally:
             capture.BiliApi, capture.connect = old_api, old_connect
 
@@ -981,6 +1057,14 @@ def main():
                                       "SUBTABS", "lc-subtab", "subN-live",
                                       "subN-dyn")) and
               page.index('data-panel="live"') < page.index('data-panel="dyn"'))
+        check("有了局部标签就不再重复子页面大标题",
+              '<h2><i>◆</i>直播间数据' not in page and
+              '<h2><i>◆</i>up 主动态' not in page and
+              'class="block-meta"' in page and 'id="feedInfo"' in page and
+              'id="dynInfo"' in page)
+        check("日志页不再重复展示服务器信息",
+              "服务信息" not in page and "logSvcGrid" not in page and
+              'id="logBox"' in page)
         check("首页只按 up 主分，不再有跨 up 主合计统计条",
               all(k in page for k in ("开播场次", "累计流水", "互动总数", "观众数",
                                       "metrics")) and
@@ -990,8 +1074,11 @@ def main():
               all(k in page for k in ("collector-list", "collector-add",
                                       'class="goal live"', 'class="goal dyn"',
                                       "last_live_at", "dyn_schedule",
-                                      "dyn_last_at", "实时采集中",
+                                      "dyn_last_at", "采集中",
                                       "累计开播")))
+        check("采集器可勾「只在开播时采集」，采集中也显示等开播",
+              all(k in page for k in ('id="colOnly"', "syncCollectUI",
+                                      "只在开播时采集", "等开播", "live_only")))
         check("未保存修改会提示：译文 / 采集参数 / 关页前",
               all(k in page for k in ("dynDirtyCard", "confirmDynDirty",
                                       "data-orig", "cfgDirty", "cfgSnap",

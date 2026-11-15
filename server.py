@@ -449,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
             items.append(dict(
                 room,
                 running=bool(st.get("running")),
+                waiting=bool(st.get("waiting")),
+                live_only=bool(room.get("live_only")),
                 configured=True,
                 real_room_id=st.get("real_room_id") or room["id"],
                 live_status=live_status,
@@ -685,7 +687,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             clean = {}
             for key, value in params.items():
-                if key in ("collect_live", "collect_dynamics"):
+                if key in ("collect_live", "collect_dynamics", "live_only"):
                     clean[key] = bool(value)
                     continue
                 if key not in PARAM_KEYS:

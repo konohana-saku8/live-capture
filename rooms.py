@@ -20,7 +20,7 @@ import time
 PARAM_KEYS = ("protover", "heartbeat_seconds", "stale_seconds",
               "record_danmaku", "record_sc", "record_events")
 # 采集器可以选择采哪些数据
-COLLECT_KEYS = ("collect_live", "collect_dynamics")
+COLLECT_KEYS = ("collect_live", "collect_dynamics", "live_only")
 
 
 def _as_int(value, default=0):
@@ -72,6 +72,8 @@ class RoomStore:
                 "face": str(item.get("face") or "")[:300],
                 "collect_live": item.get("collect_live", True) is not False,
                 "collect_dynamics": item.get("collect_dynamics", True) is not False,
+                # 只在开播期间连弹幕服务器；没开播就只定时探状态
+                "live_only": item.get("live_only", False) is True,
                 "params": {k: params[k] for k in PARAM_KEYS if k in params},
                 "created_at": _as_int(item.get("created_at"))}
 
