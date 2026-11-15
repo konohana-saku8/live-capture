@@ -674,7 +674,11 @@ class RoomWorker:
                               warning=api.warning)
                     # 只在开播时采集：没开播就不连弹幕服务器，只定时探状态。
                     # 探状态失败（known=False）时照旧尝试连接，别把人饿死。
-                    if live_only and known and info.get("live_status") != 1:
+                    # 真开播时 live_start_time 一定有值；状态说在播但开播时间是
+                    # 0（"0000-00-00"），是 B 站的瞬时抖动/轮播误报，当没开播。
+                    live_on = (info.get("live_status") == 1 and
+                               _as_int(info.get("live_time")) > 0)
+                    if live_only and known and not live_on:
                         self._wait_for_live()
                         await self._sleep(WATCH_INTERVAL)
                         continue

@@ -1134,7 +1134,8 @@ def main():
                 def resolve_room(self, room):
                     out = dict(FakeApi.resolve_room(self, room))
                     out["live_status"] = FlippedApi.status
-                    out["live_time"] = 0
+                    # 真开播时 B 站一定带开播时间；live_time=0 表示误报，会被跳过
+                    out["live_time"] = 1794600000 if FlippedApi.status == 1 else 0
                     return out
 
             old_watch = capture.WATCH_INTERVAL
