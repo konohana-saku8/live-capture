@@ -20,7 +20,14 @@ DEFAULTS: dict[str, Any] = {
     "http_timeout": 10,
     "record_danmaku": True,
     "record_sc": True,
+    # 事件总开关；下面按事件细类再拆，均可按采集器单独覆盖
     "record_events": True,
+    "record_guard": True,
+    "record_gift": True,
+    "record_red_pocket": True,
+    # 入场事件量大且噪音多，默认不记；关注 / 分享等其他互动仍然记
+    "record_enter": False,
+    "record_interact": True,
     "host": "0.0.0.0",
     "port": 8765,
     "token": "",
@@ -29,7 +36,13 @@ DEFAULTS: dict[str, Any] = {
 }
 
 SECRET_KEYS = ("token",)
-BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "auto_start")
+BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "record_guard",
+             "record_gift", "record_red_pocket", "record_enter",
+             "record_interact", "auto_record", "auto_start")
+# 采集内容开关：采集器清单里返回「全局默认 + 该采集器覆盖」后的有效值
+CONTENT_KEYS = ("record_danmaku", "record_sc", "record_events", "record_guard",
+                "record_gift", "record_red_pocket", "record_enter",
+                "record_interact")
 INT_BOUNDS = {
     "protover": (2, 3),
     "heartbeat_seconds": (10, 120),
@@ -37,6 +50,7 @@ INT_BOUNDS = {
     "http_timeout": (3, 60),
     "port": (1, 65535),
     "dyn_mid": (0, 999999999),
+    "record_qn": (80, 10000),
 }
 VALID_KINDS = ("danmaku", "sc", "events")
 
@@ -134,29 +148,69 @@ class Config:
         return out
 
 
-class LogBuffer:
-    """环形日志：既给页面 `/api/logs` 用，也把同一条写到 stdout。"""
+class _RootLogHandler(logging.Handler):
+    """把 root / waitress / traceback 等日志也收进页面，不重复记 livecapture。"""
 
-    def __init__(self, capacity: int = 1000):
+    def __init__(self, buffer: "LogBuffer"):
+        super().__init__()
+        self.buffer = buffer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.name == "livecapture":
+            return
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(record.msg)
+        level = {"warning": "warn", "critical": "error"}.get(
+            record.levelname.lower(), record.levelname.lower())
+        self.buffer.append(level, message,
+                           int((record.created or time.time()) * 1000))
+
+
+class LogBuffer:
+    """环形日志：页面 `/api/logs`、root 日志捕获，同时写到 stdout / 文件 handler。"""
+
+    def __init__(self, capacity: int = 2000):
         self.capacity = capacity
         self.lock = threading.RLock()
         self.items: list[dict[str, Any]] = []
         self._logger = logging.getLogger("livecapture")
+        self._root_handler: logging.Handler | None = None
 
-    def add(self, level: str, message: Any) -> None:
+    def append(self, level: str, message: Any, ts: int | None = None) -> None:
         text = str(message)
         with self.lock:
-            self.items.append({"ts": int(time.time() * 1000),
+            self.items.append({"ts": int(ts or time.time() * 1000),
                                "level": level, "msg": text})
             if len(self.items) > self.capacity:
                 self.items = self.items[-self.capacity:]
+
+    def add(self, level: str, message: Any) -> None:
+        text = str(message)
+        self.append(level, text)
         self._logger.log(
             {"error": logging.ERROR, "warn": logging.WARNING}.get(level, logging.INFO),
             text)
 
+    def install_root(self) -> None:
+        """把 waitress / Flask / 第三方日志收进同一个环形缓冲。"""
+        if self._root_handler is not None:
+            return
+        handler = _RootLogHandler(self)
+        logging.getLogger().addHandler(handler)
+        self._root_handler = handler
+
+    def close(self) -> None:
+        if self._root_handler is None:
+            return
+        logging.getLogger().removeHandler(self._root_handler)
+        self._root_handler = None
+
     def tail(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.lock:
-            return list(self.items[-max(1, min(1000, as_int(limit, 100))):])
+            return list(self.items[-max(1, min(self.capacity,
+                                               as_int(limit, 100))):])
 
 
 def lan_ip() -> str:

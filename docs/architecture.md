@@ -19,10 +19,11 @@
 |---|---|
 | `app/__init__.py` | Flask 应用工厂：装配蓝图、静态托管（`web/dist/`）+ SPA fallback、公开路由白名单 |
 | `app/http.py` | 统一鉴权（`X-Access-Token` header / `?token=` query）、`ApiError` → JSON 错误、`@body` 请求体解析 |
-| `app/api/*.py` | Blueprint 按域分组：public / overview / rooms / capture / feed / dynamics / accounts / admin |
+| `app/api/*.py` | Blueprint 按域分组：public / overview / rooms / capture / feed / recordings / dynamics / accounts / admin |
 | `app/scheduler.py` | `DynamicScheduler`：按 up 主的定时动态抓取 |
 | `capture.py` | B 站协议：封包编解码、心跳、zlib 解压（protover=2）、`BiliApi`、`RoomWorker`、`CaptureManager` |
-| `store.py` | SQLite 五张表 + `MIGRATIONS` 增量迁移 + 场次切分 + 游标分页查询 |
+| `store.py` | SQLite 六张表 + `MIGRATIONS` 增量迁移 + 场次切分 + 游标分页查询 |
+| `recordings.py` / `remux.py` | 录像元数据、场次匹配、启动对账；单线程 remux 队列（`-c copy` 转 MP4） |
 | `rooms.py` | `data/rooms.json`：采集器（up 主）清单，开关、参数、定时配置 |
 | `accounts.py` | B 站 cookie 账号池（CSV 解析、profile 补拉、启停用） |
 | `dynamics.py` | up 主动态抓取 |
@@ -44,6 +45,12 @@ B站 WSS 推送
 
 开播检测：`live_only` 开启时每 45 秒（`WATCH_INTERVAL`）探一次状态 API，`live_status==1 且 live_time>0` 才连弹幕服务器并补记「开播」；下播由弹幕服务器 `PREPARING` 推送或 `_serve` 状态检查触发断开。LIVE/PREPARING 推送与补记之间有 3 分钟去重，防止同一场被切两半。
 
+自动录制：采集器参数 `auto_record` 开启后，`LIVE`/补记开播/启动时已在播都会起一个独立录制线程，向 `playUrl` 取 HTTP-FLV 地址直接落盘到 `data/recordings/<room_id>/`，不需要 ffmpeg；`PREPARING`、手动停止、采集线程退出时关闭。断流会用新地址续录为 `_p2.flv` 等分片；剩余空间低于 1GB 时停止并报错，低于 2GB 页面预警。清晰度由 `record_qn` 指定（默认 250=720P），B 站未登录可能降级，`actual_qn` 记录真实值。
+
+下播后处理：`RecordingService.finish()` 把录像标成 `pending` 并交给 `remux.py` 的单线程队列，用 `ffmpeg -c copy -movflags +faststart` 无损转成 MP4；成功后删除 FLV，失败保留原文件并标 `failed`；没有 ffmpeg 时停在 `flv`，前端用 mpegts.js 回退播放。服务启动时 `reconcile()` 会重新排队上次中断的录像。
+
+数据页：`/live` 用 `/api/sessions?with_recordings=1` 的场 / 场间做日历索引，数据预览、场次删除和导出都在这里；录制中通过 `/api/live/flv` 同源代理 + mpegts.js 播实时画面，下播后播 `/api/recordings/<id>/media` 的 MP4；选中场次后弹幕 / SC / 事件默认取**最新一页**；滚到列顶时才向前**追加**更早的页，直播 / 尾部场间的新消息继续追加到列尾。所有滚动加载只往已有列表里加行，不整页替换。点击消息按 `received_at - recording.started_at` 跳转；回放当前播放位置对应的消息已加载时，跟随会把该消息固定在对应栏的第一行，手机窄高下能看到更多后续内容。页面顶部另有「up 主动态」标签，动态的预览、定时抓取和译文编辑也在这里；采集器页 `/rooms` 只保留抓取状态和开关。
+
 ## 鉴权与公开路由
 
 - 除下列三个公开路由外，`/api/*` 一律要求访问口令（存 `data/config.json` 的 `token`）：
@@ -54,7 +61,7 @@ B站 WSS 推送
 
 ## 前端结构（Vue 3 + TS）
 
-- 四页路由：仪表盘 `/`、采集器 `/rooms`、配置 `/config`、日志 `/logs`
+- 五页路由：仪表盘 `/`、数据 `/live`、采集器 `/rooms`、配置 `/config`、日志 `/logs`
 - 状态集中在 `frontend/src/stores/app.ts`（无 pinia，普通模块级响应式对象）
 - 视觉沿用旧版深色暖橙口径（`legacy.css` 原样抽取，`app.css` 放增量修补）
-- 组件：`LiveFeedPanel`（场次 + 三列流）、`RoomPanel`（采集器局部标签）、`DynamicsPanel`、`FeedColumn`、`CdnImg`（防盗链兜底）等
+- 组件：`LiveRoomView`（日历 + 画面 + 数据栏，状态在 `stores/liveRoom.ts`）、`LiveFeedPanel`（场次 + 三列流）、`RoomPanel`（采集器局部标签）、`DynamicsPanel`、`FeedColumn`、`CdnImg`（防盗链兜底）等

@@ -112,6 +112,7 @@ def create_app(data_dir: str | None = None, web_dir: str | None = None,
 def bootstrap(app: Flask, auto_start: bool = False) -> None:
     """启动常驻线程（动态定时器）并按配置拉起采集。"""
     r = app.extensions["live"]
+    r.recordings.reconcile()
     if auto_start:
         r.auto_start_rooms()
     r.dynamics.start()

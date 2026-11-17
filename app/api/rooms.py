@@ -88,7 +88,12 @@ def save_settings():
             continue
         if key not in PARAM_KEYS:
             continue
-        if key in BOOL_KEYS:
+        if key == "record_qn":
+            qn = int_in(value, key, 80, 10000)
+            if qn not in (80, 150, 250, 400, 10000):
+                raise ApiError("record_qn 只支持 80/150/250/400/10000")
+            clean[key] = qn
+        elif key in BOOL_KEYS:
             clean[key] = bool(value)
         elif key in INT_BOUNDS:
             low, high = INT_BOUNDS[key]

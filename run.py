@@ -14,6 +14,7 @@ import argparse
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -63,6 +64,20 @@ def main() -> None:
     data_dir = os.path.abspath(args.data)
     os.makedirs(data_dir, exist_ok=True)
 
+    # 应用自己也写一份日志文件（按大小轮转），不依赖 shell 的重定向；
+    # 页面 /api/logs/file 可以直接下载这份完整日志。
+    log_dir = os.path.join(data_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    try:
+        file_handler = RotatingFileHandler(
+            os.path.join(log_dir, "service.log"),
+            maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+        logging.getLogger().addHandler(file_handler)
+    except OSError as exc:
+        print("  日志文件写入失败：%s" % exc, flush=True)
+
     # 先读一次配置拿到监听地址，命令行参数优先并回写
     probe = Config(os.path.join(data_dir, "config.json"))
     current = probe.get()
@@ -92,6 +107,10 @@ def main() -> None:
 
     auto = bool(args.auto_start or current.get("auto_start"))
     bootstrap(app, auto_start=auto)
+    r.logs.add("info", "服务启动：本机 http://127.0.0.1:%s/ · 局域网 http://%s:%s/ · "
+                       "数据 %s · 页面 %s · 采集器 %s 个" %
+               (port, r.lan_ip, port, os.path.abspath(data_dir),
+                r.web_dir, len(r.rooms.list().get("items") or [])))
 
     print(BANNER, flush=True)
     print("  直播弹幕 / SC 采集服务已启动（Flask）", flush=True)

@@ -5,6 +5,8 @@ export const GUARD: Record<number, string> = { 1: '总督', 2: '提督', 3: '舰
 
 export const KIND: Record<string, string> = {
   danmaku: '弹幕', sc: 'SC', events: '事件', guard: '上舰', gift: '礼物',
+  red_pocket: '红包', enter: '入场', follow: '关注', share: '分享',
+  special_follow: '特别关注', mutual_follow: '互相关注',
   sc_delete: '删 SC', live: '直播状态',
 }
 
@@ -53,6 +55,32 @@ export function dur(ms?: number) {
   if (s < 60) return s + ' 秒'
   if (s < 3600) return Math.floor(s / 60) + ' 分'
   return Math.floor(s / 3600) + ' 时 ' + Math.floor((s % 3600) / 60) + ' 分'
+}
+
+/** 一段固定时长：1 时 08 分 / 12 分 30 秒。 */
+export function fmtDuration(ms?: number) {
+  const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000))
+  if (!total) return '—'
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h) return h + ' 时 ' + pad(m) + ' 分'
+  if (m) return m + ' 分 ' + pad(s) + ' 秒'
+  return s + ' 秒'
+}
+
+/** 相对播放头的偏移：+12:34，超过一小时 +1:02:03。 */
+export function fmtOffset(ms?: number) {
+  const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return '+' + (h ? h + ':' + pad(m) + ':' + pad(s) : pad(m) + ':' + pad(s))
+}
+
+/** B 站清晰度编号。 */
+export function qnLabel(qn?: number) {
+  return ({ 10000: '原画', 400: '1080P', 250: '720P', 150: '480P', 80: '360P' } as Record<number, string>)[Number(qn) || 0] || '未知'
 }
 
 export function bytes(n?: number) {

@@ -2,29 +2,16 @@
 import { computed, reactive } from 'vue'
 
 import { api, postJson } from '@/api/client'
-import { segKeyOf, segmentOf } from '@/lib/format'
 import type {
-  Account, ConfigPayload, DynConfig, Dynamics, FeedKind, FeedRow,
-  LogRow, Room, Segment, ServiceInfo, SysInfo,
+  Account, ConfigPayload, DynConfig, Dynamics, LogRow, Room,
+  ServiceInfo, SysInfo,
 } from '@/types'
 
-/** 弹幕一次取多少条：整场动辄两万条，全塞进 DOM 手机会卡。 */
-export const FEED_PAGE = 400
 /** 采集器清单每页 3 个。 */
 export const ROOM_PAGE = 3
-const SUBTABS = ['live', 'dyn'] as const
 
 type HintKind = '' | 'ok' | 'err'
 export interface Hint { msg: string; kind: HintKind }
-
-const savedFilters = (() => {
-  try {
-    const raw = JSON.parse(localStorage.getItem('lc-filters') || 'null')
-    return raw && typeof raw === 'object' ? raw : null
-  } catch {
-    return null
-  }
-})()
 
 export const state = reactive({
   ready: false,
@@ -36,26 +23,7 @@ export const state = reactive({
   roomId: Number(localStorage.getItem('lc-room') || 0) || 0,
   roomPage: 0,
 
-  subTab: (localStorage.getItem('lc-subtab') || 'live') as (typeof SUBTABS)[number],
   collectRoomId: 0,
-
-  filters: {
-    danmaku: savedFilters?.danmaku !== false,
-    sc: savedFilters?.sc !== false,
-    events: savedFilters?.events !== false,
-  } as Record<FeedKind, boolean>,
-  q: '',
-  autoRefresh: true,
-
-  segs: [] as Segment[],
-  sessSel: '',
-  sessStart: 0,
-  sessEnd: 0,
-  counts: {} as Record<FeedKind, number>,
-  feedRows: { danmaku: [], sc: [], events: [] } as Record<FeedKind, FeedRow[]>,
-  feedMore: { danmaku: false, sc: false, events: false } as Record<FeedKind, boolean>,
-  loadingMore: { danmaku: false, sc: false, events: false } as Record<FeedKind, boolean>,
-  feedEmpty: '',
 
   /** 有未保存内容时拦一下离开：动态译文、采集参数。 */
   dirty: { dyn: false, cfg: false },
@@ -102,8 +70,6 @@ export const visibleRooms = computed(() => {
 })
 
 export const roomPages = computed(() => Math.max(1, Math.ceil(state.rooms.length / ROOM_PAGE)))
-
-export const currentSeg = computed(() => segmentOf(state.segs, state.sessSel))
 
 /* ---------------- 通用 ---------------- */
 
@@ -184,14 +150,10 @@ export async function selectRoom(id: number) {
   state.roomId = id
   localStorage.setItem('lc-room', String(id))
   jumpRoomPage(id)
-  // 切采集器时场次回到最近一段，并清掉上一家的动态
-  state.sessSel = ''
-  state.sessStart = 0
-  state.sessEnd = 0
+  // 切采集器时清掉上一家的动态，面板会按新 up 主自己取数
   state.collectRoomId = 0
   state.dyn = null
   await loadRooms()
-  await loadSessions()
 }
 
 export async function addRoom(uid: number, label: string) {
@@ -199,13 +161,14 @@ export async function addRoom(uid: number, label: string) {
   state.roomId = j.room.id
   localStorage.setItem('lc-room', String(state.roomId))
   state.roomPage = 1e9
+  state.dyn = null
   await loadRooms()
-  await loadSessions()
   return j
 }
 
 export async function removeRoom(room: Room) {
   const j = await postJson('/api/rooms/remove', { room_id: room.id })
+  state.dyn = null
   setBadgeRooms(j.rooms || {})
   normalizeSelection()
   return j
@@ -234,147 +197,6 @@ export async function stopAll() {
   const j = await postJson('/api/capture/stop_all', {})
   if (j.rooms) setBadgeRooms(j.rooms)
   return j
-}
-
-/* ---------------- 场次 ---------------- */
-
-function applySegments(list: Segment[]) {
-  state.segs = list || []
-  if (!state.segs.length) {
-    state.sessSel = ''
-    state.sessStart = 0
-    state.sessEnd = 0
-    return false
-  }
-  // 只按场次看：首次进来或原来那段没了，就跳到最近一段
-  if (!segmentOf(state.segs, state.sessSel)) {
-    applySeg(state.segs[state.segs.length - 1])
-    return true
-  }
-  return false
-}
-
-export function applySeg(s: Segment) {
-  state.sessSel = segKeyOf(s)
-  state.sessStart = s.start || 0
-  state.sessEnd = s.end || 0
-}
-
-export async function loadSessions(opts: { tail?: boolean } = {}) {
-  let changed = false
-  if (!state.roomId) {
-    changed = applySegments([])
-  } else {
-    try {
-      const j = await api('/api/sessions?room_id=' + state.roomId)
-      changed = applySegments(j.segments || [])
-    } catch {
-      changed = applySegments([])
-    }
-  }
-  await loadFeed(opts.tail && !changed ? { tail: true } : {})
-  return changed
-}
-
-export async function selectSession(key: string) {
-  const s = segmentOf(state.segs, key)
-  if (!s) return
-  applySeg(s)
-  await loadFeed()
-}
-
-/** 删除一个场次 / 场间：后端按时间段删数据，返回各类删除条数。 */
-export async function deleteSession(seg?: Segment) {
-  const s = seg || segmentOf(state.segs, state.sessSel)
-  if (!s || !state.roomId) throw new Error('没有选中场次')
-  return postJson('/api/session/delete', {
-    room_id: state.roomId,
-    start: s.start || 0,
-    end: s.end || 0,
-    kind: s.kind,
-  })
-}
-
-/* ---------------- 弹幕 ---------------- */
-
-function feedRowKey(k: FeedKind, r: FeedRow) {
-  return k === 'sc' ? 's' + r.sc_id : k === 'danmaku' ? 'd' + r.seq : 'e' + r.seq
-}
-
-/** 增量刷新把新到的一页并进已有列表：按主键去重再按时间正序排。 */
-export function mergeFeed(k: FeedKind, old: FeedRow[], fresh: FeedRow[]) {
-  const seen: Record<string, boolean> = {}
-  const out: FeedRow[] = []
-  for (const r of old.concat(fresh || [])) {
-    const key = feedRowKey(k, r)
-    if (seen[key]) continue
-    seen[key] = true
-    out.push(r)
-  }
-  out.sort((a, b) => {
-    const d = (a.received_at || 0) - (b.received_at || 0)
-    return d || ((a.seq || 0) - (b.seq || 0))
-  })
-  return out
-}
-
-function applyFeed(j: any, tail: boolean) {
-  const kinds: FeedKind[] = ['danmaku', 'sc', 'events']
-  for (const k of kinds) {
-    const rows: FeedRow[] = (j.items && j.items[k]) || []
-    if (tail && state.feedRows[k].length) {
-      state.feedRows[k] = mergeFeed(k, state.feedRows[k], rows)
-      state.feedMore[k] = !!j.more?.[k] || state.feedMore[k]
-    } else {
-      state.feedRows[k] = rows
-      state.feedMore[k] = !!j.more?.[k]
-    }
-  }
-  state.counts = j.counts || {}
-}
-
-export async function loadFeed(opts: { tail?: boolean } = {}) {
-  if (!state.roomId) {
-    state.feedEmpty = '请先添加采集器'
-    return
-  }
-  if (!state.sessSel) {
-    state.feedEmpty = '先在左侧选一个场次'
-    return
-  }
-  state.feedEmpty = ''
-  const types = (Object.keys(state.filters) as FeedKind[]).filter((k) => state.filters[k])
-  const lim = opts.tail ? 120 : FEED_PAGE
-  let qs = '/api/feed?paged=1&room_id=' + state.roomId + '&limit=' + lim +
-    '&types=' + types.join(',') + '&q=' + encodeURIComponent(state.q)
-  if (state.sessStart) qs += '&since=' + state.sessStart
-  if (state.sessEnd) qs += '&until=' + state.sessEnd
-  try {
-    applyFeed(await api(qs), !!opts.tail)
-  } catch (e: any) {
-    hint('capture', '读取内容失败：' + e.message, 'err')
-  }
-}
-
-/** 「载入更早」：以当前最老一条的 received_at 为游标，含同一毫秒，前端去重。 */
-export async function loadMore(kind: FeedKind) {
-  const rows = state.feedRows[kind]
-  if (!rows.length || state.loadingMore[kind] || !state.sessSel) return
-  state.loadingMore[kind] = true
-  let qs = '/api/feed?paged=1&room_id=' + state.roomId + '&types=' + kind +
-    '&limit=' + FEED_PAGE + '&before=' + rows[0].received_at + '&incl=1' +
-    '&q=' + encodeURIComponent(state.q)
-  if (state.sessStart) qs += '&since=' + state.sessStart
-  if (state.sessEnd) qs += '&until=' + state.sessEnd
-  try {
-    const j = await api(qs)
-    state.feedRows[kind] = mergeFeed(kind, rows, (j.items && j.items[kind]) || [])
-    state.feedMore[kind] = !!j.more?.[kind]
-  } catch (e: any) {
-    hint('capture', '载入更早内容失败：' + e.message, 'err')
-  } finally {
-    state.loadingMore[kind] = false
-  }
 }
 
 /* ---------------- 动态 ---------------- */
@@ -445,16 +267,21 @@ export async function loadAccounts() {
   }
 }
 
+/** `/accounts` 的增删启用返回的是 {ok, active_id, items}，不是数组。 */
+function accountItems(payload: any): Account[] {
+  return (payload && payload.items) || []
+}
+
 export async function uploadAccount(name: string, csv: string) {
   const j = await postJson('/api/accounts', { name, csv, activate: true })
-  state.accounts = j.accounts || []
+  state.accounts = accountItems(j.accounts)
   await loadStatus()
   return j
 }
 
 export async function accountAction(action: 'remove' | 'activate', id: string) {
   const j = await postJson('/api/accounts/' + action, { id })
-  state.accounts = j.accounts || []
+  state.accounts = accountItems(j.accounts)
   return j
 }
 
@@ -462,6 +289,6 @@ export async function accountAction(action: 'remove' | 'activate', id: string) {
 
 export async function loadLogs() {
   try {
-    state.serverLogs = (await api('/api/logs?limit=500')).items || []
+    state.serverLogs = (await api('/api/logs?limit=2000')).items || []
   } catch { /* ignore */ }
 }

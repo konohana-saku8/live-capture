@@ -2,6 +2,7 @@
 /** 日志页：服务端日志 + 网页操作记录合并展示，最新 1000 条。 */
 import { computed, nextTick, ref, watch } from 'vue'
 
+import { download } from '@/api/client'
 import { fmtFull } from '@/lib/format'
 import { loadLogs, state, uiLog } from '@/stores/app'
 import type { LogRow } from '@/types'
@@ -16,11 +17,11 @@ const rows = computed(() => {
     ...state.webLogs.map((x) => ({ ts: x.ts, level: 'web', msg: x.msg })),
   ]
   all.sort((a, b) => a.ts - b.ts)
-  return all.filter((x) => level.value === 'all' || x.level === level.value).slice(-600)
+  return all.filter((x) => level.value === 'all' || x.level === level.value)
 })
 
 const countText = computed(
-  () => '共 ' + rows.value.length + ' 条（服务端 ' + state.serverLogs.length +
+  () => '显示 ' + rows.value.length + ' 条（服务端 ' + state.serverLogs.length +
     ' / 网页 ' + state.webLogs.length + '）',
 )
 
@@ -35,6 +36,15 @@ watch(rows, async () => {
 function reload() {
   loadLogs()
   uiLog('info', '手动刷新日志')
+}
+
+async function downloadLogs() {
+  try {
+    await download('/api/logs/file', 'service.log')
+    uiLog('info', '已下载完整日志')
+  } catch (e: any) {
+    uiLog('error', '下载日志失败：' + e.message)
+  }
 }
 </script>
 
@@ -54,6 +64,7 @@ function reload() {
           <option value="web">网页操作</option>
         </select>
         <button class="btn sm" @click="reload">刷新日志</button>
+        <button class="btn sm" @click="downloadLogs">下载完整日志</button>
         <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
           <input v-model="follow" type="checkbox">自动滚动
         </label>
@@ -66,7 +77,10 @@ function reload() {
         </div>
         <div v-if="!rows.length" class="empty">暂无日志</div>
       </div>
-      <div class="hint">服务端运行日志 + 网页上的操作结果都集中在这里，最新 1000 条。</div>
+      <div class="hint">
+        服务端内存保留最近 2000 条，包含采集日志、waitress / HTTP 日志和异常；完整日志可下载，
+        文件按 5MB 自动轮转。
+      </div>
     </section>
   </div>
 </template>

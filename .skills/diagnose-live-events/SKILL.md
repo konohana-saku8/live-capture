@@ -36,7 +36,7 @@ PYEOF"
 
 ## 处理幻影记录
 
-1. 网页：采集器页左侧场次列表，那条场次右侧 ✕ → confirm（删「场」会连开播/下播标记一起删，之后归「未分段」）。
+1. 网页：「数据」页的场次卡片右侧 ✕ → confirm（删「场」会连开播/下播标记一起删，之后归「未分段」）。
 2. 接口：`POST /api/session/delete {"room_id": N, "start": <ms>, "end": <ms>, "kind": "live"}`（带口令 header）。先 `select count(*) from danmaku where received_at between ...` 确认没误删真数据。
 3. 删完看 `/api/sessions` 确认分段恢复。
 

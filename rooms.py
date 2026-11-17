@@ -18,7 +18,9 @@ import time
 
 # 每间直播间可覆盖的采集参数（服务级配置 host/port/token 等不在此列）
 PARAM_KEYS = ("protover", "heartbeat_seconds", "stale_seconds",
-              "record_danmaku", "record_sc", "record_events")
+              "record_danmaku", "record_sc", "record_events", "record_guard",
+              "record_gift", "record_red_pocket", "record_enter",
+              "record_interact", "auto_record", "record_qn")
 # 采集器可以选择采哪些数据
 COLLECT_KEYS = ("collect_live", "collect_dynamics", "live_only")
 # 动态定时抓取：按 up 主各存一份（默认关闭），dyn_last_ts 是内部记录的上次成功时间

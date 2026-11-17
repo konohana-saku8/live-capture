@@ -97,6 +97,25 @@ CREATE TABLE IF NOT EXISTS dynamics (
   fetched_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dyn_time ON dynamics(pub_ts DESC);
+
+CREATE TABLE IF NOT EXISTS recordings (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id         INTEGER NOT NULL,
+  label           TEXT,
+  live_started_at INTEGER,
+  started_at      INTEGER NOT NULL,
+  stopped_at      INTEGER,
+  status          TEXT NOT NULL DEFAULT 'recording',
+  requested_qn    INTEGER,
+  actual_qn       INTEGER,
+  flv_parts       TEXT NOT NULL DEFAULT '[]',
+  mp4_parts       TEXT NOT NULL DEFAULT '[]',
+  bytes           INTEGER NOT NULL DEFAULT 0,
+  duration_ms     INTEGER NOT NULL DEFAULT 0,
+  error           TEXT NOT NULL DEFAULT '',
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rec_room ON recordings(room_id, started_at DESC);
 """
 
 # 升级旧库：早期版本没有表情图片字段，历史导入也需要一个去重键
@@ -138,6 +157,21 @@ def _as_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _json_list(value):
+    try:
+        data = json.loads(value or "[]")
+        return data if isinstance(data, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _rec_row(row):
+    item = dict(row)
+    item["flv_parts"] = _json_list(item.get("flv_parts"))
+    item["mp4_parts"] = _json_list(item.get("mp4_parts"))
+    return item
 
 
 class Store:
@@ -196,7 +230,15 @@ class Store:
             before = self.db.total_changes
             self.db.executemany(sql, data)
             self.db.commit()
-            return self.db.total_changes - before
+            added = self.db.total_changes - before
+            # 把自增 seq 回填给调用方：SSE 推送和轮询结果要用同一个主键去重
+            # （executemany 的 cursor.lastrowid 在部分 SQLite 上是 None）
+            last = self.db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            if added == len(rows) and last:
+                first = last - len(rows) + 1
+                for i, row in enumerate(rows):
+                    row.setdefault("seq", first + i)
+            return added
 
     def insert_sc(self, row):
         sql = """INSERT INTO sc_message
@@ -244,6 +286,8 @@ class Store:
         with self.lock:
             cur = self.db.execute(sql, args)
             self.db.commit()
+            if cur.rowcount > 0 and cur.lastrowid:
+                row["seq"] = cur.lastrowid
             return cur.rowcount > 0
 
     def insert_events(self, rows):
@@ -342,11 +386,11 @@ class Store:
         return total, [dict(r) for r in rows]
 
     def query_all(self, kind, q="", room_id=None, since=None, until=None,
-                  cap=20000):
-        """Fetch up to ``cap`` rows in chronological order (no truncation UI).
+                  cap=100000):
+        """Fetch up to ``cap`` rows in chronological order.
 
-        query() caps at 1000 for interactive paging; a selected live session
-        wants the full transcript, so use a separate high-cap path here.
+        数据页按选中段一次性加载整段内容，不再分页；这个上限只是防止误传
+        房间号时把整个库拉出来，正常单场直播（几万条）不会被截断。
         """
         kind = kind if kind in TABLE_OF else "danmaku"
         where, args = self._where(kind, q, room_id, since, None, until)
@@ -391,9 +435,91 @@ class Store:
             rows = self.db.execute(sql, args + [count]).fetchall()
         return [dict(r) for r in reversed(rows)]
 
-    def export(self, kind, fmt="json", q="", room_id=None, since=None):
+    def query_page_after(self, kind, after_ms, count=200, room_id=None,
+                         since=None, until=None, inclusive=False, q=""):
+        """Return the oldest ``count`` rows newer than ``after_ms``.
+
+        Used by the studio player: start at the recording's first message and
+        page forward as playback advances, without loading the whole session.
+        """
         kind = kind if kind in TABLE_OF else "danmaku"
-        where, args = self._where(kind, q, room_id, since, None)
+        where, args = self._where(kind, q, room_id, since, None, until)
+        if _as_int(after_ms) > 0:
+            clause = "received_at%s?" % (">=" if inclusive else ">")
+            where = (where + " AND " + clause) if where else (" WHERE " + clause)
+            args.append(_as_int(after_ms))
+        second = "sc_id" if kind == "sc" else "seq"
+        sql = ("SELECT * FROM " + TABLE_OF[kind] + where +
+               " ORDER BY received_at ASC, " + second + " ASC LIMIT ?")
+        with self.lock:
+            rows = self.db.execute(sql, args + [count]).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------------- recordings ----------------
+
+    def create_recording(self, room_id, label, live_started_at, requested_qn,
+                         actual_qn=0, started_at=None):
+        now = _as_int(started_at) or int(time.time() * 1000)
+        cur = self._write(
+            "INSERT INTO recordings (room_id, label, live_started_at, started_at,"
+            " status, requested_qn, actual_qn, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (_as_int(room_id), str(label or ""), _as_int(live_started_at),
+             now, "recording", _as_int(requested_qn), _as_int(actual_qn), now))
+        return int(cur.lastrowid)
+
+    def update_recording(self, rec_id, **fields):
+        allowed = ("live_started_at", "started_at", "stopped_at", "status",
+                   "requested_qn", "actual_qn", "flv_parts", "mp4_parts",
+                   "bytes", "duration_ms", "error")
+        sets, args = [], []
+        for key in allowed:
+            if key not in fields:
+                continue
+            value = fields[key]
+            if key in ("flv_parts", "mp4_parts") and not isinstance(value, str):
+                value = json.dumps(value or [], ensure_ascii=False)
+            sets.append(key + "=?")
+            args.append(value)
+        if not sets:
+            return 0
+        args.append(_as_int(rec_id))
+        cur = self._write("UPDATE recordings SET " + ", ".join(sets) +
+                          " WHERE id=?", args)
+        return cur.rowcount
+
+    def get_recording(self, rec_id):
+        with self.lock:
+            row = self.db.execute("SELECT * FROM recordings WHERE id=?",
+                                  (_as_int(rec_id),)).fetchone()
+        return _rec_row(row) if row else None
+
+    def list_recordings(self, room_id=None, since=None, until=None, status=None):
+        where, args = [], []
+        if _as_int(room_id):
+            where.append("room_id=?")
+            args.append(_as_int(room_id))
+        if _as_int(since):
+            where.append("started_at>=?")
+            args.append(_as_int(since))
+        if _as_int(until):
+            where.append("started_at<=?")
+            args.append(_as_int(until))
+        if status:
+            where.append("status=?")
+            args.append(str(status))
+        sql = "SELECT * FROM recordings"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY started_at DESC"
+        with self.lock:
+            rows = self.db.execute(sql, args).fetchall()
+        return [_rec_row(row) for row in rows]
+
+    def export(self, kind, fmt="json", q="", room_id=None, since=None,
+               until=None):
+        kind = kind if kind in TABLE_OF else "danmaku"
+        where, args = self._where(kind, q, room_id, since, None, until)
         with self.lock:
             rows = self.db.execute(
                 "SELECT * FROM " + TABLE_OF[kind] + where +
@@ -477,10 +603,11 @@ class Store:
     def live_segments(self, room_id):
         """把一条直播间的数据切成「场」与「场间」，带每段统计。
 
-        - 场：开播 → 下播。没有下播记录（强杀 / 只开到一半）时，一直算到
-          下一次开播或至今，避免尾巴数据落在两段之间的缝里。
-        - 场间：上一场下播 → 这一场开播，也就是「上一次直播结束到这次开播前」
-          收到的弹幕；最后一场之后到至今的场间同样会给出（只要有数据）。
+        - 场：开播 → 下播（右开区间，下播事件本身算在这一场里，用 ``end+1ms``
+          的边界表达）。没有下播记录（强杀 / 只开到一半）时，一直算到下一次
+          开播或至今，避免尾巴数据落在两段之间的缝里。
+        - 场间：上一场下播之后 → 这一场开播，也就是「上一次直播结束到这次
+          开播前」收到的弹幕；最后一场之后到至今的场间同样会给出（只要有数据）。
         每段都返回时间边界与弹幕数 / SC 流水 / 去重观众数，前端列表直接展示。
 
         一次开播记录都没有时（服务是开播中途才启动的、或旧版本数据），不去猜
@@ -505,7 +632,9 @@ class Store:
                     shows.append((open_at, ts))
                 open_at = ts
             elif detail == "下播" and open_at:
-                shows.append((open_at, ts if ts >= open_at else open_at))
+                # +1ms：所有区间都是左闭右开 [start, end)，让下播事件本身
+                # 落在这一场而不是随后的场间里。
+                shows.append((open_at, max(ts, open_at) + 1))
                 open_at = 0
         if open_at:
             shows.append((open_at, 0))

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** up 主动态：按天分组、分页、定时抓取（按 up 主）、可编辑译文。 */
-import { computed, ref, watch, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 
 import { fmt, fmtFull, dynDayKey, dynDayLabel, num } from '@/lib/format'
 import {
@@ -18,6 +18,7 @@ const busy = ref(false)
 const drafts = ref<Record<string, string>>({})
 let qTimer: number | undefined
 
+const testSource = computed(() => currentRoom.value?.uid === 0)
 const cfg = computed(() => state.dyn?.config)
 const items = computed(() => state.dyn?.items || [])
 const total = computed(() => state.dyn?.total || 0)
@@ -34,6 +35,7 @@ const groups = computed(() => {
 })
 
 const infoText = computed(() => {
+  if (testSource.value) return '共 0 条'
   const c = cfg.value
   const hh = ('0' + (c?.dyn_hour ?? 8)).slice(-2)
   const mm = ('0' + (c?.dyn_minute ?? 0)).slice(-2)
@@ -53,6 +55,15 @@ const dirty = computed(() => {
 watchEffect(() => {
   state.dirty.dyn = dirty.value
 })
+
+// 离开数据页 / 收起面板时清掉脏标记，避免之后每次导航都被拦
+onBeforeUnmount(() => { state.dirty.dyn = false })
+
+// 面板挂载 / 换 up 主时自己取一次动态；测试源没有动态可查
+watch(() => currentRoom.value?.id, (id) => {
+  if (id && !testSource.value) loadDynamics()
+  else state.dyn = null
+}, { immediate: true })
 
 // 服务端回填这一位 up 主的定时
 watch(() => cfg.value, (c) => {
@@ -149,31 +160,38 @@ function jumpUrl(url?: string) {
   <div class="room-block" data-panel="dyn">
     <div class="block-meta">{{ infoText }}</div>
 
-    <div class="row">
-      <button class="btn sm primary" :disabled="busy" @click="doFetch">立即拉取</button>
-      <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
-        <input v-model="auto" type="checkbox"> 每天定时拉取
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
-        <select v-model.number="hour" style="width:70px">
-          <option v-for="h in hourOptions" :key="h" :value="h">{{ pad(h) }}</option>
-        </select> 时
-        <select v-model.number="minute" style="width:70px">
-          <option v-for="m in minuteOptions" :key="m" :value="m">{{ pad(m) }}</option>
-        </select> 分
-      </label>
-      <button class="btn sm" @click="saveSchedule">保存定时</button>
-      <input v-model="state.dynQuery" type="text" placeholder="搜索动态 / 译文"
-             style="flex:1 1 160px" @input="onQueryInput">
-    </div>
+    <template v-if="testSource">
+      <div class="hint">
+        测试源没有 up 主动态；只有本地视频和复用的直播数据，切到「直播场次」查看。
+      </div>
+    </template>
+    <template v-else>
+      <div class="row">
+        <button class="btn sm primary" :disabled="busy" @click="doFetch">立即拉取</button>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
+          <input v-model="auto" type="checkbox"> 每天定时拉取
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
+          <select v-model.number="hour" style="width:70px">
+            <option v-for="h in hourOptions" :key="h" :value="h">{{ pad(h) }}</option>
+          </select> 时
+          <select v-model.number="minute" style="width:70px">
+            <option v-for="m in minuteOptions" :key="m" :value="m">{{ pad(m) }}</option>
+          </select> 分
+        </label>
+        <button class="btn sm" @click="saveSchedule">保存定时</button>
+        <input v-model="state.dynQuery" type="text" placeholder="搜索动态 / 译文"
+               style="flex:1 1 160px" @input="onQueryInput">
+      </div>
 
-    <div class="hint" :class="state.hints.dyn.kind">{{ state.hints.dyn.msg }}</div>
-    <div class="hint">
-      按天展示这位 up 主的 B 站动态，可随时添加或修改译文。定时抓取是按 up 主分别设置的，默认关闭；打开后只需服务保持运行。
-    </div>
+      <div class="hint" :class="state.hints.dyn.kind">{{ state.hints.dyn.msg }}</div>
+      <div class="hint">
+        按天展示这位 up 主的 B 站动态，可随时添加或修改译文。定时抓取是按 up 主分别设置的，默认关闭；打开后只需服务保持运行。
+      </div>
+    </template>
 
     <div>
-      <div v-if="!items.length" class="empty" style="padding:14px 4px">
+      <div v-if="!items.length && !testSource" class="empty" style="padding:14px 4px">
         {{ state.dynQuery
           ? '没有匹配「' + state.dynQuery + '」的动态。'
           : '还没有动态。点「立即拉取」从 B 站获取这位 up 主的最新动态。' }}

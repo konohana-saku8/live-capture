@@ -37,9 +37,9 @@ function roomLabel(id: number) {
   return r ? (r.label || '房间 ' + id) : '房间 ' + id
 }
 
-async function openRoom(id: number) {
+async function openRoom(id: number, testSource: boolean) {
   await selectRoom(id)
-  router.push('/rooms')
+  router.push(testSource ? '/live' : '/rooms')
 }
 </script>
 
@@ -158,7 +158,8 @@ async function openRoom(id: number) {
         <div v-for="r in state.rooms" :key="r.id" class="room-card" :class="{ on: r.running }">
           <h3>{{ r.uname || r.label }}</h3>
           <div class="sub">
-            UID {{ r.uid || '—' }} · ROOM {{ r.id }} · {{ liveText[r.live_status ?? 0] || '未知' }}
+            {{ r.uid === 0 ? '测试源' : 'UID ' + (r.uid || '—') }} · ROOM {{ r.id }}
+            · {{ r.uid === 0 ? '本地视频' : (liveText[r.live_status ?? 0] || '未知') }}
           </div>
           <div class="metrics">
             <div><b>{{ num(r.totals?.sessions) }}</b><span>开播场次</span></div>
@@ -173,9 +174,9 @@ async function openRoom(id: number) {
           </div>
           <div class="foot">
             <span class="dot" :class="{ on: r.running }">
-              <i></i>{{ r.running ? '采集中' : '未采集' }}
+              <i></i>{{ r.uid === 0 ? '测试源' : (r.running ? '采集中' : '未采集') }}
             </span>
-            <button class="btn sm" @click="openRoom(r.id)">查看内容 →</button>
+            <button class="btn sm" @click="openRoom(r.id, r.uid === 0)">查看内容 →</button>
           </div>
         </div>
         <div v-if="!state.rooms.length" class="empty">

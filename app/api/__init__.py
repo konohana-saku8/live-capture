@@ -10,7 +10,9 @@ def rt():
 
 
 def register(app: Flask) -> None:
-    from . import accounts, admin, capture, dynamics, feed, overview, public, rooms
+    from . import (accounts, admin, capture, dynamics, feed, overview, public,
+                   recordings, rooms)
 
-    for module in (public, overview, rooms, capture, feed, dynamics, accounts, admin):
+    for module in (public, overview, rooms, capture, feed, recordings,
+                   dynamics, accounts, admin):
         app.register_blueprint(module.bp)

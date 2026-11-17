@@ -5,8 +5,9 @@
 没有表情图片字段，也没有开播 / 下播事件。导入时：
 
 - 每条写一个 import_key（内容哈希），重复导入不会写重；
-- 按「相邻两条数据间隔超过 --gap 分钟」推出一场直播的起止，补写一条
-  「开播」「下播」事件，这样时间轴能切出场 / 场间，而不是所有数据糊成一段；
+- 按「相邻两条数据间隔超过 --gap 分钟」推出数据簇；开播优先取簇内最早的
+  SC / 上舰（主播没开播时也可能有弹幕），两者都没有才回退首条弹幕；下播取
+  簇尾，补写「开播」「下播」事件，这样时间轴能切出场 / 场间；
 - 旧库里出现过的直播间会补进采集器列表（能联网就顺手取 up 主 uid / 头像）。
 
 用法：
@@ -69,6 +70,41 @@ def _clusters(times, gap_ms):
     if cur:
         out.append((cur[0], cur[1]))
     return out
+
+
+def _paid_time(event_s, received_ms):
+    """事件秒级时间与入库时间取更早；明显是占位/脏数据时退回入库时间。"""
+    event_ms = (event_s or 0) * 1000
+    if not event_ms or abs(event_ms - received_ms) > 6 * 3600 * 1000:
+        event_ms = received_ms
+    return min(event_ms, received_ms)
+
+
+def _first_paid(conn, rid, start, end):
+    """这一段里最早的 SC / 上舰，返回开播边界毫秒；没有付费事件返回 0。
+
+    主播没开播时也可能有弹幕，所以用付费事件定位开播；事件时间和
+    received_at 取更早的一个，保证这条付费记录本身落在场内。
+    """
+    found = []
+    if _table(conn, "sc_message"):
+        row = conn.execute(
+            "SELECT start_time, received_at FROM sc_message"
+            " WHERE room_id=? AND received_at>=? AND received_at<=?"
+            " ORDER BY COALESCE(NULLIF(start_time,0)*1000, received_at)"
+            " ASC LIMIT 1", (rid, start, end)).fetchone()
+        if row:
+            found.append(_paid_time(row[0], row[1]))
+    if _table(conn, "room_event"):
+        row = conn.execute(
+            "SELECT event_time, received_at FROM room_event"
+            " WHERE room_id=? AND event_type='guard'"
+            " AND received_at>=? AND received_at<=?"
+            " ORDER BY COALESCE(NULLIF(event_time,0)*1000, received_at)"
+            " ASC LIMIT 1", (rid, start, end)).fetchone()
+        if row:
+            found.append(_paid_time(row[0], row[1]))
+    return min(found) if found else 0
 
 
 def import_room(conn, store, rid, gap_ms, sessions=True, verbose=True,
@@ -168,19 +204,35 @@ def import_room(conn, store, rid, gap_ms, sessions=True, verbose=True,
                 out["skipped"] += 1
                 continue
             kept.append((start, end))
-            # 开播落在第一条数据之前一点点，确保这条数据算进这一场
+            # 开播优先用最早 SC / 上舰（主播没开播时也可能有弹幕），
+            # 两者都没有才回退到首条弹幕。import_key 仍按数据簇起点算，
+            # 这样修正时间后重复导入不会多插一条开播。
+            paid = _first_paid(conn, rid, start, end)
+            if paid:
+                open_at = max(0, paid)
+                basis = "first_sc_guard"
+            else:
+                row = conn.execute(
+                    "SELECT MIN(received_at) FROM danmaku"
+                    " WHERE room_id=? AND received_at>=? AND received_at<=?",
+                    (rid, start, end)).fetchone()
+                first_dm = row[0] if row and row[0] else start
+                open_at = max(0, first_dm - 1000)
+                basis = "first_danmaku"
             marks.append({"room_id": rid, "kind": "live", "detail": "开播",
-                          "event_time": start // 1000,
-                          "received_at": max(0, start - 1000),
+                          "event_time": open_at // 1000,
+                          "received_at": open_at,
                           "raw_json": json.dumps({"imported": True,
-                                                  "approx": True},
+                                                  "approx": True,
+                                                  "basis": basis},
                                                  ensure_ascii=False),
                           "import_key": _key("live", rid, start, "open")})
             marks.append({"room_id": rid, "kind": "live", "detail": "下播",
                           "event_time": end // 1000,
                           "received_at": end + 1000,
                           "raw_json": json.dumps({"imported": True,
-                                                  "approx": True},
+                                                  "approx": True,
+                                                  "basis": "last_data"},
                                                  ensure_ascii=False),
                           "import_key": _key("live", rid, end, "close")})
         out["sessions"] = store.insert_events(marks)

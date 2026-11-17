@@ -12,9 +12,11 @@ time, each with its own state, buffers and reconnect loop.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import http.cookiejar
 import json
+import os
 import re
 import struct
 import threading
@@ -24,6 +26,8 @@ import urllib.request
 import zlib
 
 from rooms import PARAM_KEYS
+from recorder import LiveRecorder
+from recordings import RecordingService
 
 try:
     import brotli
@@ -165,6 +169,99 @@ def parse_popularity(packet):
     if len(packet.body) == 4:
         return struct.unpack(">I", packet.body)[0]
     return None
+
+
+# ---------------- protobuf payloads (ported from danmaku-it/collector) -------
+
+def _read_varint(buf, index):
+    shift, value = 0, 0
+    while index < len(buf):
+        byte = buf[index]
+        index += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, index
+        shift += 7
+        if shift > 63:
+            return None, index
+    return None, index
+
+
+def _decode_fields(raw):
+    """Shallow protobuf decode: varints as int, length-delimited as bytes."""
+    if not isinstance(raw, (bytes, bytearray)):
+        return None
+    fields, index, total = {}, 0, len(raw)
+    while index < total:
+        key, index = _read_varint(raw, index)
+        if key is None:
+            return None
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, index = _read_varint(raw, index)
+            if value is None:
+                return None
+            fields[field] = value
+        elif wire == 2:
+            size, index = _read_varint(raw, index)
+            if size is None or index + size > total:
+                return None
+            fields[field] = raw[index:index + size]
+            index += size
+        elif wire == 5:
+            index += 4
+        elif wire == 1:
+            index += 8
+        else:
+            return None
+    return fields
+
+
+def _pb_text(value):
+    return value.decode("utf-8", "replace") if isinstance(value, bytes) else ""
+
+
+def parse_interact_word_v2(pb_base64):
+    """INTERACT_WORD_V2：字段 1=uid、2=uname、5=msg_type、6=room_id、7=timestamp。"""
+    try:
+        raw = base64.b64decode(str(pb_base64 or ""))
+    except (TypeError, ValueError):
+        return None
+    fields = _decode_fields(raw)
+    if not fields or fields.get(1) is None:
+        return None
+    return {"uid": fields.get(1), "uname": _pb_text(fields.get(2)),
+            "msg_type": fields.get(5, 0), "room_id": fields.get(6),
+            "timestamp": fields.get(7)}
+
+
+def parse_send_gift_v2(pb_base64):
+    """SEND_GIFT_V2：礼物在字段 10，用户资料在字段 15。"""
+    try:
+        raw = base64.b64decode(str(pb_base64 or ""))
+    except (TypeError, ValueError):
+        return None
+    top = _decode_fields(raw)
+    if not top:
+        return None
+    gift = _decode_fields(top.get(10) or b"")
+    if not gift:
+        return None
+    user = _decode_fields(top.get(15) or b"") or {}
+    base = _decode_fields(user.get(2) or b"") or {}
+    medal = _decode_fields(user.get(3) or b"") or {}
+    medal_inner = _decode_fields(medal.get(1) or b"") or {}
+    gift_name = _pb_text(gift.get(2))
+    if not gift_name:
+        return None
+    return {"uid": _as_int(top.get(1)) or _as_int(user.get(1)),
+            "uname": _pb_text(base.get(1)),
+            "giftId": _as_int(gift.get(1)), "giftName": gift_name,
+            "num": _as_int(gift.get(3)) or 1, "price": _as_int(gift.get(5)),
+            "coin_type": _pb_text(gift.get(8)) or "gold",
+            "tid": _pb_text(gift.get(9)), "timestamp": _as_int(gift.get(10)),
+            "medal_name": _pb_text(medal_inner.get(11)) or _pb_text(medal.get(3)),
+            "medal_level": _as_int(medal.get(2))}
 
 
 # ---------------- emoticons (ported from danmaku-it/collector/collector.py) ----
@@ -383,6 +480,24 @@ class BiliApi:
             raise RuntimeError("getDanmuInfo 返回空 token/host_list")
         return token, hosts
 
+    def get_play_urls(self, room_id, qn=10000):
+        """取当前直播的 FLV 地址与实际清晰度（按顺序尝试，第一个能连上就录）。"""
+        self.ensure_cookies()
+        query = self.sign({"cid": room_id, "qn": qn, "platform": "web",
+                           "web_location": "444.8"})
+        url = ("https://api.live.bilibili.com/room/v1/Room/playUrl?" + query)
+        data = self._get_json(url)
+        if data.get("code") != 0:
+            raise RuntimeError("playUrl code=%s %s" %
+                               (data.get("code"), data.get("message")))
+        payload = data.get("data") or {}
+        durl = payload.get("durl") or []
+        urls = [item.get("url") for item in durl
+                if isinstance(item, dict) and item.get("url")]
+        if not urls:
+            raise RuntimeError("playUrl 返回空直播流")
+        return urls, _as_int(payload.get("current_qn")) or _as_int(qn)
+
     @staticmethod
     def websocket_urls(host_list):
         urls = []
@@ -549,11 +664,25 @@ def extract_sc(room_id, data, now_ms):
             "raw_json": json.dumps(data, ensure_ascii=False, separators=(",", ":"))}
 
 
+GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
+# INTERACT_WORD.msg_type：1=进入（默认不记，受 record_enter 控制）
+INTERACT_KINDS = {2: "follow", 3: "share", 4: "special_follow", 5: "mutual_follow"}
+INTERACT_LABELS = {"follow": "关注了主播", "share": "分享了直播间",
+                   "special_follow": "特别关注", "mutual_follow": "互相关注"}
+
+
 def event_row(room_id, kind, data, now_ms):
     data = data if isinstance(data, dict) else {}
+    sender = data.get("sender_info")
+    sender = sender if isinstance(sender, dict) else {}
+    winner = data.get("winner_info")
+    winner = winner if isinstance(winner, dict) else {}
     return {"room_id": room_id, "kind": kind,
-            "uid": _as_int(data.get("uid")),
-            "uname": data.get("uname") or data.get("username") or "",
+            "uid": _as_int(data.get("uid") or sender.get("uid")
+                           or winner.get("uid")),
+            "uname": (data.get("uname") or data.get("username")
+                      or data.get("sender_name") or sender.get("uname")
+                      or winner.get("uname") or ""),
             "detail": _event_detail(kind, data),
             "event_time": _as_int(data.get("start_time") or data.get("timestamp")),
             "received_at": now_ms,
@@ -564,15 +693,35 @@ def _event_detail(kind, data):
     if kind == "live":
         return "开播" if data.get("live") else "下播"
     if kind == "guard":
-        return "舰长 %s 级 ×%s" % (data.get("guard_level") or "?",
-                                  data.get("num") or 1)
+        level = _as_int(data.get("guard_level"))
+        name = data.get("gift_name") or GUARD_NAMES.get(level) or "舰长"
+        return "%s ×%s" % (name, _as_int(data.get("num")) or 1)
     if kind == "gift":
-        gift = data.get("gift") or {}
-        return "%s ×%s" % (gift.get("giftName") or data.get("gift_name") or "礼物",
-                           gift.get("num") or data.get("num") or 1)
+        gift = data.get("gift") if isinstance(data.get("gift"), dict) else {}
+        name = (data.get("giftName") or data.get("gift_name")
+                or gift.get("giftName") or gift.get("gift_name") or "礼物")
+        num = _as_int(data.get("num")) or _as_int(gift.get("num")) or 1
+        action = str(data.get("action") or "").strip() or "投喂"
+        return "%s %s ×%s" % (action, name, num)
+    if kind == "red_pocket":
+        name = data.get("gift_name") or data.get("giftName") or ""
+        total = _as_int(data.get("total_price") or data.get("gift_price"))
+        text = "人气红包" + ((" · " + str(name)) if name else "")
+        if total > 0:
+            text += " · ¥%s" % _money(total)
+        return text
+    if kind == "enter":
+        return "进入直播间"
+    if kind in INTERACT_LABELS:
+        return INTERACT_LABELS[kind]
     if kind == "sc_delete":
         return "删除 SC：%s" % (data.get("ids") or data.get("id") or "")
     return kind
+
+
+def _money(value):
+    """金瓜子换算成元：1000 = ¥1，去掉多余的小数零。"""
+    return ("%.2f" % (value / 1000.0)).rstrip("0").rstrip(".")
 
 
 COUNT_KEYS = ("messages", "danmaku", "sc", "events", "duplicates", "sc_trans")
@@ -587,6 +736,9 @@ def blank_state():
             "started_at": 0, "stopped_at": 0, "last_packet_at": 0,
             "last_error": "", "warning": "", "reconnects": 0,
             "popularity": 0, "configured": True,
+            "recording": False, "record_started_at": 0, "record_bytes": 0,
+            "record_path": "", "record_error": "", "record_qn": 250,
+            "record_qn_actual": 0, "record_status": "idle",
             "counts": {k: 0 for k in COUNT_KEYS}}
 
 
@@ -611,6 +763,18 @@ class RoomWorker:
         self._pending_trans = {}
         self.run_id = 0
         self.thread = None
+        self.recorder = None
+        self.record_qn = _as_int(cfg.get("record_qn")) or 250
+        if cfg.get("auto_record"):
+            data_dir = os.path.dirname(os.path.abspath(self.store.path))
+            self.recorder = LiveRecorder(
+                data_dir, room_id, self.label, self.log,
+                on_state=lambda **kw: self._set(**kw),
+                recordings=getattr(manager, "recordings", None))
+            # 单独一个 API 实例，避免录制线程和弹幕线程共用 urllib opener
+            self.record_api = BiliApi(cfg)
+        else:
+            self.record_api = None
 
     # ---- state helpers ----
     def _set(self, **kwargs):
@@ -621,6 +785,35 @@ class RoomWorker:
         with self.lock:
             self.state["counts"][key] += amount
 
+    def _publish(self, kind, rows):
+        """刚入库的数据推给页面；推送失败不能影响采集本身。"""
+        if not rows:
+            return
+        try:
+            self.manager.publish(kind, rows)
+        except Exception as exc:
+            self.log("warn", self.tag + "实时推送失败：%s" % exc)
+
+    def _start_recording(self):
+        if not self.recorder or self._stop.is_set():
+            return
+        try:
+            self.recorder.start(
+                self.record_api,
+                live_started_at=_as_int(self.state.get("live_started_at")),
+                qn=self.record_qn)
+        except Exception as exc:
+            self._set(record_error="启动录制失败：%s" % exc)
+            self.log("error", self.tag + "启动录制失败：%s" % exc)
+
+    def _stop_recording(self, reason=""):
+        if not self.recorder:
+            return
+        try:
+            self.recorder.stop(reason)
+        except Exception as exc:
+            self.log("warn", self.tag + "停止录制失败：%s" % exc)
+
     def start(self):
         self.thread = threading.Thread(
             target=self._thread_main, name="capture-%s" % self.room_id,
@@ -629,6 +822,7 @@ class RoomWorker:
 
     def request_stop(self):
         self._stop.set()
+        self._stop_recording("手动停止")
         # 先落状态再等线程：网页与 API 立刻就能读到「已停止」。
         self._set(running=False, stopped_at=int(time.time() * 1000))
 
@@ -640,6 +834,7 @@ class RoomWorker:
             self._set(last_error="采集线程异常：%s" % exc)
             self.log("error", self.tag + "采集线程异常：%s" % exc)
         finally:
+            self._stop_recording("采集线程退出")
             self._flush_danmaku()
             if self.run_id:
                 self.store.end_run(self.run_id)
@@ -679,6 +874,10 @@ class RoomWorker:
                     # （_serve 第一圈就会断开），只会补记出幻影「开播」。
                     live_on = (info.get("live_status") == 1 and
                                _as_int(info.get("live_time")) > 0)
+                    if live_on:
+                        self._start_recording()
+                    else:
+                        self._stop_recording("未开播")
                     if live_only and not live_on:
                         self._wait_for_live()
                         await self._sleep(WATCH_INTERVAL)
@@ -709,6 +908,7 @@ class RoomWorker:
 
     def _wait_for_live(self):
         """没开播：状态标成「等待开播」，由外层循环隔一会儿再探一次。"""
+        self._stop_recording("等待开播")
         with self.lock:
             was_waiting = self.state["waiting"]
             self.state["waiting"] = True
@@ -725,6 +925,7 @@ class RoomWorker:
         """
         last = self.store.last_live_mark(self.room_id)
         if last and last[1] == "开播":
+            self._start_recording()
             return
         now = int(time.time() * 1000)
         ts = _as_int(info.get("live_time")) * 1000
@@ -736,7 +937,9 @@ class RoomWorker:
         try:
             self.store.insert_event(row)
             self._inc("events")
+            self._publish("events", [row])
             self._set(live_started_at=ts)
+            self._start_recording()
             self.log("info", self.tag + "在播，补记开播时间")
         except Exception as exc:
             self.log("warn", self.tag + "补记开播时间失败：%s" % exc)
@@ -801,7 +1004,8 @@ class RoomWorker:
                     self.log("info", self.tag + "已下播，断开连接等下一场")
                     break
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                    # 1 秒一醒：停止采集时不用等满一个长 recv 超时
+                    raw = await asyncio.wait_for(ws.recv(), timeout=1)
                 except (asyncio.TimeoutError, TimeoutError):
                     self._flush_danmaku()
                     if time.time() - last > stale:
@@ -824,6 +1028,9 @@ class RoomWorker:
         while not self._stop.is_set():
             await asyncio.sleep(1)
             ticks += 1
+            # 每秒落一次库：冷清直播间不用等 recv 超时，页面能立刻收到
+            if self._dm_buf:
+                self._flush_danmaku()
             if ticks >= period:
                 ticks = 0
                 try:
@@ -884,6 +1091,7 @@ class RoomWorker:
             row["run_id"] = run_id
             if self.store.insert_sc(row):
                 self._inc("sc")
+                self._publish("sc", [row])
                 self.log("info", self.tag + "SC ¥%s %s：%s" %
                          (row["price"], row["uname"], (row["message"] or "")[:40]))
             else:
@@ -908,22 +1116,66 @@ class RoomWorker:
             ids = data.get("ids") or ([data["id"]] if data.get("id") else [])
             self.store.mark_sc_deleted(ids)
             if cfg.get("record_events", True):
-                row = event_row(room_id, "sc_delete", data, now)
-                row["run_id"] = run_id
-                self.store.insert_event(row)
-                self._inc("events")
+                self._record_event("sc_delete", data, run_id, now)
             return
 
-        if cmd in ("GUARD_BUY", "SEND_GIFT") and cfg.get("record_events", True):
-            kind = "guard" if cmd == "GUARD_BUY" else "gift"
-            row = event_row(room_id, kind, data, now)
-            row["run_id"] = run_id
-            self.store.insert_event(row)
-            self._inc("events")
+        record_events = cfg.get("record_events", True)
+        record_gift = record_events and cfg.get("record_gift", True)
+        record_guard = record_events and cfg.get("record_guard", True)
+        record_red = record_events and cfg.get("record_red_pocket", True)
+        record_enter = record_events and cfg.get("record_enter", False)
+        record_interact = record_events and cfg.get("record_interact", True)
+
+        # 礼物 / 投喂：旧报文是扁平的 SEND_GIFT；灰度房间只发 protobuf 的 V2
+        if cmd == "SEND_GIFT_V2" and record_gift:
+            payload = parse_send_gift_v2(
+                data.get("pb") if isinstance(data, dict) else "")
+            if payload:
+                self._record_event("gift", payload, run_id, now)
+            return
+        if cmd == "SEND_GIFT" and record_gift:
+            self._record_event("gift", data if isinstance(data, dict) else message,
+                               run_id, now)
+            return
+
+        if cmd == "GUARD_BUY" and record_guard:
+            self._record_event("guard", data if isinstance(data, dict) else message,
+                               run_id, now)
+            return
+
+        # 人气红包：START 是发红包，NEW 是红包刷新 / 开出
+        if cmd in ("POPULARITY_RED_POCKET_START",
+                   "POPULARITY_RED_POCKET_NEW") and record_red:
+            self._record_event("red_pocket",
+                               data if isinstance(data, dict) else message,
+                               run_id, now)
+            return
+
+        # 互动：进入默认不记（record_enter=False），关注 / 分享等由 record_interact 控制
+        if cmd in ("INTERACT_WORD", "INTERACT_WORD_V2") and record_events:
+            payload = data if isinstance(data, dict) else message
+            if cmd == "INTERACT_WORD_V2":
+                payload = parse_interact_word_v2(payload.get("pb") or "")
+                if not payload:
+                    return
+            msg_type = _as_int(payload.get("msg_type"))
+            if msg_type == 1:
+                if not record_enter:
+                    return
+                kind = "enter"
+            else:
+                if not record_interact:
+                    return
+                kind = INTERACT_KINDS.get(msg_type)
+                if not kind:
+                    return
+            self._record_event(kind, payload, run_id, now)
+            return
 
         # 开播 / 下播：区分「未开播期间」与「本场直播」的数据边界
         if cmd == "LIVE":
             self._set(live_status=1, live_started_at=now, waiting=False)
+            self._start_recording()
             self.log("info", self.tag + "开播了")
             # 刚补记过开播（连上时就记了）就别再插一条，否则同一场被切两半
             last = self.store.last_live_mark(room_id)
@@ -934,16 +1186,28 @@ class RoomWorker:
             row["run_id"] = run_id
             self.store.insert_event(row)
             self._inc("events")
+            self._publish("events", [row])
             return
         if cmd == "PREPARING":
             self._set(live_status=0)
+            self._stop_recording("下播")
             self.log("info", self.tag + "下播了")
             row = event_row(room_id, "live", {"live": 0,
                                               "start_time": now // 1000}, now)
             row["run_id"] = run_id
             self.store.insert_event(row)
             self._inc("events")
+            self._publish("events", [row])
             return
+
+    def _record_event(self, kind, data, run_id, now):
+        """入库并推一条事件；礼物 / 红包 / 互动都走这里。"""
+        row = event_row(self.room_id, kind, data, now)
+        row["run_id"] = run_id
+        self.store.insert_event(row)
+        self._inc("events")
+        self._publish("events", [row])
+        return row
 
     def _flush_danmaku(self):
         if not self._dm_buf:
@@ -951,6 +1215,7 @@ class RoomWorker:
         rows, self._dm_buf = self._dm_buf, []
         try:
             self._inc("danmaku", self.store.insert_danmaku(rows))
+            self._publish("danmaku", rows)
         except Exception as exc:
             self.log("error", self.tag + "弹幕入库失败：%s" % exc)
 
@@ -958,14 +1223,19 @@ class RoomWorker:
 class CaptureManager:
     """Multi-room capture manager: one RoomWorker per room, HTTP reads state."""
 
-    def __init__(self, store, config_getter, log_fn, accounts=None, rooms=None):
+    def __init__(self, store, config_getter, log_fn, accounts=None, rooms=None,
+                 publish=None, recordings=None):
         self.store = store
         self.config_getter = config_getter
         self.log = log_fn
         self.accounts = accounts
         self.rooms = rooms
+        # 入库成功后把数据推给页面（SSE）；旧 server.py 不传就不推
+        self.publish = publish or (lambda kind, rows: None)
         self.lock = threading.RLock()
         self.workers = {}
+        self.recordings = recordings or RecordingService(
+            store, os.path.dirname(os.path.abspath(store.path)), log_fn)
 
     @staticmethod
     def blank_state():
@@ -1008,6 +1278,9 @@ class CaptureManager:
                 problems.append("%s：%s" % (st.get("label"), st["last_error"]))
             if st.get("warning"):
                 problems.append("%s：%s" % (st.get("label"), st["warning"]))
+            if st.get("record_error"):
+                problems.append("%s 录制：%s" % (st.get("label"),
+                                               st["record_error"]))
         return {"running": any(st["running"] for st in states),
                 "active": sum(1 for st in states if st["running"]),
                 "rooms": states, "counts": counts,
@@ -1047,8 +1320,13 @@ class CaptureManager:
             return False, "直播间 %s 不在列表里，请先添加" % rid
         with self.lock:
             worker = self.workers.get(rid)
-            if worker and worker.thread and worker.thread.is_alive():
+        if worker and worker.thread and worker.thread.is_alive():
+            if not worker._stop.is_set():
                 return False, "该直播间已在采集"
+            # 刚点过停止：等旧线程退出再拉起，避免两个线程同时写库
+            worker.thread.join(timeout=2.5)
+            if worker.thread.is_alive():
+                return False, "上一个采集线程正在退出，请稍后再试"
         if connect is None:
             return False, "缺少依赖 websockets：%s" % (WS_IMPORT_ERROR or "未安装")
         cfg = self._cookie_cfg(dict(self.config_getter()))

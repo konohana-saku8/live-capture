@@ -9,7 +9,8 @@
 | SSH | `ssh v20`（8022 端口，用户 `u0_a212`，公钥 `~/.ssh/id_rsa` 免密）；USB 兜底 `adb forward tcp:8022 tcp:8022` + `ssh v20usb` |
 | 部署目录 | `~/live-capture`（Termux 私有目录） |
 | Python | `.venv` 虚拟环境（Flask 3 + waitress + websockets 17.4）；系统 python3 **没有**这些依赖 |
-| 数据 | `~/live-capture/data/`（capture.db、rooms.json、config.json、service.log、service.pid） |
+| 数据 | `~/live-capture/data/`（capture.db、rooms.json、config.json、service.pid；应用日志在 `logs/service.log`，按 5MB 轮转；录像在 `recordings/<room_id>/`，下播 remux 后只留 MP4） |
+| 录像依赖 | `pkg install ffmpeg`（下播后无损 remux；未安装时保留 FLV，页面回退 mpegts.js 播放） |
 
 ## 常规发布流程
 
@@ -17,6 +18,10 @@
 # 1. 推文件（host 上执行；注意多源 scp 会把 web/dist 落成 ~/live-capture/dist）
 cd /d/HibaneHinome/live-capture
 scp -q capture.py v20:~/live-capture/capture.py          # 单文件这样推
+# 录像功能新增的模块 / 蓝图
+scp -q recordings.py remux.py store.py v20:~/live-capture/
+ssh v20 "mkdir -p ~/live-capture/app"
+scp -q -r app/* v20:~/live-capture/app/
 ssh v20 "rm -rf ~/live-capture/web/dist && mkdir -p ~/live-capture/web/dist"
 scp -q -r web/dist/. v20:~/live-capture/web/dist/         # 前端产物整体推
 
@@ -26,7 +31,7 @@ ssh v20 "cd ~/live-capture && kill \$(cat data/service.pid) 2>/dev/null; sleep 2
   curl -s -m 6 http://127.0.0.1:8765/api/health; tail -5 data/service.log"
 ```
 
-- 服务重启后 `auto_start=true` 会**自动恢复**开着「直播数据」的采集器（日志出现「自动开始采集」）。
+- 服务重启后 `auto_start=true` 会**自动恢复**开着直播采集的采集器（日志出现「自动开始采集」）。
 - 访问口令存手机 `data/config.json`，不要写进代码或文档。
 
 ## 开机自愈（灭屏/重启后）
@@ -49,6 +54,6 @@ ssh v20 "cd ~/live-capture && kill \$(cat data/service.pid) 2>/dev/null; sleep 2
 | 看服务状态 | `curl http://192.168.10.107:8765/api/health`（本机即可，免口令） |
 | 看实时日志 | `ssh v20 "tail -f ~/live-capture/data/service.log"` |
 | 手动恢复某采集器 | `POST /api/capture/start {"room_id": N}`（带口令 header） |
-| 删幻影场次 | 网页采集器页每条场次右侧 ✕，或 `POST /api/session/delete` |
+| 删幻影场次 | 「数据」页场次卡片右侧 ✕，或 `POST /api/session/delete` |
 | 导入历史弹幕 | `ssh v20 "cd ~/live-capture && .venv/bin/python import_history.py --src /sdcard/... --gap 30"` |
 | 查线程/内存 | `ssh v20 "cat /proc/$(cat ~/live-capture/data/service.pid)/status \| grep -E 'Threads|VmRSS'"` |

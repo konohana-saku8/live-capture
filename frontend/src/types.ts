@@ -24,8 +24,25 @@ export interface Room {
   waiting?: boolean
   live_status?: number
   live_only?: boolean
+  auto_record?: boolean
+  recording?: boolean
+  record_started_at?: number
+  record_bytes?: number
+  record_path?: string
+  record_error?: string
+  record_qn?: number
+  record_qn_actual?: number
+  record_status?: string
   collect_live?: boolean
   collect_dynamics?: boolean
+  record_danmaku?: boolean
+  record_sc?: boolean
+  record_events?: boolean
+  record_guard?: boolean
+  record_gift?: boolean
+  record_red_pocket?: boolean
+  record_enter?: boolean
+  record_interact?: boolean
   real_room_id?: number
   live_time?: number
   live_started_at?: number
@@ -36,6 +53,13 @@ export interface Room {
   last_error?: string
   warning?: string
   counts?: Record<string, number>
+  live_stats?: {
+    danmaku: number
+    sc: number
+    events: number
+    sc_amount: number
+    since: number
+  } | null
   dyns?: number
   dyn_last_at?: number
   dyn_schedule?: string
@@ -43,6 +67,33 @@ export interface Room {
   dyn_last_ts?: number
   last_live_at?: number
   totals?: RoomTotal
+}
+
+export interface RecordingPart {
+  index: number
+  started_at: number
+  bytes: number
+  duration_ms: number
+}
+
+export interface RecordingInfo {
+  id: number
+  room_id: number
+  label?: string
+  live_started_at?: number
+  started_at: number
+  stopped_at?: number
+  status: string
+  requested_qn?: number
+  actual_qn?: number
+  bytes?: number
+  duration_ms?: number
+  error?: string
+  flv_count: number
+  mp4_count: number
+  has_video: boolean
+  mp4_parts: RecordingPart[]
+  flv_parts?: RecordingPart[]
 }
 
 export interface Segment {
@@ -55,6 +106,9 @@ export interface Segment {
   sc_amount?: number
   viewers?: number
   danmaku?: number
+  sc?: number
+  interactions?: number
+  recording?: RecordingInfo | null
 }
 
 export type FeedKind = 'danmaku' | 'sc' | 'events'
@@ -153,6 +207,11 @@ export interface ConfigPayload {
   record_danmaku: boolean
   record_sc: boolean
   record_events: boolean
+  record_guard?: boolean
+  record_gift?: boolean
+  record_red_pocket?: boolean
+  record_enter?: boolean
+  record_interact?: boolean
   token_set?: boolean
   token?: string
 }

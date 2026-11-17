@@ -29,6 +29,7 @@ description: 整理 live-capture 采集到的直播数据——核对场次分�
 
 - **场（live）** = 开播事件 → 下播事件；**场间（gap）** = 下播 → 下次开播；空场间不返回。
 - 一次开播都没记录 → 全部归「未分段」，等下次真开播才切开。**不要拿 runs（采集批次）当场次**。
+- 历史导入的开播入口优先簇内最早 SC / 上舰（没有付费事件才回退首条弹幕）；旧数据可用 `fix_live_starts.py --data data --before YYYY-MM-DD` 修正。
 - 所有边界都是 `received_at`（**毫秒**）。
 
 核对动作：拉 `/api/sessions`，看每场的起止是否合理、统计是否与该段内容量级相符。发现多出来的一段先走 `diagnose-live-events` 定性（幻影 / 缺下播），再决定删不删。
@@ -48,7 +49,8 @@ POST /api/session/delete
 ## 第四步：导出 / 统计
 
 - 结构化导出用 `/api/export`（JSON/CSV，带 `q`/`room_id`/`since` 过滤）。
-- 自定义统计用 ssh 只读连库自己聚合：按 `received_at` 毫秒过滤，`room_event.kind` 区分 live/gift/guard/sc_delete；SC 金额在 `sc_message.price`。
+- 自定义统计用 ssh 只读连库自己聚合：按 `received_at` 毫秒过滤，`room_event.kind` 区分 live/gift/guard/red_pocket/enter/follow/share/sc_delete；SC 金额在 `sc_message.price`。事件细类按采集器配置：`record_guard` / `record_gift` / `record_red_pocket` / `record_enter` / `record_interact`，都在采集器页按 up 主勾选，`record_enter` 默认关。
+- 网页的「数据」页支持按选中段导出（`/api/export` 的 `since`/`until`，左闭右开），并可直接 ✕ 删除整段；弹幕 / SC / 事件默认显示最新一页，往上滑追加更早页。
 - 时间显示用本地时区；`event_time` 是秒、`received_at` 是毫秒，混用时先统一。
 
 ## 与 live-archive 的关系（别混库）

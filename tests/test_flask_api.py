@@ -59,10 +59,21 @@ class FlaskApiTest(unittest.TestCase):
         paths = ["/api/status", "/api/dashboard", "/api/rooms", "/api/feed",
                  "/api/system", "/api/sessions", "/api/dynamics", "/api/config",
                  "/api/logs", "/api/accounts", "/api/danmaku",
-                 "/api/superchats", "/api/events"]
+                 "/api/superchats", "/api/events", "/api/recordings",
+                 "/api/recordings/summary"]
         for path in paths:
             with self.subTest(path=path):
                 self.assertStatus(self.get(path), 200, path)
+
+    def test_logs_file(self):
+        log_dir = os.path.join(self.tmp, "logs")
+        os.makedirs(log_dir)
+        with open(os.path.join(log_dir, "service.log"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("hello log\n")
+        resp = self.get("/api/logs/file")
+        self.assertStatus(resp, 200, "日志下载")
+        self.assertIn("hello log", resp.get_data(as_text=True))
 
     def test_feed_shapes(self):
         for query in ("", "?paged=1&limit=10", "?all=1", "?types=danmaku"):
@@ -102,6 +113,91 @@ class FlaskApiTest(unittest.TestCase):
                                     {"room_id": 999, "params": []}),
                           400, "params 非对象")
 
+    def test_room_settings_auto_record(self):
+        item, _ = self.rt.rooms.add(22749009, "录制测试", {})
+        resp = self.post("/api/rooms/settings",
+                         {"room_id": item["id"], "params": {"auto_record": True}})
+        self.assertStatus(resp, 200, "保存自动录制")
+        data = resp.get_json()
+        self.assertTrue(data["room"]["params"]["auto_record"])
+        room = next(x for x in data["rooms"]["items"] if x["id"] == item["id"])
+        self.assertTrue(room["auto_record"])
+
+    def test_record_qn_validation(self):
+        item, _ = self.rt.rooms.add(22749010, "清晰度测试", {})
+        resp = self.post("/api/rooms/settings",
+                         {"room_id": item["id"], "params": {"record_qn": 250}})
+        self.assertStatus(resp, 200, "720P")
+        self.assertEqual(resp.get_json()["room"]["params"]["record_qn"], 250)
+        self.assertStatus(self.post("/api/rooms/settings",
+                                    {"room_id": item["id"],
+                                     "params": {"record_qn": 123}}), 400, "非法清晰度")
+
+    # ---------- 录像 ----------
+
+    def _make_recording(self, rid, start, name="a.mp4", body=b"0123456789",
+                        rel_override=None):
+        rec_id = self.rt.recordings.create(rid, "录像测试", start, 250,
+                                           started_at=start)
+        folder = os.path.join(self.tmp, "recordings", str(rid))
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "wb") as fh:
+            fh.write(body)
+        rel = rel_override or self.rt.recordings.rel(path)
+        self.rt.store.update_recording(
+            rec_id, status="ready", bytes=len(body),
+            mp4_parts=[{"path": rel, "started_at": start,
+                        "bytes": len(body), "duration_ms": 1000}],
+            flv_parts=[])
+        return rec_id
+
+    def test_recordings_list_and_media(self):
+        item, _ = self.rt.rooms.add(22749011, "录像列表", {})
+        rid = item["id"]
+        rec_id = self._make_recording(rid, 1794700000000)
+        data = self.get("/api/recordings?room_id=%d" % rid).get_json()
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["id"], rec_id)
+        self.assertEqual(data["items"][0]["mp4_count"], 1)
+        self.assertEqual(data["summary"]["count"], 1)
+        self.assertEqual(data["summary"]["total_bytes"], 10)
+
+        full = self.get("/api/recordings/%d/media?kind=mp4" % rec_id)
+        self.assertStatus(full, 200, "整体")
+        self.assertEqual(full.data, b"0123456789")
+        part = self.get("/api/recordings/%d/media?kind=mp4" % rec_id,
+                        headers={"Range": "bytes=0-3"})
+        self.assertStatus(part, 206, "Range")
+        self.assertEqual(part.data, b"0123")
+
+    def test_recordings_path_guard(self):
+        item, _ = self.rt.rooms.add(22749012, "录像越权", {})
+        rec_id = self._make_recording(item["id"], 1794700000000,
+                                      rel_override="../escape.mp4")
+        self.assertStatus(self.get("/api/recordings/%d/media?kind=mp4" % rec_id),
+                          400, "路径越权")
+        self.assertStatus(self.get("/api/recordings/999999/media"), 404, "不存在")
+        self.assertStatus(self.post("/api/recordings/999999/remux"), 404, "重试不存在")
+
+    def test_sessions_attach_recordings(self):
+        rid, start, _end = self._seed_session()
+        rec_id = self._make_recording(rid, start)
+        segs = self.get("/api/sessions?room_id=%d&with_recordings=1" % rid).get_json()
+        self.assertEqual(segs["segments"][0]["recording"]["id"], rec_id)
+
+    def test_feed_asc_after(self):
+        rid = 22749013
+        self.rt.store.insert_danmaku([
+            {"room_id": rid, "uid": 1, "uname": "a", "text": "1", "received_at": 100},
+            {"room_id": rid, "uid": 2, "uname": "b", "text": "2", "received_at": 200},
+            {"room_id": rid, "uid": 3, "uname": "c", "text": "3", "received_at": 300},
+        ])
+        data = self.get("/api/feed?paged=1&asc=1&after=150&limit=10&room_id=%d" % rid
+                        ).get_json()
+        self.assertTrue(data["asc"])
+        self.assertEqual([r["text"] for r in data["items"]["danmaku"]], ["2", "3"])
+
     def test_dynamics_config_needs_room(self):
         resp = self.post("/api/dynamics/config", {"dyn_auto": True})
         self.assertStatus(resp, 400, "缺 room_id")
@@ -114,6 +210,13 @@ class FlaskApiTest(unittest.TestCase):
         self.assertStatus(self.post("/api/config", {"port": 9000}), 200, "合法端口")
         self.assertStatus(self.post("/api/config", {"port": 99999}), 400, "端口越界")
         self.assertStatus(self.post("/api/config", {"protover": 9}), 400, "协议越界")
+
+    def test_config_record_enter(self):
+        self.assertStatus(self.post("/api/config", {"record_enter": True}), 200)
+        cfg = self.get("/api/config").get_json()["config"]
+        self.assertTrue(cfg["record_enter"])
+        self.assertStatus(self.post("/api/config", {"record_enter": False}), 200)
+        self.assertFalse(self.get("/api/config").get_json()["config"]["record_enter"])
 
     def test_capture_stop_all(self):
         data = self.post("/api/capture/stop_all").get_json()
@@ -183,6 +286,31 @@ class FlaskApiTest(unittest.TestCase):
         self.assertEqual(segs[0]["kind"], "live")
         self.assertEqual(segs[0]["danmaku"], 0)
         self.assertEqual(segs[1]["danmaku"], 1)   # 「keep」留在场间
+
+    def test_live_segment_includes_end_mark(self):
+        """下播事件属于这一场，不落到随后的场间。"""
+        rid, start, end = self._seed_session()
+        segs = self.get("/api/sessions?room_id=%d" % rid).get_json()["segments"]
+        live = next(s for s in segs if s["kind"] == "live")
+        self.assertEqual(live["end"], end + 1)
+        data = self.get(
+            "/api/feed?paged=1&asc=1&types=events&room_id=%d&since=%d&until=%d"
+            % (rid, start, live["end"])).get_json()
+        details = [r["detail"] for r in data["items"]["events"]]
+        self.assertIn("开播", details)
+        self.assertIn("下播", details)
+
+    def test_export_until(self):
+        """导出按左闭右开区间：until 正好在下播时刻时不含下播事件。"""
+        rid, start, end = self._seed_session()
+        before = self.get("/api/export?type=events&format=json&room_id=%d&until=%d"
+                          % (rid, end)).get_json()
+        with_mark = self.get(
+            "/api/export?type=events&format=json&room_id=%d&until=%d"
+            % (rid, end + 1)).get_json()
+        self.assertEqual(len(before["items"]), 1)
+        self.assertEqual([r["detail"] for r in before["items"]], ["开播"])
+        self.assertEqual(len(with_mark["items"]), 2)
 
     def test_bad_json_body(self):
         resp = self.client.post("/api/config", data="{not json",

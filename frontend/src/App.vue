@@ -5,8 +5,8 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { api, getToken, onUnauthorized, setToken } from '@/api/client'
 import {
-  loadAccounts, loadDashboard, loadLogs, loadRooms, loadSessions,
-  loadStatus, loadSystem, state, uiLog,
+  loadAccounts, loadDashboard, loadLogs, loadRooms, loadStatus, loadSystem,
+  state, uiLog,
 } from '@/stores/app'
 import CdnImg from '@/components/CdnImg.vue'
 
@@ -20,6 +20,7 @@ let timer: number | undefined
 
 const PAGES = [
   { name: 'home', label: '仪表盘', path: '/' },
+  { name: 'live', label: '数据', path: '/live' },
   { name: 'rooms', label: '采集器', path: '/rooms' },
   { name: 'config', label: '配置', path: '/config' },
   { name: 'logs', label: '日志', path: '/logs' },
@@ -129,7 +130,7 @@ function ensureData(name: string) {
     loadDashboard()
     loadSystem()
   } else if (name === 'rooms') {
-    loadRooms().then(() => loadSessions())
+    loadRooms()
   } else if (name === 'config') {
     loadStatus()
     loadAccounts()
@@ -148,21 +149,19 @@ function startPolling() {
       loadSystem()
     } else if (name === 'rooms') {
       loadRooms()
-      // 还在播的那一场只把新到的并进来，避免每 4 秒重画整段
-      if (state.subTab === 'live' && state.autoRefresh) loadSessions({ tail: true })
     } else if (name === 'config') {
       loadStatus()
       loadAccounts()
     } else if (name === 'logs') {
       loadLogs()
     }
-  }, 4000)
+  }, 10000)
 }
 
 function goTo(path: string) {
   if (route.path === path) return
-  if (state.dirty.dyn && route.name === 'rooms' &&
-      !confirm('译文还没保存，离开采集器会丢掉这次修改，继续吗？')) return
+  if (state.dirty.dyn && (route.name === 'rooms' || route.name === 'live') &&
+      !confirm('动态译文还没保存，离开会丢掉这次修改，继续吗？')) return
   if (state.dirty.cfg && route.name === 'config' &&
       !confirm('采集参数还有未保存的修改，离开就会丢掉，继续吗？')) return
   router.push(path)
@@ -209,7 +208,8 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 }
 
 function onVisible() {
-  if (document.hidden || !state.ready) return
+  if (document.hidden) return
+  if (!state.ready) return
   loadStatus()
   loadAccounts()
   ensureData(String(route.name || 'home'))
@@ -297,6 +297,6 @@ onBeforeUnmount(() => {
     <router-view v-slot="{ Component }">
       <component :is="Component" />
     </router-view>
-    <footer>LIVE CAPTURE · 数据仅保存在本机 · 弹幕 / SC / 事件</footer>
+    <footer>LIVE CAPTURE · 数据仅保存在本机 · 弹幕 / SC / 事件 / 动态</footer>
   </main>
 </template>

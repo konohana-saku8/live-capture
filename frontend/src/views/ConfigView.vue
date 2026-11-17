@@ -17,6 +17,11 @@ const form = reactive({
   record_danmaku: true,
   record_sc: true,
   record_events: true,
+  record_guard: true,
+  record_gift: true,
+  record_red_pocket: true,
+  record_enter: false,
+  record_interact: true,
 })
 
 let snapshot = ''
@@ -44,6 +49,11 @@ function applyConfig(cfg: ConfigPayload | null) {
   form.record_danmaku = cfg.record_danmaku !== false
   form.record_sc = cfg.record_sc !== false
   form.record_events = cfg.record_events !== false
+  form.record_guard = cfg.record_guard !== false
+  form.record_gift = cfg.record_gift !== false
+  form.record_red_pocket = cfg.record_red_pocket !== false
+  form.record_enter = cfg.record_enter === true
+  form.record_interact = cfg.record_interact !== false
   snapshot = JSON.stringify(form)
 }
 
@@ -60,6 +70,11 @@ async function saveConfig() {
     record_danmaku: form.record_danmaku,
     record_sc: form.record_sc,
     record_events: form.record_events,
+    record_guard: form.record_guard,
+    record_gift: form.record_gift,
+    record_red_pocket: form.record_red_pocket,
+    record_enter: form.record_enter,
+    record_interact: form.record_interact,
   }
   const t = tokenField.value.trim()
   if (t) payload.token = t
@@ -201,7 +216,7 @@ function refreshAccounts() {
     <section class="card">
       <div class="sec-head">
         <h2><i>◆</i>采集参数</h2>
-        <span class="more">全局统一，作用于所有采集器</span>
+        <span class="more">全局默认；采集器页可按 up 主单独覆盖</span>
       </div>
       <form @submit.prevent="saveConfig">
         <div class="fields">
@@ -224,7 +239,16 @@ function refreshAccounts() {
         <div class="checkline" style="margin-top:12px">
           <label><input v-model="form.record_danmaku" type="checkbox">记录弹幕</label>
           <label><input v-model="form.record_sc" type="checkbox">记录 SC</label>
-          <label><input v-model="form.record_events" type="checkbox">记录礼物/上舰</label>
+          <label><input v-model="form.record_events" type="checkbox">记录事件</label>
+          <label><input v-model="form.record_guard" type="checkbox" :disabled="!form.record_events">上舰</label>
+          <label><input v-model="form.record_gift" type="checkbox" :disabled="!form.record_events">礼物 / 投喂</label>
+          <label><input v-model="form.record_red_pocket" type="checkbox" :disabled="!form.record_events">红包</label>
+          <label title="入场事件量很大，默认关闭">
+            <input v-model="form.record_enter" type="checkbox" :disabled="!form.record_events">记录入场（默认关）
+          </label>
+          <label title="关注 / 分享 / 特别关注 / 互相关注">
+            <input v-model="form.record_interact" type="checkbox" :disabled="!form.record_events">其他互动
+          </label>
         </div>
         <div class="fields" style="margin-top:16px">
           <div><label>监听地址</label><input v-model="form.host" type="text"></div>
