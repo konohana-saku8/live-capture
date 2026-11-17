@@ -9,6 +9,7 @@ fake websocket. Room info lookup is patched out as well.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -66,6 +67,42 @@ def main():
         list(capture.iter_packets(plain))[0]))[0]["cmd"] == payload["cmd"])
     pop = capture.Packet(3, 1, b"\x00\x00\x01\x00")
     check("人气值解析", capture.parse_popularity(pop) == 256)
+
+    def _varint(n):
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+
+    def _fld(num, wire, payload):
+        return _varint((num << 3) | wire) + payload
+
+    def _fint(num, value):
+        return _fld(num, 0, _varint(value))
+
+    def _fstr(num, text):
+        raw = text.encode("utf-8")
+        return _fld(num, 2, _varint(len(raw)) + raw)
+
+    iw = (_fint(1, 123) + _fstr(2, "入场者") + _fint(5, 1)
+          + _fint(6, 22748536) + _fint(7, 1794700000))
+    iw = capture.parse_interact_word_v2(base64.b64encode(iw).decode())
+    check("INTERACT_WORD_V2 解出 uid/msg_type",
+          iw and iw["uid"] == 123 and iw["uname"] == "入场者"
+          and iw["msg_type"] == 1, iw)
+    gift = (_fint(1, 9) + _fstr(2, "辣条") + _fint(3, 3)
+            + _fint(5, 100) + _fstr(8, "gold") + _fint(10, 1794700000))
+    base_text = _fstr(1, "送礼者")
+    user = _fint(1, 456) + _fld(2, 2, _varint(len(base_text)) + base_text)
+    gift_pb = (_fint(1, 456) + _fld(10, 2, _varint(len(gift)) + gift)
+               + _fld(15, 2, _varint(len(user)) + user))
+    gift_pb = capture.parse_send_gift_v2(base64.b64encode(gift_pb).decode())
+    check("SEND_GIFT_V2 解出礼物 / 数量 / 用户",
+          gift_pb and gift_pb["uid"] == 456 and gift_pb["uname"] == "送礼者"
+          and gift_pb["giftName"] == "辣条" and gift_pb["num"] == 3, gift_pb)
 
     # ---------- 头像昵称：公开 card 接口（mock urlopen，零联网） ----------
     old_urlopen = urllib.request.urlopen
@@ -154,6 +191,47 @@ def main():
     check("动态解析：纯文字回退 desc",
           dynamics_mod.normalize(frame2, 9)["text"] == "纯文字动态")
 
+    # 动态抓取失败必须抛错，不能被吞成空结果——否则调度器当成功写
+    # dyn_last_ts，一次抖动就变成整天不补抓（11-17 00:15 的真实事故）。
+    _real_sleep = dynamics_mod.time.sleep
+    dynamics_mod.time.sleep = lambda _s: None   # 跳过空结果重试的 1.2 秒等待
+    try:
+        f = dynamics_mod.DynamicsFetcher()
+        f._warmup = lambda: None                 # 绝不能真的联网
+        f.wbi_keys = lambda: ("img", "sub")
+        f._fetch_json = lambda url, referer=None: {"code": 0, "data": {"items": []}}
+        check("动态抓取：干净空结果返回空列表不抛错",
+              f.fetch(9) == ([], False))
+
+        f._fetch_json = lambda url, referer=None: {
+            "code": -412, "message": "请求被拦截"}
+        try:
+            f.fetch(9)
+            raised = False
+        except dynamics_mod.DynamicsFetchError:
+            raised = True
+        check("动态抓取：code!=0 抛 DynamicsFetchError", raised)
+
+        def _boom(url, referer=None):
+            raise OSError("timeout")
+        f._fetch_json = _boom
+        try:
+            f.fetch(9)
+            raised = False
+        except dynamics_mod.DynamicsFetchError:
+            raised = True
+        check("动态抓取：请求异常抛 DynamicsFetchError", raised)
+
+        f.wbi_keys = lambda: ("", "")
+        try:
+            f.fetch(9)
+            raised = False
+        except dynamics_mod.DynamicsFetchError:
+            raised = True
+        check("动态抓取：WBI key 为空抛 DynamicsFetchError", raised)
+    finally:
+        dynamics_mod.time.sleep = _real_sleep
+
     # ---------- cookie CSV ----------
     netscape = "\n".join([
         "# Netscape HTTP Cookie File",
@@ -211,6 +289,19 @@ def main():
     ev = capture.event_row(22748536, "gift", {"uid": 7, "uname": "B",
                                               "gift": {"giftName": "辣条", "num": 3}}, now)
     check("事件摘要", "辣条" in ev["detail"], ev["detail"])
+    flat = capture.event_row(22748536, "gift", {
+        "uid": 8, "uname": "C", "giftName": "辣条", "num": 3,
+        "action": "投喂"}, now)
+    check("平铺礼物摘要（SEND_GIFT）", flat["detail"] == "投喂 辣条 ×3",
+          flat["detail"])
+    red = capture.event_row(22748536, "red_pocket", {
+        "uid": 9, "uname": "D", "gift_name": "红包", "gift_price": 5000}, now)
+    check("红包事件摘要", "人气红包" in red["detail"] and "¥5" in red["detail"],
+          red["detail"])
+    enter = capture.event_row(22748536, "enter", {"uid": 10, "uname": "E"}, now)
+    check("入场事件摘要", enter["detail"] == "进入直播间", enter["detail"])
+    follow = capture.event_row(22748536, "follow", {"uid": 11, "uname": "F"}, now)
+    check("互动事件摘要", follow["detail"] == "关注了主播", follow["detail"])
 
     # ---------- rooms store ----------
     tmp = tempfile.mkdtemp(prefix="lc-selftest-")
@@ -403,10 +494,11 @@ def main():
         gsegs = gst.live_segments(22748536)
         check("场 / 场间 交替分段",
               [s["kind"] for s in gsegs] == ["live", "gap", "live"], gsegs)
-        check("场 = 开播到下播", gsegs[0]["end"] == gt0 + hour and
+        # 区间左闭右开，下播事件本身用 end=下播时刻+1ms 归在场内
+        check("场 = 开播到下播（含下播事件）", gsegs[0]["end"] == gt0 + hour + 1 and
               gsegs[0]["danmaku"] == 2 and gsegs[0]["sc_amount"] == 30)
         check("场间 = 上一次下播到这次开播",
-              gsegs[1]["start"] == gt0 + hour and
+              gsegs[1]["start"] == gt0 + hour + 1 and
               gsegs[1]["end"] == gt0 + 2 * hour and gsegs[1]["danmaku"] == 1)
         check("最后一场至今且带观众数",
               gsegs[2]["end"] == 0 and gsegs[2]["viewers"] == 1)
@@ -542,10 +634,23 @@ def main():
               first)
         check("导入按空档补出两场开播记录", first["sessions"] == 4, first)
         imp_segs = imp.live_segments(555)
-        check("导入后切出两场，弹幕数对得上",
-              len(imp_segs) == 2 and imp_segs[0]["danmaku"] == 3 and
-              imp_segs[0]["kind"] == "live" and imp_segs[1]["danmaku"] == 2,
+        check("导入后切出两场 + 开播前场间",
+              len(imp_segs) == 3 and imp_segs[0]["kind"] == "gap" and
+              imp_segs[0].get("lead") is True and imp_segs[0]["danmaku"] == 1 and
+              imp_segs[1]["kind"] == "live" and imp_segs[1]["danmaku"] == 2 and
+              imp_segs[2]["kind"] == "live" and imp_segs[2]["danmaku"] == 2,
               imp_segs)
+        opens = sorted([r for r in imp.query("events", room_id=555)[1]
+                        if r["kind"] == "live" and r["detail"] == "开播"],
+                       key=lambda r: r["received_at"])
+        check("开播优先取最早 SC / 上舰",
+              len(opens) == 2 and opens[0]["received_at"] == base + 500 and
+              json.loads(opens[0]["raw_json"]).get("basis") == "first_sc_guard",
+              [(r["received_at"], r["raw_json"]) for r in opens])
+        check("没有 SC / 上舰时回退首条弹幕",
+              opens[1]["received_at"] == base + 7200000 - 1000 and
+              json.loads(opens[1]["raw_json"]).get("basis") == "first_danmaku",
+              [(r["received_at"], r["raw_json"]) for r in opens])
         check("导入保留 SC 译文与金额",
               imp.query("sc")[1][0]["message_trans"] == "打钱啦" and
               imp.range_stats(555, 1)["sc_amount"] >= 30)
@@ -700,6 +805,46 @@ def main():
             check("关掉这一位的定时抓取后不再拉", len(pulled) == 1, pulled)
         finally:
             srv.dynamics.pull_one = real_pull_one
+            rooms.settings(22748536, {"dyn_auto": False, "dyn_last_ts": 0})
+
+        # 空结果 / 失败都不能写 dyn_last_ts，否则当天不再补抓
+        srv.dynamics._fail.clear()
+        empty_pulls = []
+        outcomes = [(0, 0), (0, 0), (2, 2)]
+        def flaky_pull(mid, reason="手动", limit=20):
+            empty_pulls.append(mid)
+            return outcomes.pop(0) if len(outcomes) > 1 else outcomes[0]
+        srv.dynamics.pull_one = flaky_pull
+        try:
+            rooms.settings(22748536, {"dyn_auto": True, "dyn_hour": 0,
+                                       "dyn_minute": 0, "dyn_last_ts": 0})
+            srv.dynamics._tick()
+            check("定时抓取 0 条不写 dyn_last_ts、页面显示失败",
+                  rooms.get(22748536)["dyn_last_ts"] == 0 and
+                  srv.dynamics.last_result["ok"] is False and
+                  "0 条" in srv.dynamics.last_result["msg"],
+                  srv.dynamics.last_result)
+            srv.dynamics._tick()
+            check("空结果后退避期内不重复打接口", len(empty_pulls) == 1,
+                  empty_pulls)
+            # 手动把退避时间推到过去，模拟「过了一会儿」
+            rid = 22748536
+            t, delay, streak = srv.dynamics._fail[rid]
+            srv.dynamics._fail[rid] = (t - delay - 1, delay, streak)
+            srv.dynamics._tick()
+            check("空结果后仍会在当天补抓（退避过期就重试）",
+                  len(empty_pulls) == 2, empty_pulls)
+            t, delay, streak = srv.dynamics._fail[rid]
+            srv.dynamics._fail[rid] = (t - delay - 1, delay, streak)
+            srv.dynamics._tick()
+            check("补抓成功才写 dyn_last_ts 并清退避",
+                  rooms.get(22748536)["dyn_last_ts"] > 0 and
+                  rid not in srv.dynamics._fail and
+                  srv.dynamics.last_result["ok"] is True,
+                  srv.dynamics.last_result)
+        finally:
+            srv.dynamics.pull_one = real_pull_one
+            srv.dynamics._fail.clear()
             rooms.settings(22748536, {"dyn_auto": False, "dyn_last_ts": 0})
 
         def get(path, headers=None):
@@ -927,11 +1072,13 @@ def main():
                                      "params": {"live_only": False}})
         status, raw = post("/api/rooms/settings", {"room_id": 22748536,
                                                     "params": {"protover": 3,
-                                                               "heartbeat_seconds": 45}})
+                                                               "heartbeat_seconds": 45,
+                                                               "record_enter": True}})
         j = json.loads(raw)
         check("按房间保存采集参数",
               status == 200 and j["room"]["params"]["protover"] == 3 and
-              j["room"]["params"]["heartbeat_seconds"] == 45, j.get("room"))
+              j["room"]["params"]["heartbeat_seconds"] == 45 and
+              j["room"]["params"]["record_enter"] is True, j.get("room"))
         check("房间参数持久化",
               RoomStore(room_path).get(22748536)["params"]["protover"] == 3)
         check("参数接口对不存在房间 404",
@@ -1044,6 +1191,21 @@ def main():
                 "id": "m-%s" % room_id, "uid": 9, "price": 50,
                 "message": "%s SC" % tag, "start_time": 1794672000,
                 "user_info": {"uname": "观众B"}, "medal_info": {}}})
+            business += [
+                {"cmd": "SEND_GIFT", "data": {
+                    "uid": 10, "uname": "送礼者", "giftName": "辣条",
+                    "num": 3, "action": "投喂"}},
+                {"cmd": "GUARD_BUY", "data": {
+                    "uid": 11, "uname": "上舰者", "guard_level": 3,
+                    "num": 1}},
+                {"cmd": "POPULARITY_RED_POCKET_NEW", "data": {
+                    "uid": 12, "uname": "红包人", "gift_name": "红包",
+                    "total_price": 5000}},
+                {"cmd": "INTERACT_WORD", "data": {
+                    "uid": 13, "uname": "关注者", "msg_type": 2}},
+                {"cmd": "INTERACT_WORD", "data": {
+                    "uid": 14, "uname": "路过", "msg_type": 1}},
+            ]
             inner = b"".join(capture.pack_packet(
                 capture.OP_MESSAGE, json.dumps(m, ensure_ascii=False).encode("utf-8"))
                 for m in business)
@@ -1063,6 +1225,12 @@ def main():
         try:
             ok, message = manager.start(22748536)
             check("房间 A 启动", ok, message)
+            # 房间 B 单独关掉礼物 / 上舰 / 红包 / 其他互动，验证按房间生效
+            pre_b_kinds = {r["kind"] for r in st.query("events",
+                                                       room_id=1001)[1]}
+            rooms.settings(1001, {"record_gift": False, "record_guard": False,
+                                  "record_red_pocket": False,
+                                  "record_interact": False})
             ok, message = manager.start(1001)
             check("房间 B 同时启动（多房间并发）", ok, message)
             snap = manager.snapshot()
@@ -1099,6 +1267,17 @@ def main():
             check("开播事件入库（区分未开播/开播数据）",
                   any(r["kind"] == "live" and "开播" in (r["detail"] or "")
                       for r in live_rows), [r["kind"] for r in live_rows])
+            kinds_a = {r["kind"] for r in live_rows}
+            _, rows_b = st.query("events", room_id=1001)
+            kinds_b = {r["kind"] for r in rows_b}
+            check("礼物 / 上舰 / 红包 / 关注事件入库",
+                  {"gift", "guard", "red_pocket", "follow"} <= kinds_a, kinds_a)
+            check("入场默认不开；按房间打开后记录",
+                  "enter" in kinds_a and "enter" not in kinds_b, kinds_b)
+            new_b_kinds = kinds_b - pre_b_kinds
+            check("按房间关闭事件子类（礼物/上舰/红包/互动）",
+                  not ({"gift", "guard", "red_pocket", "follow"} & new_b_kinds),
+                  new_b_kinds)
             since_ms = int(time.time() * 1000) - 60000
             sess = st.session_stats(22748536, since_ms)
             # 第 51 条弹幕还留在写缓冲里，停止时才冲刷，所以是 >=50

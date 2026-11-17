@@ -25,6 +25,11 @@ DEFAULTS = {
     "record_danmaku": True,
     "record_sc": True,
     "record_events": True,
+    "record_guard": True,
+    "record_gift": True,
+    "record_red_pocket": True,
+    "record_enter": False,         # 入场事件量大，默认不记
+    "record_interact": True,
     "host": "0.0.0.0",
     "port": 8765,
     "token": "",
@@ -32,7 +37,9 @@ DEFAULTS = {
     "dyn_mid": 0,              # 旧版全局动态 uid，仅在没有采集器时兜底
 }
 SECRET_KEYS = ("token",)
-BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "auto_start")
+BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "record_guard",
+             "record_gift", "record_red_pocket", "record_enter",
+             "record_interact", "auto_record", "auto_start")
 INT_BOUNDS = {
     "protover": (2, 3),
     "heartbeat_seconds": (10, 120),
@@ -40,6 +47,7 @@ INT_BOUNDS = {
     "http_timeout": (3, 60),
     "port": (1, 65535),
     "dyn_mid": (0, 999999999),
+    "record_qn": (80, 10000),
 }
 VALID_KINDS = ("danmaku", "sc", "events")
 
@@ -165,7 +173,9 @@ class DynamicScheduler:
         self.lock = threading.RLock()
         self.last_result = {"ok": False, "msg": "尚未拉取", "ts": 0}
         self._stop = threading.Event()
-        self._fail = {}          # room_id -> 上次失败时间戳，30 分钟内不重试
+        # room_id -> (上次未成功时间, 退避秒数, 连续次数)。空结果和失败都进这里，
+        # 关键是都**不写 dyn_last_ts**，当天还有机会补抓。
+        self._fail = {}
         self._thread = None
 
     # ---------- 目标 ----------
@@ -286,19 +296,36 @@ class DynamicScheduler:
             last = _as_int(room.get("dyn_last_ts"))
             if last and last >= int(target * 1000):
                 continue                       # 今天这个时间点已经拉过
-            failed = self._fail.get(rid) or 0
-            if failed and now - failed < 1800:
-                continue                       # 刚失败过，等半小时
+            fail = self._fail.get(rid)
+            if fail and now - fail[0] < fail[1]:
+                continue                       # 退避期内，等下次对表
             who = room.get("uname") or ("uid %s" % uid)
             try:
                 got, _ = self.pull_one(uid, "定时")
             except Exception as exc:
-                self._fail[rid] = now
-                msg = "定时拉取 %s 的动态失败：%s" % (who, exc)
+                # 网络异常 / code!=0 / WBI key 缺失：不记账，30 分钟后重试
+                streak = (fail[2] + 1) if fail else 1
+                self._fail[rid] = (now, 1800, streak)
+                msg = "定时拉取 %s 的动态失败：%s（%d 分钟后重试）" % (
+                    who, exc, 30)
                 self.logs.add("error", msg)
                 with self.lock:
                     self.last_result = {"ok": False, "msg": msg,
                                         "ts": int(now * 1000)}
+                continue
+            if not got:
+                # 接口返回 0 条 = 不可信（B站偶发 code=0 但 items=[]）。绝不写
+                # dyn_last_ts，否则当天不再重试；退避逐次拉长，避免反复撞接口。
+                streak = (fail[2] + 1) if fail else 1
+                backoff = min(300 * 2 ** (streak - 1), 1800)
+                self._fail[rid] = (now, backoff, streak)
+                msg = "定时拉取 %s 的动态：接口返回 0 条，按失败处理（%d 分钟后重试）" % (
+                    who, backoff // 60)
+                self.logs.add("warn", msg)
+                with self.lock:
+                    self.last_result = {"ok": False, "msg": msg,
+                                        "ts": int(now * 1000), "count": 0,
+                                        "mids": [uid]}
                 continue
             self._fail.pop(rid, None)
             ts = int(time.time() * 1000)
@@ -754,7 +781,17 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if key not in PARAM_KEYS:
                     continue
-                if key in BOOL_KEYS:
+                if key == "record_qn":
+                    try:
+                        num = int(value)
+                    except (TypeError, ValueError):
+                        self._fail(400, "record_qn 必须是数字")
+                        return
+                    if num not in (80, 150, 250, 400, 10000):
+                        self._fail(400, "record_qn 只支持 80/150/250/400/10000")
+                        return
+                    clean[key] = num
+                elif key in BOOL_KEYS:
                     clean[key] = bool(value)
                 elif key in INT_BOUNDS:
                     low, high = INT_BOUNDS[key]

@@ -41,6 +41,14 @@ def _as_int(value, default=0):
         return default
 
 
+class DynamicsFetchError(RuntimeError):
+    """动态接口没拿到可信数据（网络异常 / code!=0 / WBI key 缺失）。
+
+    必须和「接口正常但确实 0 条」区分开：调用方不能把失败当成功写入
+    dyn_last_ts，否则当天不再重试，一次抖动就变成整天没数据。
+    """
+
+
 def _ssl_context():
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -110,21 +118,36 @@ class DynamicsFetcher:
 
         B站对「同一签名短时间内重复请求」偶发返回 code=0 但 items=[]，
         因此空结果时换新 wbi key + 新 wts 重试一次。
+
+        Raises ``DynamicsFetchError`` when the request itself failed (network /
+        code!=0 / no WBI key). A clean empty result still returns ``([], False)``
+        — the caller must treat that as "not a successful pull" too, so a
+        transient empty response never gets recorded as done for the day.
         """
         mid = _as_int(mid)
         if not mid:
-            return [], False
-        items, has_more = self._fetch_once(mid, offset)
-        if not items:
-            time.sleep(1.2)
-            items, has_more = self._fetch_once(mid, offset)
-        return items, has_more
+            raise DynamicsFetchError("uid 无效：%r" % (mid,))
+        last_error = None
+        for attempt in range(2):
+            try:
+                items, has_more = self._fetch_once(mid, offset)
+                last_error = None
+            except DynamicsFetchError as exc:
+                items, has_more = [], False
+                last_error = exc
+            if items:
+                return items, has_more
+            if attempt == 0:
+                time.sleep(1.2)
+        if last_error is not None:
+            raise last_error
+        return [], False
 
     def _fetch_once(self, mid, offset=""):
         self._warmup()
         img, sub = self.wbi_keys()
         if not img or not sub:
-            return [], False
+            raise DynamicsFetchError("WBI key 为空，无法签名动态接口")
         params = {"host_mid": mid, "timezone_offset": -480,
                   "features": "itemOpusStyle", "platform": "web"}
         if offset:
@@ -135,10 +158,11 @@ class DynamicsFetcher:
         try:
             data = self._fetch_json(url,
                                     "https://space.bilibili.com/%d/dynamic" % mid)
-        except Exception:
-            return [], False
+        except Exception as exc:
+            raise DynamicsFetchError("动态接口请求失败：%s" % exc) from exc
         if data.get("code") != 0:
-            return [], False
+            raise DynamicsFetchError("动态接口 code=%s %s" % (
+                data.get("code"), data.get("message")))
         payload = data.get("data") or {}
         raw_items = payload.get("items") or []
         return ([normalize(f, mid) for f in raw_items],

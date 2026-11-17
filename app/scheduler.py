@@ -26,7 +26,9 @@ class DynamicScheduler:
         self.lock = threading.RLock()
         self.last_result: dict[str, Any] = {"ok": False, "msg": "尚未拉取", "ts": 0}
         self._stop = threading.Event()
-        self._fail: dict[int, float] = {}      # room_id -> 上次失败时间，30 分钟内不重试
+        # room_id -> (上次未成功时间, 退避秒数, 连续次数)。空结果和失败都进这里，
+        # 关键是都**不写 dyn_last_ts**，当天还有机会补抓。
+        self._fail: dict[int, tuple[float, int, int]] = {}
         self._thread: threading.Thread | None = None
 
     # ---------- 目标 ----------
@@ -147,18 +149,35 @@ class DynamicScheduler:
             last = as_int(room.get("dyn_last_ts"))
             if last and last >= int(target * 1000):
                 continue                        # 今天这个时间点已经拉过
-            failed = self._fail.get(rid) or 0
-            if failed and now - failed < 1800:
-                continue                        # 刚失败过，等半小时
+            fail = self._fail.get(rid)
+            if fail and now - fail[0] < fail[1]:
+                continue                        # 退避期内，等下次对表
             who = room.get("uname") or ("uid %s" % uid)
             try:
                 got, _ = self.pull_one(uid, "定时")
             except Exception as exc:
-                self._fail[rid] = now
-                msg = "定时拉取 %s 的动态失败：%s" % (who, exc)
+                # 网络异常 / code!=0 / WBI key 缺失：不记账，30 分钟后重试
+                streak = (fail[2] + 1) if fail else 1
+                self._fail[rid] = (now, 1800, streak)
+                msg = "定时拉取 %s 的动态失败：%s（%d 分钟后重试）" % (
+                    who, exc, 30)
                 self.logs.add("error", msg)
                 with self.lock:
                     self.last_result = {"ok": False, "msg": msg, "ts": int(now * 1000)}
+                continue
+            if not got:
+                # 接口返回 0 条 = 不可信（B站偶发 code=0 但 items=[]）。绝不写
+                # dyn_last_ts，否则当天不再重试；退避逐次拉长，避免反复撞接口。
+                streak = (fail[2] + 1) if fail else 1
+                backoff = min(300 * 2 ** (streak - 1), 1800)
+                self._fail[rid] = (now, backoff, streak)
+                msg = "定时拉取 %s 的动态：接口返回 0 条，按失败处理（%d 分钟后重试）" % (
+                    who, backoff // 60)
+                self.logs.add("warn", msg)
+                with self.lock:
+                    self.last_result = {"ok": False, "msg": msg,
+                                        "ts": int(now * 1000), "count": 0,
+                                        "mids": [uid]}
                 continue
             self._fail.pop(rid, None)
             ts = int(time.time() * 1000)
