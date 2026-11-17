@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 右侧数据栏：三列并排或单栏三段堆叠，跟随播放头高亮。 */
+/** 右侧数据栏：三列并排或单栏三段堆叠，供浏览与搜索（弹幕上屏由 VideoOverlay 负责）。 */
 import { computed } from 'vue'
 
 import type { FeedKind } from '@/types'
@@ -10,7 +10,6 @@ import StudioFeedColumn from './StudioFeedColumn.vue'
 
 const props = defineProps<{
   anchorMs: number
-  currentMs: number
   relative: boolean
   seekable: boolean
 }>()
@@ -61,7 +60,7 @@ function onSearch(event: Event) {
                           :kind="k" :rows="liveState.rows[k]"
                           :older="liveState.older[k]"
                           :loading="liveState.loading[k]" :anchor-ms="props.anchorMs"
-                          :current-ms="props.currentMs" :relative="props.relative"
+                          :relative="props.relative"
                           :seekable="props.seekable" :session-key="liveState.selectedKey"
                           :empty-hint="emptyHint(k)"
                           @older="loadOlder(k)"

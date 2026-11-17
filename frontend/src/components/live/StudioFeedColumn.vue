@@ -12,7 +12,6 @@ const props = defineProps<{
   older: boolean
   loading: boolean
   anchorMs: number
-  currentMs: number
   relative: boolean
   seekable: boolean
   sessionKey: string
@@ -60,26 +59,7 @@ const lastKey = computed(
   () => (props.rows.length ? rowKey(props.rows[props.rows.length - 1]) : ''),
 )
 
-/** 当前播放头之前最后一条消息。 */
-const activeKey = computed(() => {
-  if (!props.relative || !props.rows.length) return ''
-  const target = props.anchorMs + Math.max(0, props.currentMs)
-  let lo = 0
-  let hi = props.rows.length - 1
-  let hit = -1
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    if (rowTime(props.rows[mid]) <= target) {
-      hit = mid
-      lo = mid + 1
-    } else {
-      hi = mid - 1
-    }
-  }
-  return hit >= 0 ? rowKey(props.rows[hit]) : ''
-})
-
-/* ---------------- 跟随最新 ---------------- */
+/* ---------------- 跟随最新（列表只跟最新，不跟播放头） ---------------- */
 
 function isAtBottom(el: HTMLElement) {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 48
@@ -94,27 +74,6 @@ function scrollToBottom() {
   if (!el) return
   markAutoScroll()
   el.scrollTop = el.scrollHeight
-}
-
-function setActiveRow() {
-  const el = box.value
-  if (!el) return
-  const prev = el.querySelector('.studio-line.active') as HTMLElement | null
-  if (prev) prev.classList.remove('active')
-  if (!activeKey.value) return
-  const target = el.querySelector(
-    '[data-key="' + activeKey.value + '"]') as HTMLElement | null
-  if (target) target.classList.add('active')
-}
-
-function scrollToActive() {
-  const el = box.value
-  if (!el || !activeKey.value) return
-  const target = el.querySelector('[data-key="' + activeKey.value + '"]') as HTMLElement | null
-  if (!target) return
-  markAutoScroll()
-  // 跟随播放时把当前消息放在这一栏的第一行：手机高度有限，后面的内容往下排
-  el.scrollTop = Math.max(0, target.offsetTop - 4)
 }
 
 function updateJump() {
@@ -145,10 +104,7 @@ function onScroll() {
 
 async function applyFollowPosition() {
   await nextTick()
-  setActiveRow()
-  // 首屏默认停在最新；只有当前播放位置对应的消息已经加载时才跟随到栏顶
-  if (props.seekable && activeKey.value) scrollToActive()
-  else scrollToBottom()
+  scrollToBottom()
   updateJump()
 }
 
@@ -170,24 +126,13 @@ watch([() => props.rows.length, lastKey], async () => {
   const prepended = !!prevFirst && first !== prevFirst && last === prevLast
   await nextTick()
   const body = box.value
-  setActiveRow()
   if (prepended && body) {
     body.scrollTop = oldTop + (body.scrollHeight - oldHeight)
   } else if (follow.value) {
-    if (props.seekable && activeKey.value) scrollToActive()
-    else scrollToBottom()
+    scrollToBottom()
   }
   prevFirst = first
   prevLast = last
-  updateJump()
-})
-
-watch(activeKey, async () => {
-  // 只查一次 class，不让 1.6 万行的 v-for 跟着播放头每 250ms 重渲染
-  await nextTick()
-  setActiveRow()
-  if (!follow.value || !props.seekable) return
-  scrollToActive()
   updateJump()
 })
 
