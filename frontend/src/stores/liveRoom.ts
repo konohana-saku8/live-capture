@@ -1,7 +1,8 @@
 /** 数据页的独立状态：日历、录像、按页追加的消息。
 
-选中场次后默认先显示最新一页（直播 / 回放都一样），往上滑才向前追加更早的页；
-直播 / 尾部场间的新消息继续追加到列尾。任何滚动加载都只往已有列表里加行，不整页替换。
+选中场次后：直播 / 尾部场间默认先显示最新一页，新消息追加到列尾；已结束的回放
+则从最早一页开始，播放头推进时向后补页——这样三栏的 active 高亮能跟画面走。
+滚动加载只往已有列表里加行，不整页替换。
 */
 import { computed, reactive } from 'vue'
 
@@ -39,6 +40,8 @@ export const liveState = reactive({
   rows: { danmaku: [], sc: [], events: [] } as Record<FeedKind, FeedRow[]>,
   /** 前面还有更早的消息：滚到列顶时继续向前追加 */
   older: { danmaku: false, sc: false, events: false } as Record<FeedKind, boolean>,
+  /** 后面还有更新的消息：回放从最早加载，播放头前进时向后补页 */
+  newer: { danmaku: false, sc: false, events: false } as Record<FeedKind, boolean>,
   loading: { danmaku: false, sc: false, events: false } as Record<FeedKind, boolean>,
   currentMs: 0,
   summary: null as null | {
@@ -213,16 +216,22 @@ export async function deleteSegment(seg: Segment) {
 
 let gen = 0
 let livePollAt = 0
+let lastFollowAt = 0
 let queryTimer: number | undefined
+
+/** 播放头距已加载尾部不到这个时长就补下一页（弹幕约 40-60 秒/页）。 */
+const FOLLOW_AHEAD = 60000
 
 function resetRows() {
   gen++
   for (const k of KINDS) {
     liveState.rows[k] = []
     liveState.older[k] = false
+    liveState.newer[k] = false
     liveState.loading[k] = false
   }
   livePollAt = 0
+  lastFollowAt = 0
 }
 
 function rowKey(kind: FeedKind, r: FeedRow) {
@@ -267,27 +276,37 @@ function beforeUrl(kind: FeedKind, beforeMs: number) {
     segQuery([kind])
 }
 
-/** 第一页：默认取最新一页；往上滑再向前追加更早的页。 */
+/**
+ * 第一页：
+ * - 回放（已结束的场 / 场间）：从最早一页开始（asc=1），播放头从头推进时再向后补页，
+ *   这样任一时刻的 active 高亮都能在已加载数据里找到，三栏才跟得上画面。
+ * - 直播 / 仍在收数据的尾部场间：仍取最新一页，新消息走 pollTail 追加。
+ */
 export async function loadWindow() {
-  if (!selectedSeg.value) {
+  const seg = selectedSeg.value
+  if (!seg) {
     resetRows()
     return
   }
+  const replay = !!seg.end                 // 已结束 = 回放，按播放头时间跟
   gen++
   const myGen = gen
   for (const k of KINDS) {
     liveState.rows[k] = []
     liveState.older[k] = false
+    liveState.newer[k] = false
     liveState.loading[k] = true
   }
+  const asc = replay ? '&asc=1&after=0' : ''
   const qs = '/api/feed?paged=1&room_id=' + liveState.roomId +
-    '&limit=' + PAGE + segQuery(KINDS)
+    '&limit=' + PAGE + asc + segQuery(KINDS)
   try {
     const j = await api<any>(qs)
     if (myGen !== gen) return
     for (const k of KINDS) {
       liveState.rows[k] = ((j.items && j.items[k]) || []) as FeedRow[]
-      liveState.older[k] = !!(j.more && j.more[k])
+      if (replay) liveState.newer[k] = !!(j.more && j.more[k])
+      else liveState.older[k] = !!(j.more && j.more[k])
     }
   } catch (e: any) {
     if (myGen === gen) liveState.error = '读取数据失败：' + e.message
@@ -320,6 +339,25 @@ async function fetchOlder(kind: FeedKind, before: number, myGen: number) {
     liveState.older[kind] = !!(j.more && j.more[kind])
   } catch (e: any) {
     if (myGen === gen) liveState.error = '读取' + TITLES[kind] + '失败：' + e.message
+  } finally {
+    if (myGen === gen) liveState.loading[kind] = false
+  }
+}
+
+/** 向后补一页（回放：从最早开始，播放头推进时追着补）。 */
+async function fetchNewer(kind: FeedKind, after: number, myGen: number): Promise<boolean> {
+  if (!liveState.roomId) return false
+  liveState.loading[kind] = true
+  try {
+    const j = await api<any>(afterUrl(kind, after))
+    if (myGen !== gen) return false
+    const fresh = ((j.items && j.items[kind]) || []) as FeedRow[]
+    if (fresh.length) liveState.rows[kind] = mergeRows(kind, liveState.rows[kind], fresh)
+    liveState.newer[kind] = !!(j.more && j.more[kind])
+    return fresh.length > 0
+  } catch (e: any) {
+    if (myGen === gen) liveState.error = '读取' + TITLES[kind] + '失败：' + e.message
+    return false
   } finally {
     if (myGen === gen) liveState.loading[kind] = false
   }
@@ -366,8 +404,80 @@ export function tickGap() {
   pollTail()
 }
 
+function lastTime(kind: FeedKind): number {
+  const list = liveState.rows[kind]
+  return list.length ? (list[list.length - 1].received_at || 0) : 0
+}
+
+/**
+ * 回放时播放头（视频时间 + 录像起点 = 绝对时刻）推进，逼近已加载数据的尾部就
+ * 向后补页。seek 到中段会连续补多页直到覆盖播放头，保证 active 高亮不断档。
+ * 直播不在这里处理，仍由 pollTail 追最新。
+ */
+function followPlayback() {
+  const seg = selectedSeg.value
+  if (!seg || !seg.end || isLiveSeg.value) return
+  const now = Date.now()
+  if (now - lastFollowAt < 350) return
+  const myGen = gen
+  const target = anchorMs.value + liveState.currentMs
+  const need = KINDS.filter((k) =>
+    liveState.newer[k] && !liveState.loading[k] &&
+    target >= lastTime(k) - FOLLOW_AHEAD)
+  if (!need.length) return
+  lastFollowAt = now
+  void (async () => {
+    for (const k of need) {
+      for (let guard = 0; guard < 60 && myGen === gen && liveState.newer[k]; guard++) {
+        const tail = lastTime(k)
+        // 播放头后面已留出足够一屏的余量，停止补页
+        if (tail > 0 && target < tail - FOLLOW_AHEAD) break
+        const got = await fetchNewer(k, tail, myGen)
+        if (!got) break
+      }
+    }
+  })()
+}
+
+/**
+ * 播放头大幅跳跃（拖动进度条）时，别从最早一页连补几十页慢慢追——直接按目标
+ * 时刻开窗重取一页，一次定位。小步推进仍走 followPlayback 顺序补页，保持连续。
+ */
+async function seekWindow(target: number, myGen: number) {
+  const seg = selectedSeg.value
+  if (!seg || !liveState.roomId) return
+  lastFollowAt = Date.now()
+  const after = Math.max(0, target - FOLLOW_AHEAD / 2)
+  for (const k of KINDS) {
+    liveState.loading[k] = true
+    liveState.rows[k] = []
+    liveState.older[k] = false
+  }
+  await Promise.all(KINDS.map(async (k) => {
+    try {
+      const j = await api<any>(afterUrl(k, after))
+      if (myGen !== gen) return
+      liveState.rows[k] = ((j.items && j.items[k]) || []) as FeedRow[]
+      liveState.newer[k] = !!(j.more && j.more[k])
+    } catch (e: any) {
+      if (myGen === gen) liveState.error = '读取' + TITLES[k] + '失败：' + e.message
+    } finally {
+      if (myGen === gen) liveState.loading[k] = false
+    }
+  }))
+}
+
 export function setCurrent(ms: number) {
+  const prev = liveState.currentMs
   liveState.currentMs = Math.max(0, ms)
+  const seg = selectedSeg.value
+  if (!seg || !seg.end || isLiveSeg.value) return
+  // 前后跳变超过两页的量视为拖动进度条：直接按目标时刻重开窗
+  if (Math.abs(liveState.currentMs - prev) > FOLLOW_AHEAD * 2) {
+    void seekWindow(anchorMs.value + liveState.currentMs, gen)
+    return
+  }
+  followPlayback()
 }
 
 /* ---------------- 工具条 ---------------- */
