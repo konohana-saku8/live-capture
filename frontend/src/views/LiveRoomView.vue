@@ -267,17 +267,17 @@ watch(isLiveSeg, (live, prev) => {
                       :anchor="anchorMs" :current-ms="liveState.currentMs"
                       @time="onTime" @error="note" />
         </div>
-        <StudioFeed :anchor-ms="anchorMs" :relative="!!seg"
-                    :seekable="!isLiveSeg" @pick="onPick" />
+        <StudioFeed :anchor-ms="anchorMs" :current-ms="liveState.currentMs"
+                    :relative="!!seg" :seekable="!isLiveSeg" @pick="onPick" />
       </div>
       <div v-else class="empty pad">这位主播还没有直播场次记录。</div>
 
       <div class="hint">{{ noteText || liveState.error }}</div>
       <div class="hint">
         日历列出直播场次与场间；「下播」事件归在对应场次末尾。直播中看实时画面，下播后自动转封装成 MP4
-        再回放。弹幕 / SC / 事件会按画面时间直接叠在视频上，画面右上角「弹」可开关；右侧三列用于浏览
-        和搜索，默认显示最新一页，往上滑到列顶继续加载更早的消息，直播时新消息追加到列尾。回放时
-        点击任意消息可跳到对应画面。
+        再回放。弹幕 / SC / 事件默认显示最新一页，往上滑到列顶才继续加载更早的消息；直播时新消息
+        追加到列尾，回放时当前播放位置对应的消息已加载则排在栏顶。手动滑离底部会暂停跟随并出现
+        「最新消息 ↓」。回放时点击任意消息可跳到对应画面。
       </div>
       </div>
       <div v-if="dynMounted" v-show="dataTab === 'dyn'">

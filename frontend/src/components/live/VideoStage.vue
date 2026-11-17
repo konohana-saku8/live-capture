@@ -6,7 +6,6 @@ import { getToken } from '@/api/client'
 import { bytes as fmtBytes, fmtDuration, fmtOffset, qnLabel } from '@/lib/format'
 import type { RecordingInfo, RecordingPart } from '@/types'
 import LiveFlvPlayer from './LiveFlvPlayer.vue'
-import VideoOverlay from './VideoOverlay.vue'
 
 const props = defineProps<{
   recording: RecordingInfo | null
@@ -191,7 +190,6 @@ watch(mode, (next, prev) => {
         <span class="nv-title">{{ noVideoText }}</span>
         <span class="nv-sub">没有画面时，右侧仍可按时间浏览这场的数据。</span>
       </div>
-      <VideoOverlay :current-ms="currentMs" :live="props.live" />
     </div>
     <div class="studio-video-bar">
       <span class="vtag" :class="mode">{{ modeLabel }}</span>
