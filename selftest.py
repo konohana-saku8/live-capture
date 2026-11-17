@@ -229,6 +229,36 @@ def main():
         except dynamics_mod.DynamicsFetchError:
             raised = True
         check("动态抓取：WBI key 为空抛 DynamicsFetchError", raised)
+
+        # 登录态注入：只带白名单 cookie，装进请求头；诊断标注「有登录」
+        f2 = dynamics_mod.DynamicsFetcher(cookies={
+            "SESSDATA": "secret", "DedeUserID": "123", "buvid3": "B3",
+            "无关项": "drop-me"})
+        check("动态抓取：只带白名单 cookie 且标记已登录",
+              f2.logged_in is True and
+              set(f2.cookies) == {"SESSDATA", "DedeUserID", "buvid3"} and
+              "无关项" not in f2.cookies, f2.cookies)
+        h2 = f2._headers("https://x/")
+        check("动态抓取：登录 cookie 写进请求头",
+              "SESSDATA=secret" in h2.get("Cookie", "") and
+              "无关项" not in h2.get("Cookie", ""), h2)
+        f3 = dynamics_mod.DynamicsFetcher(cookies={"buvid3": "B3"})
+        check("动态抓取：无 SESSDATA 不算登录",
+              f3.logged_in is False and "buvid3" in f3.cookies)
+        # 412 异常信息带风控提示与身份，便于日志区分匿名拦截
+        f2._warmup = lambda: None
+        f2.wbi_keys = lambda: ("img", "sub")
+        def _boom412(url, referer=None):
+            raise urllib.error.HTTPError(url, 412, "Precondition Failed", {}, None)
+        f2._fetch_json = _boom412
+        try:
+            f2.fetch(9)
+            raised = False
+            err = ""
+        except dynamics_mod.DynamicsFetchError as exc:
+            raised, err = True, str(exc)
+        check("动态抓取：412 诊断含风控与登录态",
+              raised and "412" in err and "风控" in err and "有" in err, err)
     finally:
         dynamics_mod.time.sleep = _real_sleep
 
@@ -847,6 +877,39 @@ def main():
             srv.dynamics._fail.clear()
             rooms.settings(22748536, {"dyn_auto": False, "dyn_last_ts": 0})
 
+        # 调度器把当前启用账号的 cookie 注入抓取器；匿名时传空 dict
+        acct_csv = "\n".join([
+            "# Netscape HTTP Cookie File",
+            ".bilibili.com\tTRUE\t/\tTRUE\t1893456000\tSESSDATA\tsched-token",
+            ".bilibili.com\tTRUE\t/\tFALSE\t1893456000\tbuvid3\tB3"])
+        acct_item, _, acct_err = srv.accounts.add("抓取账号", acct_csv)
+        seen_cookies = []
+        class RecordingFetcher:
+            def __init__(self, cookies=None):
+                seen_cookies.append(cookies)
+            def fetch(self, mid, limit=20, offset=""):
+                return [], False
+        old_cls = srv.dynamics.fetcher_cls
+        srv.dynamics.fetcher_cls = RecordingFetcher
+        try:
+            srv.dynamics.pull_one(999, "测试")
+            check("调度器给抓取器注入启用账号 cookie",
+                  seen_cookies and seen_cookies[-1].get("SESSDATA") == "sched-token",
+                  seen_cookies)
+            check("调度器身份标签写账号名",
+                  "抓取账号" in srv.dynamics.auth_label(),
+                  srv.dynamics.auth_label())
+            srv.accounts.active_id = ""
+            srv.dynamics.pull_one(999, "测试")
+            check("匿名时抓取器拿到空 cookie",
+                  seen_cookies[-1] == {}, seen_cookies[-1])
+            check("匿名身份标签为「匿名」",
+                  srv.dynamics.auth_label() == "匿名",
+                  srv.dynamics.auth_label())
+        finally:
+            srv.dynamics.fetcher_cls = old_cls
+            srv.accounts.remove(acct_item["id"])
+
         def get(path, headers=None):
             req = urllib.request.Request(base + path, headers=headers or {})
             try:
@@ -980,7 +1043,7 @@ def main():
         class _FakeFetcher(object):
             seen = []
 
-            def __init__(self):
+            def __init__(self, cookies=None):
                 pass
 
             def fetch(self, mid, limit=20):

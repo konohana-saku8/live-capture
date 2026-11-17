@@ -4,6 +4,10 @@
    宽度不够时整块换到第二行，而不是把文字裁掉。 */
 .navinfo{flex:0 0 auto}
 
+/* 保存按钮的即时反馈：先变绿/红，2 秒后文字回落，让用户确信点到了。 */
+.btn.ok{background:rgba(143,191,139,.16);border-color:rgba(143,191,139,.55);color:var(--ok)}
+.btn.err{background:rgba(224,115,107,.14);border-color:rgba(224,115,107,.55);color:var(--bad)}
+
 /* 空态时按钮是 disabled，保留边框让它们仍看得出是按钮。 */
 .btn:disabled{opacity:.55;cursor:not-allowed}
 

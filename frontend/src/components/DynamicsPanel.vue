@@ -4,15 +4,12 @@ import { computed, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 
 import { fmt, fmtFull, dynDayKey, dynDayLabel, num } from '@/lib/format'
 import {
-  currentRoom, fetchDynamics, hint, loadDynamics, loadRooms,
-  saveDynConfig, saveDynTranslation, state,
+  currentRoom, fetchDynamics, hint, loadDynamics,
+  saveDynTranslation, state,
 } from '@/stores/app'
 import type { Dynamics } from '@/types'
 import CdnImg from './CdnImg.vue'
 
-const hour = ref(8)
-const minute = ref(0)
-const auto = ref(false)
 const busy = ref(false)
 /** 正在编辑的卡片：dyn_id -> 草稿文本 */
 const drafts = ref<Record<string, string>>({})
@@ -65,18 +62,6 @@ watch(() => currentRoom.value?.id, (id) => {
   else state.dyn = null
 }, { immediate: true })
 
-// 服务端回填这一位 up 主的定时
-watch(() => cfg.value, (c) => {
-  if (!c) return
-  auto.value = !!c.dyn_auto
-  hour.value = c.dyn_hour ?? 8
-  minute.value = c.dyn_minute ?? 0
-}, { immediate: true })
-
-const hourOptions = Array.from({ length: 24 }, (_, i) => i)
-const minuteOptions = Array.from({ length: 60 }, (_, i) => i)
-const pad = (n: number) => ('0' + n).slice(-2)
-
 function confirmDirty(msg = '译文还没保存，确定放弃这次的修改？') {
   if (!dirty.value) return true
   return confirm(msg)
@@ -89,21 +74,6 @@ async function doFetch() {
     await loadDynamics()
   } finally {
     busy.value = false
-  }
-}
-
-async function saveSchedule() {
-  const room = currentRoom.value
-  if (!room) return
-  try {
-    const j = await saveDynConfig(room, auto.value, hour.value, minute.value)
-    await loadDynamics(true)
-    hint('dyn', (room.uname || room.label) + '：' +
-      (j.config.dyn_auto ? '每天 ' + pad(hour.value) + ':' + pad(minute.value) + ' 自动拉取'
-        : '已关闭定时拉取'), 'ok')
-    loadRooms()
-  } catch (e: any) {
-    hint('dyn', '保存失败：' + e.message, 'err')
   }
 }
 
@@ -168,25 +138,13 @@ function jumpUrl(url?: string) {
     <template v-else>
       <div class="row">
         <button class="btn sm primary" :disabled="busy" @click="doFetch">立即拉取</button>
-        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
-          <input v-model="auto" type="checkbox"> 每天定时拉取
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--ink-2);font-size:12px">
-          <select v-model.number="hour" style="width:70px">
-            <option v-for="h in hourOptions" :key="h" :value="h">{{ pad(h) }}</option>
-          </select> 时
-          <select v-model.number="minute" style="width:70px">
-            <option v-for="m in minuteOptions" :key="m" :value="m">{{ pad(m) }}</option>
-          </select> 分
-        </label>
-        <button class="btn sm" @click="saveSchedule">保存定时</button>
         <input v-model="state.dynQuery" type="text" placeholder="搜索动态 / 译文"
                style="flex:1 1 160px" @input="onQueryInput">
       </div>
 
       <div class="hint" :class="state.hints.dyn.kind">{{ state.hints.dyn.msg }}</div>
       <div class="hint">
-        按天展示这位 up 主的 B 站动态，可随时添加或修改译文。定时抓取是按 up 主分别设置的，默认关闭；打开后只需服务保持运行。
+        按天展示这位 up 主的 B 站动态，可随时添加或修改译文。每天定时拉取的开关与时间请在「采集器」页设置。
       </div>
     </template>
 

@@ -53,6 +53,7 @@ export const state = reactive({
     room: { msg: '', kind: '' } as Hint,
     capture: { msg: '', kind: '' } as Hint,
     collect: { msg: '', kind: '' } as Hint,
+    sched: { msg: '', kind: '' } as Hint,
     dyn: { msg: '', kind: '' } as Hint,
     acct: { msg: '', kind: '' } as Hint,
     cfg: { msg: '', kind: '' } as Hint,

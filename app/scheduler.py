@@ -17,12 +17,13 @@ from .settings import as_int
 
 class DynamicScheduler:
     def __init__(self, store, config, logs, fetcher_cls=DynamicsFetcher,
-                 rooms=None):
+                 rooms=None, accounts=None):
         self.store = store
         self.config = config
         self.logs = logs
         self.fetcher_cls = fetcher_cls
         self.rooms = rooms
+        self.accounts = accounts          # AccountStore：取当前启用账号的 cookie
         self.lock = threading.RLock()
         self.last_result: dict[str, Any] = {"ok": False, "msg": "尚未拉取", "ts": 0}
         self._stop = threading.Event()
@@ -51,8 +52,26 @@ class DynamicScheduler:
 
     # ---------- 拉取 ----------
 
+    def active_cookie(self) -> dict:
+        """当前启用账号的 cookie（匿名用户返回空 dict）。
+
+        抓动态带登录态能绕开 B站对匿名请求的 412 风控；账号过期时 SESSDATA
+        还在，接口仍可能失败，但会走退避重试，不会静默整天丢数据。
+        """
+        active = self.accounts.active() if self.accounts is not None else None
+        return dict((active or {}).get("cookies") or {})
+
+    def auth_label(self) -> str:
+        """日志 / 页面状态里显示的抓取身份，便于区分匿名风控与账号异常。"""
+        active = self.accounts.active() if self.accounts is not None else None
+        if not active:
+            return "匿名"
+        return "账号 %s" % (active.get("label") or active.get("profile", {}).get("uname")
+                            or "未命名")
+
     def pull_one(self, mid: int, reason: str = "手动", limit: int = 20):
-        fetcher = self.fetcher_cls()
+        cookies = self.active_cookie()
+        fetcher = self.fetcher_cls(cookies=cookies)
         items, _ = fetcher.fetch(as_int(mid), limit=limit)
         n = self.store.upsert_dynamics(items)
         return len(items), n
@@ -66,6 +85,7 @@ class DynamicScheduler:
                 self.last_result = result
             return result
         ok, done, total, errors = True, 0, 0, []
+        auth = self.auth_label()
         for one in mids:
             try:
                 got, _ = self.pull_one(one, reason, limit)
@@ -76,12 +96,13 @@ class DynamicScheduler:
                 errors.append("uid %s：%s" % (one, exc))
         ts = int(time.time() * 1000)
         if errors and not done:
-            msg = "%s拉取失败：%s" % (reason, "；".join(errors))
+            msg = "%s拉取失败（%s）：%s" % (reason, auth, "；".join(errors))
         else:
-            msg = "%s拉取 %d 位 up 主，共 %d 条%s" % (
-                reason, done, total,
+            msg = "%s拉取 %d 位 up 主，共 %d 条（%s）%s" % (
+                reason, done, total, auth,
                 ("；失败 " + "；".join(errors)) if errors else "")
-        result = {"ok": ok, "msg": msg, "ts": ts, "count": total, "mids": mids}
+        result = {"ok": ok, "msg": msg, "ts": ts, "count": total,
+                  "mids": mids, "auth": auth}
         self.logs.add("info" if ok else "error", msg)
         with self.lock:
             self.last_result = result
@@ -153,17 +174,20 @@ class DynamicScheduler:
             if fail and now - fail[0] < fail[1]:
                 continue                        # 退避期内，等下次对表
             who = room.get("uname") or ("uid %s" % uid)
+            auth = self.auth_label()
             try:
                 got, _ = self.pull_one(uid, "定时")
             except Exception as exc:
                 # 网络异常 / code!=0 / WBI key 缺失：不记账，30 分钟后重试
                 streak = (fail[2] + 1) if fail else 1
                 self._fail[rid] = (now, 1800, streak)
-                msg = "定时拉取 %s 的动态失败：%s（%d 分钟后重试）" % (
-                    who, exc, 30)
+                msg = "定时拉取 %s 的动态失败（%s）：%s（%d 分钟后重试）" % (
+                    who, auth, exc, 30)
                 self.logs.add("error", msg)
                 with self.lock:
-                    self.last_result = {"ok": False, "msg": msg, "ts": int(now * 1000)}
+                    self.last_result = {"ok": False, "msg": msg,
+                                        "ts": int(now * 1000), "auth": auth,
+                                        "uid": uid}
                 continue
             if not got:
                 # 接口返回 0 条 = 不可信（B站偶发 code=0 但 items=[]）。绝不写
@@ -171,22 +195,22 @@ class DynamicScheduler:
                 streak = (fail[2] + 1) if fail else 1
                 backoff = min(300 * 2 ** (streak - 1), 1800)
                 self._fail[rid] = (now, backoff, streak)
-                msg = "定时拉取 %s 的动态：接口返回 0 条，按失败处理（%d 分钟后重试）" % (
-                    who, backoff // 60)
+                msg = "定时拉取 %s 的动态：接口返回 0 条，按失败处理（%s，%d 分钟后重试）" % (
+                    who, auth, backoff // 60)
                 self.logs.add("warn", msg)
                 with self.lock:
                     self.last_result = {"ok": False, "msg": msg,
                                         "ts": int(now * 1000), "count": 0,
-                                        "mids": [uid]}
+                                        "mids": [uid], "auth": auth}
                 continue
             self._fail.pop(rid, None)
             ts = int(time.time() * 1000)
             self.rooms.settings(rid, {"dyn_last_ts": ts})
-            msg = "定时拉取 %s 的动态：%d 条" % (who, got)
+            msg = "定时拉取 %s 的动态：%d 条（%s）" % (who, got, auth)
             self.logs.add("info", msg)
             with self.lock:
                 self.last_result = {"ok": True, "msg": msg, "ts": ts,
-                                    "count": got, "mids": [uid]}
+                                    "count": got, "mids": [uid], "auth": auth}
 
     def stop(self) -> None:
         self._stop.set()

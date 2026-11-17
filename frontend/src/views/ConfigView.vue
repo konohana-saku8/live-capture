@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 配置页：cookie 账号、采集参数、数据清空。 */
-import { computed, reactive, ref, watch, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
 
 import { api, postJson, setToken } from '@/api/client'
 import { hint, loadAccounts, loadStatus, state, uiLog, uploadAccount, accountAction } from '@/stores/app'
@@ -29,6 +29,16 @@ const tokenField = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const acctName = ref('')
 const uploading = ref(false)
+/** 保存按钮的即时反馈：'ok' / 'err' / ''，几秒后自动收回。 */
+const savedFlash = ref('')
+let flashTimer: number | undefined
+
+function flashSaved(kind: string) {
+  savedFlash.value = kind
+  window.clearTimeout(flashTimer)
+  flashTimer = window.setTimeout(() => { savedFlash.value = '' }, 2600)
+}
+onBeforeUnmount(() => window.clearTimeout(flashTimer))
 
 const dirty = computed(() => snapshot !== '' && JSON.stringify(form) !== snapshot)
 
@@ -88,9 +98,11 @@ async function saveConfig() {
     }
     tokenField.value = ''
     snapshot = JSON.stringify(form)
+    flashSaved('ok')
     await loadStatus()
   } catch (e: any) {
     hint('cfg', '保存失败：' + e.message, 'err')
+    flashSaved('err')
   }
 }
 
@@ -263,7 +275,9 @@ function refreshAccounts() {
           <label><input v-model="form.auto_start" type="checkbox">启动服务时自动采集所有采集器</label>
         </div>
         <div class="row" style="margin-top:14px">
-          <button class="btn primary" type="submit">保存配置</button>
+          <button class="btn primary" :class="savedFlash" type="submit">
+            {{ savedFlash === 'ok' ? '✓ 已保存' : savedFlash === 'err' ? '保存失败' : '保存配置' }}
+          </button>
           <button class="btn" type="button" @click="clearToken">清除访问口令</button>
           <span class="muted">口令留空表示不修改；采集参数改动需停止后重新启动才生效</span>
         </div>

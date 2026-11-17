@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /** 单个采集器的详情面板：只看当前抓取状态 + 开关；数据预览去「数据」页。 */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import { bytes as fmtBytes, dur, fmtFull, isHttpUrl, num, qnLabel } from '@/lib/format'
 import {
-  controlCapture, hint, saveCollect, state,
+  controlCapture, hint, saveCollect, saveDynConfig, state,
 } from '@/stores/app'
 import type { Room } from '@/types'
 import CdnImg from './CdnImg.vue'
@@ -25,6 +25,25 @@ const recRedPocket = ref(true)
 const recEnter = ref(false)
 const recInteract = ref(true)
 const busy = ref(false)
+
+/** 动态定时：按当前 up 主保存，和采集开关一起放在采集器页。 */
+const dynAuto = ref(false)
+const dynHour = ref(8)
+const dynMinute = ref(0)
+const schedBusy = ref(false)
+const hourOptions = Array.from({ length: 24 }, (_, i) => i)
+const minuteOptions = Array.from({ length: 60 }, (_, i) => i)
+const pad = (n: number) => ('0' + n).slice(-2)
+
+/** 两个保存按钮共用的即时反馈（'ok' / 'err' / ''）。 */
+const savedWhich = ref('')
+let flashTimer: number | undefined
+function flashSaved(which: string) {
+  savedWhich.value = which
+  window.clearTimeout(flashTimer)
+  flashTimer = window.setTimeout(() => { savedWhich.value = '' }, 2600)
+}
+onBeforeUnmount(() => window.clearTimeout(flashTimer))
 
 const name = computed(() => props.room.uname || props.room.label || '')
 /** uid=0 是本地测试源：不连 B 站，只挂一段本地视频和复用的直播数据。 */
@@ -137,6 +156,11 @@ watch(() => props.room.id, () => {
   recRedPocket.value = props.room.record_red_pocket !== false
   recEnter.value = props.room.record_enter === true
   recInteract.value = props.room.record_interact !== false
+  // 定时抓取按 up 主存，服务端已经合并成这一位的值
+  dynAuto.value = props.room.dyn_auto === true
+  const sched = String(props.room.dyn_schedule || '08:00').split(':')
+  dynHour.value = Number(sched[0]) || 0
+  dynMinute.value = Number(sched[1]) || 0
 }, { immediate: true })
 
 watch(colLive, (on) => {
@@ -187,6 +211,7 @@ async function doSaveCollect() {
       ' · ' + (colDyn.value ? '采集动态' : '不采动态') +
       (autoRec.value ? ' · 开播自动录制 ' + qnLabel(recQn.value) : '') +
       (props.room.running ? '（采集中，内容开关需停止后重新开始才生效）' : ''), 'ok')
+    flashSaved('collect')
     if (j.room) {
       // 以服务端回填为准
       colLive.value = j.room.collect_live !== false
@@ -206,6 +231,30 @@ async function doSaveCollect() {
     }
   } catch (e: any) {
     hint('collect', '保存失败：' + e.message, 'err')
+    flashSaved('collect-err')
+  }
+}
+
+async function saveSchedule() {
+  if (schedBusy.value) return
+  schedBusy.value = true
+  try {
+    const j = await saveDynConfig(props.room, dynAuto.value, dynHour.value, dynMinute.value)
+    const c = j.config || {}
+    hint('sched', (props.room.uname || props.room.label) + '：' +
+      (c.dyn_auto ? '每天 ' + pad(Number(c.dyn_hour) || 0) + ':' + pad(Number(c.dyn_minute) || 0) + ' 定时拉取'
+        : '已关闭定时拉取'), 'ok')
+    if (c) {
+      dynAuto.value = !!c.dyn_auto
+      dynHour.value = Number(c.dyn_hour) || 0
+      dynMinute.value = Number(c.dyn_minute) || 0
+    }
+    flashSaved('sched')
+  } catch (e: any) {
+    hint('sched', '保存定时失败：' + e.message, 'err')
+    flashSaved('sched-err')
+  } finally {
+    schedBusy.value = false
   }
 }
 
@@ -306,6 +355,26 @@ async function doSaveCollect() {
         <label><input v-model="colDyn" type="checkbox"> up 主动态</label>
       </div>
 
+      <div class="collect-row sched-row">
+        <span class="lab">动态定时</span>
+        <label><input v-model="dynAuto" type="checkbox" :disabled="!colDyn"> 每天定时拉取</label>
+        <label>
+          <select v-model.number="dynHour" :disabled="!colDyn || !dynAuto" style="width:66px">
+            <option v-for="h in hourOptions" :key="h" :value="h">{{ pad(h) }}</option>
+          </select> 时
+          <select v-model.number="dynMinute" :disabled="!colDyn || !dynAuto" style="width:66px">
+            <option v-for="m in minuteOptions" :key="m" :value="m">{{ pad(m) }}</option>
+          </select> 分
+        </label>
+        <button class="btn sm" :disabled="!colDyn || schedBusy"
+                :class="savedWhich === 'sched' ? 'ok' : savedWhich === 'sched-err' ? 'err' : ''"
+                @click="saveSchedule">
+          {{ schedBusy ? '保存中…' : savedWhich === 'sched' ? '✓ 已保存' : savedWhich === 'sched-err' ? '保存失败' : '保存定时' }}
+        </button>
+        <span class="muted">{{ dynAuto ? '每天 ' + pad(dynHour) + ':' + pad(dynMinute) : '未开启' }}</span>
+      </div>
+      <div class="hint" :class="state.hints.sched.kind">{{ state.hints.sched.msg }}</div>
+
       <div class="collect-row content-row">
         <span class="lab">直播内容</span>
         <label><input v-model="recDanmaku" type="checkbox"> 弹幕</label>
@@ -329,11 +398,14 @@ async function doSaveCollect() {
       </div>
 
       <div class="collect-row">
-        <button class="btn sm" @click="doSaveCollect">保存开关</button>
+        <button class="btn sm" @click="doSaveCollect"
+                :class="savedWhich === 'collect' ? 'ok' : savedWhich === 'collect-err' ? 'err' : ''">
+          {{ savedWhich === 'collect' ? '✓ 已保存' : savedWhich === 'collect-err' ? '保存失败' : '保存开关' }}
+        </button>
         <span class="muted">{{ collectHintText }}</span>
       </div>
       <div class="hint">
-        以上开关按当前 up 主分别保存，和「开始采集 / 停止采集」一样只对这位主播生效；采集运行中修改内容开关，需要停止后重新开始才生效。弹幕 / SC / 事件与动态的预览、场次管理、导出都在「数据」页。
+        以上开关按当前 up 主分别保存，和「开始采集 / 停止采集」一样只对这位主播生效；采集运行中修改内容开关，需要停止后重新开始才生效。动态定时也在本页设置。弹幕 / SC / 事件与动态的预览、场次管理、导出都在「数据」页。
       </div>
 
     </template>

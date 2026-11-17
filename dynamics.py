@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fetch a Bilibili user's public dynamics feed (no login required).
+"""Fetch a Bilibili user's public dynamics feed (WBI-signed).
 
 The space dynamic feed is WBI-signed since 2023: unsigned requests get 412 /
 -352. This module implements the standard public WBI flow:
@@ -8,9 +8,13 @@ The space dynamic feed is WBI-signed since 2023: unsigned requests get 412 /
     2. mixin key = permutation of (img_key+sub_key) by a fixed table, first 32
     3. params + wts, strip !'()* , sort, urlencode, append w_rid = md5(q+mixin)
 
-All network access goes through ``urlopen`` so tests can inject a fake. Nothing
-here needs cookies, which keeps the daily pull reliable even if the captured
-account's cookie expires.
+Anonymous requests work on a clean home network but are frequently hit by
+B站 412 risk control (shared/cloud egress especially). Pass ``cookies`` with a
+valid SESSDATA to send them as a logged-in user; the scheduler does this from
+the active account. The cookie is optional: with none, behaviour is unchanged
+(fully anonymous) so offline tests and cookie-less installs still work.
+
+All network access goes through ``urlopen`` so tests can inject a fake.
 """
 from __future__ import annotations
 
@@ -19,11 +23,16 @@ import http.cookiejar
 import json
 import ssl
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+# 抓动态真正用得上的几个 cookie；带上整包无关项反而容易被风控盯上。
+LOGIN_COOKIE_KEYS = ("SESSDATA", "DedeUserID", "DedeUserID__ckMd5",
+                     "bili_jct", "buvid3", "buvid4", "sid")
 
 # WBI mixin-key permutation (B站公开算法，固定不变)
 MIXIN_TAB = (
@@ -73,32 +82,51 @@ def wbi_sign(params, img_key, sub_key, ts=None):
 
 
 class DynamicsFetcher:
-    def __init__(self, urlopen=None, timeout=10, ua=DEFAULT_UA):
+    def __init__(self, urlopen=None, timeout=10, ua=DEFAULT_UA, cookies=None):
         # urlopen(url, timeout=...) -> object with .read(); injectable for tests
         self._urlopen = urlopen
         self.timeout = timeout
         self.ua = ua
-        self.cookies = http.cookiejar.CookieJar()
+        # 可选登录态：有 SESSDATA 就带上，避免匿名请求被 412 风控。
+        # 只挑白名单里的键，避免把无关 cookie 甩给接口。
+        self.cookies = {k: v for k, v in (cookies or {}).items()
+                        if k in LOGIN_COOKIE_KEYS and v}
+        self.logged_in = bool(self.cookies.get("SESSDATA"))
+        # 诊断用：记下最近一次失败的一句话，调度器写进日志。
+        self.last_diag = ""
+        self.cookiejar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(self.cookies),
+            urllib.request.HTTPCookieProcessor(self.cookiejar),
             urllib.request.HTTPSHandler(context=_ssl_context()))
 
+    def _headers(self, referer):
+        h = {"User-Agent": self.ua, "Referer": referer,
+             "Accept": "application/json, text/plain, */*",
+             "Accept-Language": "zh-CN,zh;q=0.9"}
+        if self.cookies:
+            h["Cookie"] = "; ".join("%s=%s" % kv for kv in self.cookies.items())
+        return h
+
     def _fetch_json(self, url, referer="https://www.bilibili.com/"):
-        req = urllib.request.Request(url, headers={
-            "User-Agent": self.ua, "Referer": referer,
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9"})
-        if self._urlopen is not None:
-            with self._urlopen(req, timeout=self.timeout) as resp:
+        req = urllib.request.Request(url, headers=self._headers(referer))
+        try:
+            if self._urlopen is not None:
+                with self._urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            with self.opener.open(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
-        with self.opener.open(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # 412 是风控特征码，把诊断信息带上，便于日志区分「匿名被拦」和「真异常」
+            self.last_diag = "HTTP %s（%s）%s" % (
+                exc.code, "疑似风控拦截" if exc.code == 412 else "接口错误",
+                "" if self.logged_in else "·匿名请求")
+            raise
 
     def _warmup(self):
-        """Establish anonymous session (buvid3) — reduces 412 risk."""
+        """Establish session (buvid3) before the signed request."""
         try:
-            req = urllib.request.Request("https://www.bilibili.com/",
-                                         headers={"User-Agent": self.ua})
+            req = urllib.request.Request(
+                "https://www.bilibili.com/", headers=self._headers("https://www.bilibili.com/"))
             if self._urlopen is not None:
                 self._urlopen(req, timeout=self.timeout).read(1024)
             else:
@@ -158,11 +186,20 @@ class DynamicsFetcher:
         try:
             data = self._fetch_json(url,
                                     "https://space.bilibili.com/%d/dynamic" % mid)
+        except urllib.error.HTTPError as exc:
+            # 412 是风控特征码，直接在异常处判定，不依赖 _fetch_json 的副作用
+            # （测试里 _fetch_json 常被替换掉）。一眼区分「匿名被拦」和「真异常」。
+            hint = "HTTP %s（%s）" % (
+                exc.code, "疑似风控拦截" if exc.code == 412 else "接口错误")
+            raise DynamicsFetchError("动态接口 %s（登录态：%s）" % (
+                hint, "有" if self.logged_in else "匿名")) from exc
         except Exception as exc:
-            raise DynamicsFetchError("动态接口请求失败：%s" % exc) from exc
+            raise DynamicsFetchError("动态接口请求失败：%s（登录态：%s）" % (
+                exc, "有" if self.logged_in else "匿名")) from exc
         if data.get("code") != 0:
-            raise DynamicsFetchError("动态接口 code=%s %s" % (
-                data.get("code"), data.get("message")))
+            raise DynamicsFetchError("动态接口 code=%s %s（登录态：%s）" % (
+                data.get("code"), data.get("message"),
+                "有" if self.logged_in else "匿名"))
         payload = data.get("data") or {}
         raw_items = payload.get("items") or []
         return ([normalize(f, mid) for f in raw_items],

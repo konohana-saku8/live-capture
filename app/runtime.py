@@ -84,7 +84,7 @@ class Runtime:
         self.images = EmoteProxy()
         self.cpu_sampler = sysinfo.CpuSampler()
         self.dynamics = DynamicScheduler(self.store, self.config, self.logs,
-                                         rooms=self.rooms)
+                                         rooms=self.rooms, accounts=self.accounts)
         # 首页 / 采集器页每 10 秒拉一次仪表盘；手机上一次聚合要 1-2 秒，
         # 缓存十几秒，避免重复全表扫描。数据最多晚十几秒，不影响使用。
         self._dash_lock = threading.Lock()
