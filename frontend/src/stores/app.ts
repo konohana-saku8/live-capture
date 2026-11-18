@@ -244,9 +244,11 @@ export async function fetchDynamics() {
   }
 }
 
-export async function saveDynConfig(room: Room, dynAuto: boolean, hour: number, minute: number) {
+export async function saveDynConfig(room: Room, collectDyn: boolean,
+                                    dynAuto: boolean, hour: number, minute: number) {
   const j = await postJson('/api/dynamics/config', {
-    room_id: room.id, dyn_auto: dynAuto, dyn_hour: hour, dyn_minute: minute,
+    room_id: room.id, collect_dynamics: collectDyn,
+    dyn_auto: dynAuto, dyn_hour: hour, dyn_minute: minute,
   })
   if (state.dyn) state.dyn.config = j.config
   if (j.rooms) setBadgeRooms(j.rooms)

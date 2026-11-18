@@ -888,6 +888,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._fail(400, "缺少 room_id：定时抓取按 up 主分别设置")
                 return
             patch = {}
+            if "collect_dynamics" in body:
+                patch["collect_dynamics"] = bool(body["collect_dynamics"])
             if "dyn_auto" in body:
                 patch["dyn_auto"] = bool(body["dyn_auto"])
             if _as_int(body.get("dyn_hour"), -1) >= 0:
@@ -905,7 +907,8 @@ class Handler(BaseHTTPRequestHandler):
                             "dyn_auto": bool(room.get("dyn_auto")),
                             "dyn_hour": _as_int(room.get("dyn_hour"), 8),
                             "dyn_minute": _as_int(room.get("dyn_minute")),
-                            "dyn_last_ts": _as_int(room.get("dyn_last_ts"))}})
+                            "dyn_last_ts": _as_int(room.get("dyn_last_ts")),
+                        "collect_dynamics": room.get("collect_dynamics", True)}})
             return
 
         # ---- capture control ----

@@ -1031,6 +1031,15 @@ def main():
               rooms.get(1001)["dyn_auto"] is False and
               rooms.get(1001)["dyn_hour"] == 8)
         status, raw = post("/api/dynamics/config",
+                           {"room_id": 22748536, "collect_dynamics": False,
+                            "dyn_auto": True})
+        jd = json.loads(raw)
+        check("动态开关随定时一起保存（同一接口）",
+              status == 200 and
+              rooms.get(22748536)["collect_dynamics"] is False and
+              jd["config"]["collect_dynamics"] is False)
+        rooms.settings(22748536, {"collect_dynamics": True})
+        status, raw = post("/api/dynamics/config",
                            {"dyn_auto": True, "dyn_hour": 9})
         check("不带 room_id 的定时设置被拒（必须指明是哪位 up 主）",
               status == 400)

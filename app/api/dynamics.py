@@ -80,6 +80,8 @@ def save_dynamics_config():
     if rid <= 0:
         raise ApiError("缺少 room_id：定时抓取按 up 主分别设置")
     patch = {}
+    if "collect_dynamics" in data:
+        patch["collect_dynamics"] = bool(data["collect_dynamics"])
     if "dyn_auto" in data:
         patch["dyn_auto"] = bool(data["dyn_auto"])
     if as_int(data.get("dyn_hour"), -1) >= 0:
