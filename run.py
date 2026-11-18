@@ -97,6 +97,10 @@ def main() -> None:
     app = create_app(data_dir=data_dir, web_dir=_web_dir(), host=host, port=port)
     r = app.extensions["live"]
 
+    # sqlite-web 数据管理页挂到 /sqlite，共享本端口；不可用时自动降级。
+    # 注意：包装发生在 serve 时，保留 app 为 Flask 对象供 bootstrap/shutdown 用。
+    from app.sqlite_admin import mount_sqlite_admin
+
     if args.room:
         from capture import fetch_room_brief
         try:
@@ -123,7 +127,8 @@ def main() -> None:
     print(BANNER, flush=True)
 
     try:
-        _serve(app, host, port)
+        _serve(mount_sqlite_admin(app, data_dir, str(current.get("token") or "")),
+               host, port)
     except KeyboardInterrupt:
         pass
     finally:

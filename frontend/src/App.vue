@@ -271,6 +271,8 @@ onBeforeUnmount(() => {
     <nav class="nav">
       <button v-for="p in PAGES" :key="p.name" :class="{ on: route.name === p.name }"
               @click="goTo(p.path)">{{ p.label }}</button>
+      <a class="ext" href="/sqlite/" target="_blank" rel="noopener"
+         title="数据表浏览 / 编辑 / 删除，登录口令同访问码">数据管理<span class="ext-arrow"> ↗</span></a>
     </nav>
     <div class="top-right">
       <button type="button" class="acct-chip" :class="{ anon: !activeAccount }"

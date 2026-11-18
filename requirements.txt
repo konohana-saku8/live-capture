@@ -2,6 +2,8 @@
 websockets>=13,<18
 flask>=3.1
 waitress>=3.0
+# /sqlite 数据管理页（挂载在现有端口，不需要独立进程）
+sqlite-web>=0.8.2
 
 # 可选：把网页里的「压缩协议」切成 3 (brotli) 时才需要，Termux 上可能要本地编译。
 # brotli>=1.1.0
