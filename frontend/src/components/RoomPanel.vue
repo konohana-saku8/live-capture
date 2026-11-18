@@ -130,11 +130,10 @@ const contentText = computed(() => {
   return kinds.length ? kinds.join(' · ') : '不记内容'
 })
 
-const collectHintText = computed(() => {
+const liveHintText = computed(() => {
   const parts: string[] = []
-  parts.push(colLive.value ? (colOnly.value ? '直播间已开（只在开播时采）' : '直播间已开') : '直播间已关')
-  parts.push(colDyn.value ? '动态已开' : '动态已关')
-  if (colLive.value) parts.push(contentText.value)
+  parts.push(colLive.value ? (colOnly.value ? '直播间已开（只在开播时）' : '直播间已开') : '直播间已关')
+  parts.push(contentText.value)
   if (autoRec.value) parts.push('开播自动录制 · ' + qnLabel(recQn.value))
   if (props.room.record_qn_actual) parts.push('实际 ' + qnLabel(props.room.record_qn_actual))
   return parts.join(' · ')
@@ -193,7 +192,6 @@ async function doSaveCollect() {
     const only = colLive.value && colOnly.value
     const j = await saveCollect(props.room, {
       collect_live: colLive.value,
-      collect_dynamics: colDyn.value,
       live_only: only,
       auto_record: colLive.value && autoRec.value,
       record_qn: recQn.value,
@@ -206,9 +204,8 @@ async function doSaveCollect() {
       record_enter: recEnter.value,
       record_interact: recInteract.value,
     })
-    hint('collect', '已保存：' + (colLive.value ? '采集直播间' : '不采直播间') +
+    hint('collect', '直播配置已保存：' + (colLive.value ? '采集直播间' : '不采直播间') +
       (only ? '（只在开播时）' : '') + ' · ' + contentText.value +
-      ' · ' + (colDyn.value ? '采集动态' : '不采动态') +
       (autoRec.value ? ' · 开播自动录制 ' + qnLabel(recQn.value) : '') +
       (props.room.running ? '（采集中，内容开关需停止后重新开始才生效）' : ''), 'ok')
     flashSaved('collect')
@@ -239,12 +236,14 @@ async function saveSchedule() {
   if (schedBusy.value) return
   schedBusy.value = true
   try {
-    const j = await saveDynConfig(props.room, dynAuto.value, dynHour.value, dynMinute.value)
+    const j = await saveDynConfig(props.room, colDyn.value, dynAuto.value, dynHour.value, dynMinute.value)
     const c = j.config || {}
     hint('sched', (props.room.uname || props.room.label) + '：' +
+      (colDyn.value ? '采集动态' : '不采动态') + ' · ' +
       (c.dyn_auto ? '每天 ' + pad(Number(c.dyn_hour) || 0) + ':' + pad(Number(c.dyn_minute) || 0) + ' 定时拉取'
-        : '已关闭定时拉取'), 'ok')
+        : '定时未开启'), 'ok')
     if (c) {
+      if (typeof c.collect_dynamics === 'boolean') colDyn.value = c.collect_dynamics
       dynAuto.value = !!c.dyn_auto
       dynHour.value = Number(c.dyn_hour) || 0
       dynMinute.value = Number(c.dyn_minute) || 0
@@ -333,79 +332,89 @@ async function saveSchedule() {
       </div>
       <div class="hint" :class="{ err: captureHintText.bad }">{{ captureHintText.text }}</div>
 
-      <div class="collect-row">
-        <span class="lab">采集源</span>
-        <label><input v-model="colLive" type="checkbox"> 采集直播间</label>
-        <label title="没开播就不连弹幕服务器，只定时探一次直播状态">
-          <input v-model="colOnly" type="checkbox" :disabled="!colLive"> 只在开播时采集
-        </label>
-        <label title="主播一开播就自动把直播流录成 FLV，下播停止">
-          <input v-model="autoRec" type="checkbox" :disabled="!colLive"> 开播自动录制
-        </label>
-        <label title="未登录时 B 站可能只给 480P，以实际清晰度为准">
-          清晰度
-          <select v-model.number="recQn" :disabled="!colLive" style="width:86px">
-            <option :value="10000">原画</option>
-            <option :value="400">1080P</option>
-            <option :value="250">720P</option>
-            <option :value="150">480P</option>
-            <option :value="80">360P</option>
-          </select>
-        </label>
-        <label><input v-model="colDyn" type="checkbox"> up 主动态</label>
+      <div class="cfg-block live">
+        <h3><span class="cfg-dot"></span>直播 <small>直播间配置</small></h3>
+        <div class="collect-row">
+          <label><input v-model="colLive" type="checkbox"> 采集直播间</label>
+          <label title="没开播就不连弹幕服务器，只定时探一次直播状态">
+            <input v-model="colOnly" type="checkbox" :disabled="!colLive"> 只在开播时采集
+          </label>
+          <label title="主播一开播就自动把直播流录成 FLV，下播停止">
+            <input v-model="autoRec" type="checkbox" :disabled="!colLive"> 开播自动录制
+          </label>
+          <label title="未登录时 B 站可能只给 480P，以实际清晰度为准">
+            清晰度
+            <select v-model.number="recQn" :disabled="!colLive" style="width:86px">
+              <option :value="10000">原画</option>
+              <option :value="400">1080P</option>
+              <option :value="250">720P</option>
+              <option :value="150">480P</option>
+              <option :value="80">360P</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="collect-row sub">
+          <span class="lab">直播内容</span>
+          <label><input v-model="recDanmaku" type="checkbox" :disabled="!colLive"> 弹幕</label>
+          <label><input v-model="recSc" type="checkbox" :disabled="!colLive"> SC</label>
+          <label><input v-model="recEvents" type="checkbox" :disabled="!colLive"> 事件</label>
+          <span class="muted">按当前 up 主保存</span>
+        </div>
+        <div class="collect-row sub" :class="{ off: !recEvents || !colLive }">
+          <span class="lab">事件类型</span>
+          <label><input v-model="recGuard" type="checkbox" :disabled="!recEvents || !colLive"> 上舰</label>
+          <label title="包括普通礼物和投喂">
+            <input v-model="recGift" type="checkbox" :disabled="!recEvents || !colLive"> 礼物 / 投喂
+          </label>
+          <label><input v-model="recRedPocket" type="checkbox" :disabled="!recEvents || !colLive"> 红包</label>
+          <label title="入场事件量大，默认关闭">
+            <input v-model="recEnter" type="checkbox" :disabled="!recEvents || !colLive"> 入场
+          </label>
+          <label title="关注 / 分享 / 特别关注 / 互相关注">
+            <input v-model="recInteract" type="checkbox" :disabled="!recEvents || !colLive"> 其他互动
+          </label>
+        </div>
+
+        <div class="collect-row actions">
+          <button class="btn sm" @click="doSaveCollect"
+                  :class="savedWhich === 'collect' ? 'ok' : savedWhich === 'collect-err' ? 'err' : ''">
+            {{ savedWhich === 'collect' ? '✓ 已保存' : savedWhich === 'collect-err' ? '保存失败' : '保存直播配置' }}
+          </button>
+          <span class="muted">{{ liveHintText }}</span>
+        </div>
+        <div class="hint">
+          以上直播配置按当前 up 主分别保存；采集中修改内容开关，需停止后重新开始才生效。弹幕 / SC / 事件的预览、场次管理与导出都在「数据」页。
+        </div>
       </div>
 
-      <div class="collect-row sched-row">
-        <span class="lab">动态定时</span>
-        <label><input v-model="dynAuto" type="checkbox" :disabled="!colDyn"> 每天定时拉取</label>
-        <label>
-          <select v-model.number="dynHour" :disabled="!colDyn || !dynAuto" style="width:66px">
-            <option v-for="h in hourOptions" :key="h" :value="h">{{ pad(h) }}</option>
-          </select> 时
-          <select v-model.number="dynMinute" :disabled="!colDyn || !dynAuto" style="width:66px">
-            <option v-for="m in minuteOptions" :key="m" :value="m">{{ pad(m) }}</option>
-          </select> 分
-        </label>
-        <button class="btn sm" :disabled="!colDyn || schedBusy"
-                :class="savedWhich === 'sched' ? 'ok' : savedWhich === 'sched-err' ? 'err' : ''"
-                @click="saveSchedule">
-          {{ schedBusy ? '保存中…' : savedWhich === 'sched' ? '✓ 已保存' : savedWhich === 'sched-err' ? '保存失败' : '保存定时' }}
-        </button>
-        <span class="muted">{{ dynAuto ? '每天 ' + pad(dynHour) + ':' + pad(dynMinute) : '未开启' }}</span>
-      </div>
-      <div class="hint" :class="state.hints.sched.kind">{{ state.hints.sched.msg }}</div>
-
-      <div class="collect-row content-row">
-        <span class="lab">直播内容</span>
-        <label><input v-model="recDanmaku" type="checkbox"> 弹幕</label>
-        <label><input v-model="recSc" type="checkbox"> SC</label>
-        <label><input v-model="recEvents" type="checkbox"> 事件</label>
-        <span class="muted">按当前 up 主保存</span>
-      </div>
-      <div class="collect-row events-row" :class="{ off: !recEvents }">
-        <span class="lab">事件类型</span>
-        <label><input v-model="recGuard" type="checkbox" :disabled="!recEvents"> 上舰</label>
-        <label title="包括普通礼物和投喂">
-          <input v-model="recGift" type="checkbox" :disabled="!recEvents"> 礼物 / 投喂
-        </label>
-        <label><input v-model="recRedPocket" type="checkbox" :disabled="!recEvents"> 红包</label>
-        <label title="入场事件量大，默认关闭">
-          <input v-model="recEnter" type="checkbox" :disabled="!recEvents"> 入场
-        </label>
-        <label title="关注 / 分享 / 特别关注 / 互相关注">
-          <input v-model="recInteract" type="checkbox" :disabled="!recEvents"> 其他互动
-        </label>
-      </div>
-
-      <div class="collect-row">
-        <button class="btn sm" @click="doSaveCollect"
-                :class="savedWhich === 'collect' ? 'ok' : savedWhich === 'collect-err' ? 'err' : ''">
-          {{ savedWhich === 'collect' ? '✓ 已保存' : savedWhich === 'collect-err' ? '保存失败' : '保存开关' }}
-        </button>
-        <span class="muted">{{ collectHintText }}</span>
-      </div>
-      <div class="hint">
-        以上开关按当前 up 主分别保存，和「开始采集 / 停止采集」一样只对这位主播生效；采集运行中修改内容开关，需要停止后重新开始才生效。动态定时也在本页设置。弹幕 / SC / 事件与动态的预览、场次管理、导出都在「数据」页。
+      <div class="cfg-block dyn">
+        <h3><span class="cfg-dot"></span>动态 <small>up 主动态</small></h3>
+        <div class="collect-row">
+          <label><input v-model="colDyn" type="checkbox"> up 主动态</label>
+        </div>
+        <div class="collect-row sub sched-row">
+          <span class="lab">定时拉取</span>
+          <label><input v-model="dynAuto" type="checkbox" :disabled="!colDyn"> 每天定时拉取</label>
+          <label>
+            <select v-model.number="dynHour" :disabled="!colDyn || !dynAuto" style="width:66px">
+              <option v-for="h in hourOptions" :key="h" :value="h">{{ pad(h) }}</option>
+            </select> 时
+            <select v-model.number="dynMinute" :disabled="!colDyn || !dynAuto" style="width:66px">
+              <option v-for="m in minuteOptions" :key="m" :value="m">{{ pad(m) }}</option>
+            </select> 分
+          </label>
+          <button class="btn sm" :disabled="!colDyn || schedBusy"
+                  :class="savedWhich === 'sched' ? 'ok' : savedWhich === 'sched-err' ? 'err' : ''"
+                  @click="saveSchedule">
+            {{ schedBusy ? '保存中…' : savedWhich === 'sched' ? '✓ 已保存' : savedWhich === 'sched-err' ? '保存失败' : '保存动态设置' }}
+          </button>
+          <span class="muted">{{ dynAuto ? '每天 ' + pad(dynHour) + ':' + pad(dynMinute) : '未开启' }}</span>
+        </div>
+        <div class="hint" :class="state.hints.sched.kind">{{ state.hints.sched.msg }}</div>
+        <div class="hint">
+          动态开关与定时按当前 up 主分别保存；开启后只要服务保持运行，到点就会自动抓取。
+        </div>
       </div>
 
     </template>
