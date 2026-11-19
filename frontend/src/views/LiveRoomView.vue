@@ -82,9 +82,11 @@ function onTick() {
     if (calTick % 10 === 0) void loadCalendar(true)
     return
   }
-  // 下播后轮询到 remux 完成，自动从 FLV 切到 MP4
+  // 下播后轮询到 remux 完成、再轮询到合并完成，自动从 FLV/分片切到单文件
   const r = recording.value
-  if (r && (r.status === 'recording' || r.status === 'pending' || r.status === 'remuxing')) {
+  const merging = r && (r.merge_status === 'pending' || r.merge_status === 'merging')
+  if (r && (r.status === 'recording' || r.status === 'pending' ||
+            r.status === 'remuxing' || merging)) {
     calTick += 1
     if (calTick % 5 === 0) void loadCalendar(true)
   }
