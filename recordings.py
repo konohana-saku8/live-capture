@@ -548,11 +548,13 @@ class RecordingService:
             if missing:
                 raise RuntimeError("有 %d 个分片文件丢失" % len(missing))
 
-            # 探测所有分片参数，定统一基准：分辨率取第一片，帧率取最大，
+            # 探测所有分片参数，定统一基准：分辨率取第一片，帧率取最小，
             # 采样率 48000、双声道（B 站直播流基本都是这套）。
+            # 帧率务必取最小：取最大会把低帧率片插帧，编码量翻倍、产物虚胖。
+            # 取最小只是把高帧率片降采样，肉眼几乎无差，手机合并能快一倍以上。
             specs = [_probe_stream(s) for s in srcs]
             w, h = specs[0]["width"], specs[0]["height"]
-            fps = max((sp["fps"] for sp in specs), default=30)
+            fps = min((sp["fps"] for sp in specs), default=30)
             w, h, fps = w or 1280, h or 720, fps or 30
             self.log("info", "[录像 %s] 开始合并：%d 片 → 单 MP4（%dx%d @%sfps，%s CRF%s）" %
                      (rec_id, len(srcs), w, h, fps, MERGE_PRESET, MERGE_CRF))
