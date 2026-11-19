@@ -2,7 +2,10 @@
 """录像文件与数据库记录：开播录制、remux、按场次挂到日历。
 
 文件统一放在 ``data/recordings/<room_id>/``，数据库只存相对路径，便于整个
-data 目录搬走。录制中只写 FLV；停止后由 remux 线程无损转成 MP4 并删 FLV。
+data 目录搬走。录制中只写 FLV；停止后由 remux 线程把每个分片各自无损转成
+MP4 并删 FLV。绝不跨分片 concat：直播重连后新分片的 SPS/PPS、AAC 声道配置、
+帧率、时间戳基准都可能变，-c copy 拼接会让 MP4 只保留第一片的参数集去解后续
+分片，导致后半段画面和声音全部损坏（2026-11-19 场次踩过）。
 """
 from __future__ import annotations
 
@@ -313,24 +316,18 @@ class RecordingService:
         self.store.update_recording(rec_id, status="remuxing", error="")
         try:
             flv_paths = [self.abs(p["path"]) for p in parts]
-            first = parts[0]
             base = os.path.splitext(os.path.basename(flv_paths[0]))[0]
             room_dir = os.path.dirname(flv_paths[0])
             mp4_parts = []
-            if len(flv_paths) == 1:
-                out = os.path.join(room_dir, base + ".mp4")
-                self._ffmpeg_copy(exe, ["-i", flv_paths[0]], out)
-                mp4_parts.append(self._part(out, first.get("started_at") or 0))
-            else:
-                out = os.path.join(room_dir, base + ".mp4")
-                if self._concat(exe, flv_paths, out, room_dir):
-                    mp4_parts.append(self._part(out, first.get("started_at") or 0))
+            # 每个分片独立 remux，绝不跨分片 concat。重连后各分片的编码参数、
+            # 帧率、时间戳基准可能不同，合并会损坏后半段（见模块说明）。
+            for i, path in enumerate(flv_paths, 1):
+                if len(flv_paths) == 1:
+                    out = os.path.join(room_dir, base + ".mp4")
                 else:
-                    for i, path in enumerate(flv_paths, 1):
-                        part_out = os.path.join(room_dir, "%s_p%d.mp4" % (base, i))
-                        self._ffmpeg_copy(exe, ["-i", path], part_out)
-                        mp4_parts.append(self._part(
-                            part_out, parts[i - 1].get("started_at") or 0))
+                    out = os.path.join(room_dir, "%s_p%d.mp4" % (base, i))
+                self._ffmpeg_copy(exe, ["-i", path], out)
+                mp4_parts.append(self._part(out, parts[i - 1].get("started_at") or 0))
             if not mp4_parts or any(not os.path.getsize(self.abs(p["path"]))
                                     for p in mp4_parts):
                 raise RuntimeError("remux 输出为空")
@@ -366,32 +363,6 @@ class RecordingService:
         if not os.path.getsize(tmp):
             raise RuntimeError("remux 输出为空")
         os.replace(tmp, out)
-
-    def _concat(self, exe, paths, out, room_dir):
-        listing = os.path.join(room_dir, ".concat.txt")
-        tmp = out + ".tmp.mp4"
-        try:
-            with open(listing, "w", encoding="utf-8") as handle:
-                for path in paths:
-                    handle.write("file '%s'\n" % path.replace("'", "'\\''"))
-            self._run([exe, "-nostdin", "-y", "-hide_banner", "-loglevel",
-                       "error", "-f", "concat", "-safe", "0", "-i", listing,
-                       "-c", "copy", "-movflags", "+faststart", tmp])
-            if not os.path.getsize(tmp):
-                return False
-            os.replace(tmp, out)
-            return True
-        except Exception:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            return False
-        finally:
-            try:
-                os.remove(listing)
-            except OSError:
-                pass
 
     @staticmethod
     def _run(cmd):
