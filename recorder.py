@@ -11,6 +11,7 @@ import re
 import shutil
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 MIN_FREE_BYTES = 1024 * 1024 * 1024
@@ -150,7 +151,13 @@ class LiveRecorder:
                 urls, real_qn = api.get_play_urls(self.room_id, qn=self._qn)
                 if real_qn and real_qn != self._actual_qn:
                     with self.lock:
+                        prev_qn = self._actual_qn
                         self._actual_qn = int(real_qn)
+                    # 清晰度变化是编码参数变化的重要线索:降级往往意味着换了
+                    # 转码线路/节点,后续分片参数可能不同。
+                    self.log("info", "[%s] 清晰度变化 %s → %s（请求 %s）" %
+                             (self.label, _qn_label(prev_qn) if prev_qn else "未知",
+                              _qn_label(real_qn), _qn_label(self._qn)))
                     if self.recordings and self._rec_id:
                         try:
                             self.recordings.set_actual_qn(self._rec_id, real_qn)
@@ -204,16 +211,24 @@ class LiveRecorder:
             headers["Cookie"] = cookie
         req = urllib.request.Request(url, headers=headers)
         wrote = 0
+        # CDN 节点是排查重连/参数变化的关键线索:重连常落到不同边缘节点。
+        try:
+            host = urllib.parse.urlsplit(url).hostname or "未知"
+        except Exception:
+            host = "未知"
+        part_started = int(time.time() * 1000)
+        t_start = time.time()
         with urllib.request.urlopen(req, timeout=30) as resp:
             with self.lock:
                 self._resp = resp
-            part_started = int(time.time() * 1000)
             if self.recordings and self._rec_id:
                 try:
                     self.recordings.add_part(self._rec_id, path, part_started)
                 except Exception as exc:
                     self.log("warn", "[%s] 记录录像分片失败：%s" % (self.label, exc))
-            self.log("info", "[%s] 录制写入 %s" % (self.label, path))
+            self.log("info", "[%s] 录制写入 %s（第 %d 片，节点 %s）" %
+                     (self.label, os.path.basename(path), part, host))
+            reason = "流中断"  # read() 返回空 = 对端关闭,触发换片重连
             try:
                 with open(path, "wb") as handle:
                     last = 0.0
@@ -234,9 +249,20 @@ class LiveRecorder:
                         if now - last >= REPORT_INTERVAL:
                             last = now
                             self._report()
+                if self._stop.is_set():
+                    reason = "主动停止"
+            except Exception:
+                reason = "读取异常"
+                raise
             finally:
                 with self.lock:
                     self._resp = None
+                # 每片结束时记录诊断汇总:字节数/时长/结束原因。11-19 排查时
+                # 这些信息全缺,只能事后 ffprobe 坏文件反推。
+                elapsed = time.time() - t_start
+                self.log("info", "[%s] 分片结束 %s：%s，%.1f MB，%.0f 秒，节点 %s" %
+                         (self.label, os.path.basename(path), reason,
+                          wrote / 1024.0 / 1024.0, elapsed, host))
                 if self.recordings and self._rec_id:
                     try:
                         self.recordings.finish_part(self._rec_id, path)

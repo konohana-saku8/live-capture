@@ -9,6 +9,7 @@ MP4 并删 FLV。绝不跨分片 concat：直播重连后新分片的 SPS/PPS、
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -37,17 +38,50 @@ def _file_size(path):
 
 def _probe_duration(path):
     """ffprobe 拿视频时长；没有 ffprobe 就返回 0，不阻塞 remux。"""
+    return _probe(path)[0]
+
+
+def _probe(path):
+    """一次 ffprobe 同时取时长和关键编码参数。
+
+    返回 ``(duration_ms, desc)``。desc 形如
+    ``h264 640x360 30fps / aac 44100Hz 2ch``，供日志定位重连后的参数变化
+    （11-19 事故中分片参数不一致却无任何日志，只能事后考古）。
+    ffprobe 不可用或探测失败时返回 (0, "")，绝不阻塞录制/remux。
+    """
     exe = shutil.which("ffprobe")
     if not exe:
-        return 0
+        return 0, ""
     try:
         out = subprocess.run(
-            [exe, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=nw=1:nk=1", path],
+            [exe, "-v", "error", "-show_entries",
+             "format=duration:stream=codec_type,codec_name,width,height,"
+             "r_frame_rate,sample_rate,channels",
+             "-of", "json", path],
             capture_output=True, text=True, timeout=30)
-        return int(float(out.stdout.strip() or 0) * 1000)
+        data = json.loads(out.stdout or "{}")
+        dur = int(float((data.get("format") or {}).get("duration") or 0) * 1000)
+        v = a = None
+        for s in data.get("streams") or []:
+            if s.get("codec_type") == "video" and v is None:
+                v = s
+            elif s.get("codec_type") == "audio" and a is None:
+                a = s
+        parts = []
+        if v:
+            fps = v.get("r_frame_rate") or "?"
+            if fps.endswith("/1"):
+                fps = fps[:-2]
+            parts.append("%s %sx%s %sfps" % (
+                v.get("codec_name") or "?", v.get("width") or "?",
+                v.get("height") or "?", fps))
+        if a:
+            parts.append("%s %sHz %sch" % (
+                a.get("codec_name") or "?", a.get("sample_rate") or "?",
+                a.get("channels") or "?"))
+        return dur, " / ".join(parts)
     except (OSError, ValueError, subprocess.SubprocessError):
-        return 0
+        return 0, ""
 
 
 class RecordingService:
@@ -102,8 +136,15 @@ class RecordingService:
         parts = rec.get("flv_parts") or []
         for part in parts:
             if part.get("path") == rel:
-                part["bytes"] = _file_size(self.abs(rel))
-                part["duration_ms"] = _probe_duration(self.abs(rel))
+                full = self.abs(rel)
+                part["bytes"] = _file_size(full)
+                dur, desc = _probe(full)
+                part["duration_ms"] = dur
+                # 分片落盘即记录编码参数:重连后若参数变化,日志里逐片可见,
+                # 不必等出故障再 ffprobe 坏文件反推(11-19 的痛点)。
+                self.log("info", "[录像 %s] 分片参数 %s：%s，%.1f MB，%.1f 秒" %
+                         (rec_id, os.path.basename(rel), desc or "未取到",
+                          part["bytes"] / 1024.0 / 1024.0, dur / 1000.0))
                 break
         self.store.update_recording(rec_id, flv_parts=parts)
 
@@ -319,6 +360,8 @@ class RecordingService:
             base = os.path.splitext(os.path.basename(flv_paths[0]))[0]
             room_dir = os.path.dirname(flv_paths[0])
             mp4_parts = []
+            self.log("info", "[录像 %s] 开始 remux：%d 个分片，%s" %
+                     (rec_id, len(flv_paths), base))
             # 每个分片独立 remux，绝不跨分片 concat。重连后各分片的编码参数、
             # 帧率、时间戳基准可能不同，合并会损坏后半段（见模块说明）。
             for i, path in enumerate(flv_paths, 1):
@@ -326,7 +369,11 @@ class RecordingService:
                     out = os.path.join(room_dir, base + ".mp4")
                 else:
                     out = os.path.join(room_dir, "%s_p%d.mp4" % (base, i))
+                t0 = time.time()
                 self._ffmpeg_copy(exe, ["-i", path], out)
+                self.log("info", "[录像 %s] remux 完成第 %d/%d 片：%s → %s（%.1f 秒）" %
+                         (rec_id, i, len(flv_paths), os.path.basename(path),
+                          os.path.basename(out), time.time() - t0))
                 mp4_parts.append(self._part(out, parts[i - 1].get("started_at") or 0))
             if not mp4_parts or any(not os.path.getsize(self.abs(p["path"]))
                                     for p in mp4_parts):
