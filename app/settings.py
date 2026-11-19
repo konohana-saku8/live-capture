@@ -33,12 +33,13 @@ DEFAULTS: dict[str, Any] = {
     "token": "",
     "auto_start": True,
     "dyn_mid": 0,                  # 旧版全局动态 uid，仅在没有采集器时兜底
+    "keep_flv": True,              # 合并稳定前保留 FLV 原片作兜底
 }
 
 SECRET_KEYS = ("token",)
 BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "record_guard",
              "record_gift", "record_red_pocket", "record_enter",
-             "record_interact", "auto_record", "auto_start")
+             "record_interact", "auto_record", "auto_start", "keep_flv")
 # 采集内容开关：采集器清单里返回「全局默认 + 该采集器覆盖」后的有效值
 CONTENT_KEYS = ("record_danmaku", "record_sc", "record_events", "record_guard",
                 "record_gift", "record_red_pocket", "record_enter",

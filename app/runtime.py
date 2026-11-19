@@ -221,5 +221,6 @@ class Runtime:
 
     def shutdown(self) -> None:
         self.dynamics.stop()
+        self.recordings.stop()
         self.manager.stop_all()
         self.logs.close()

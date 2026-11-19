@@ -48,6 +48,21 @@ def recordings_media(rec_id):
     kind = (arg("kind") or "").lower()
     mp4 = rec.get("mp4_parts") or []
     flv = rec.get("flv_parts") or []
+    # merged = 合并后的单 MP4（前端优先播放这一路）
+    if kind == "merged":
+        if not (rec.get("merged_path") or ""):
+            raise ApiError("合并成品尚未就绪", 409)
+        try:
+            path = r.recordings.abs(rec["merged_path"])
+        except ValueError:
+            raise ApiError("录像路径不合法", 400)
+        try:
+            resp = send_file(path, conditional=True, mimetype="video/mp4")
+        except OSError:
+            raise ApiError("合并成品不存在", 404)
+        resp.headers["Cache-Control"] = "private, max-age=3600"
+        return resp
+
     if kind not in ("mp4", "flv"):
         kind = "mp4" if mp4 else "flv"
     parts = mp4 if kind == "mp4" else flv
@@ -72,6 +87,17 @@ def recordings_remux(rec_id):
     r = rt()
     try:
         r.recordings.retry(rec_id)
+    except ValueError as exc:
+        raise ApiError(str(exc), 404)
+    return {"ok": True, "id": rec_id}
+
+
+@bp.post("/recordings/<int:rec_id>/merge")
+def recordings_merge(rec_id):
+    """手动重试合并成单文件（失败兜底；正常情况 remux 后自动触发）。"""
+    r = rt()
+    try:
+        r.recordings.retry_merge(rec_id)
     except ValueError as exc:
         raise ApiError(str(exc), 404)
     return {"ok": True, "id": rec_id}

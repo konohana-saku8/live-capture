@@ -27,10 +27,12 @@ const tokenQuery = (() => {
 })()
 
 const rn = computed(() => props.recording)
-const mode = computed<'live' | 'mp4' | 'flv' | 'none'>(() => {
+const mode = computed<'live' | 'merged' | 'mp4' | 'flv' | 'none'>(() => {
   const r = rn.value
   if (!r) return 'none'
   if (r.status === 'recording' && props.live) return 'live'
+  // 合并成品就绪后优先播放单文件，前端不再分段
+  if (r.merge_status === 'done' && r.merged && r.mp4_count > 1) return 'merged'
   if (r.mp4_count > 0) return 'mp4'
   if (r.flv_count > 0) return 'flv'
   return 'none'
@@ -39,6 +41,13 @@ const mode = computed<'live' | 'mp4' | 'flv' | 'none'>(() => {
 const parts = computed<RecordingPart[]>(() => {
   const r = rn.value
   if (!r) return []
+  if (mode.value === 'merged') {
+    // 单文件当作一个虚拟段，起点用第一片的 started_at 对齐弹幕时间轴
+    const first = (r.mp4_parts || [])[0]
+    return [{ index: 0, started_at: first?.started_at || r.started_at || props.anchor,
+              bytes: r.merged?.bytes || 0,
+              duration_ms: r.merged?.duration_ms || 0 }]
+  }
   return mode.value === 'mp4' ? r.mp4_parts : (r.flv_parts || [])
 })
 
@@ -48,7 +57,7 @@ const duration = computed(() => {
 })
 
 const modeLabel = computed(() => ({
-  live: '实时画面', mp4: 'MP4 回放', flv: 'FLV 回放', none: '无画面',
+  live: '实时画面', merged: '完整回放', mp4: 'MP4 回分段', flv: 'FLV 回放', none: '无画面',
 } as Record<string, string>)[mode.value])
 
 const mediaUrl = computed(() => {
@@ -57,6 +66,9 @@ const mediaUrl = computed(() => {
   if (mode.value === 'live') {
     const qn = r.actual_qn || r.requested_qn || 250
     return '/api/live/flv?room_id=' + r.room_id + '&qn=' + qn + tokenQuery
+  }
+  if (mode.value === 'merged') {
+    return '/api/recordings/' + r.id + '/media?kind=merged' + tokenQuery
   }
   if (mode.value === 'mp4' || mode.value === 'flv') {
     return '/api/recordings/' + r.id + '/media?part=' + part.value +
@@ -70,6 +82,9 @@ const noVideoText = computed(() => {
   if (!r) return props.live ? '这场直播没有开启录制' : '这场没有录像'
   if (r.status === 'recording') return '正在录制，下播后这里会出现回放'
   if (r.status === 'pending' || r.status === 'remuxing') return '录像正在转封装成 MP4，稍后自动出现'
+  if (r.merge_status === 'merging') return '正在合并成完整回放，稍后自动出现'
+  if (r.merge_status === 'pending') return '等待合并成完整回放'
+  if (r.merge_status === 'error') return '合并失败，已保留原片：' + (r.merge_error || '稍后自动重试')
   if (r.status === 'failed' || r.status === 'interrupted') {
     return '录像文件异常：' + (r.error || '转封装失败')
   }
@@ -112,7 +127,7 @@ function onMeta() {
   if (pendingSeek.value != null) {
     const sec = pendingSeek.value
     pendingSeek.value = null
-    if (mode.value === 'mp4') applySeek(sec)
+    if (mode.value === 'mp4' || mode.value === 'merged') applySeek(sec)
     else flv.value?.seek(sec)
     return
   }
@@ -146,7 +161,7 @@ function seek(ms: number) {
     pendingSeek.value = local
     return true
   }
-  if (mode.value === 'mp4') return applySeek(local)
+  if (mode.value === 'mp4' || mode.value === 'merged') return applySeek(local)
   return flv.value ? flv.value.seek(local) : false
 }
 
@@ -163,9 +178,9 @@ watch(() => rn.value?.id, () => {
   autoplayOnLoad.value = false
 })
 
-// 直播结束、remux 完成后自动换成 MP4，并尽量停在原来的位置
+// 直播结束、remux / 合并完成后自动换成新画面，并尽量停在原来的位置
 watch(mode, (next, prev) => {
-  if (next !== 'mp4' || !prev || prev === 'mp4') return
+  if ((next !== 'mp4' && next !== 'merged') || !prev || prev === next) return
   const target = Math.max(0, props.currentMs)
   let index = 0
   for (let i = 0; i < parts.value.length; i++) {
@@ -179,10 +194,10 @@ watch(mode, (next, prev) => {
 <template>
   <div class="studio-video">
     <div class="studio-video-frame">
-      <video v-if="mode === 'mp4'" :key="'mp4-' + part" ref="video"
+      <video v-if="mode === 'mp4' || mode === 'merged'" :key="'mp4-' + part" ref="video"
              class="studio-video-el" controls playsinline preload="metadata"
              :src="mediaUrl" @timeupdate="onNativeTime" @loadedmetadata="onMeta"
-             @ended="onEnded" @error="emit('error', 'MP4 播放失败')"></video>
+             @ended="onEnded" @error="emit('error', '视频播放失败')"></video>
       <LiveFlvPlayer v-else-if="mode === 'live' || mode === 'flv'" ref="flv"
                      :src="mediaUrl" :live="mode === 'live'" @time="onFlvTime"
                      @duration="onMeta" @ended="onEnded" @error="onError" />

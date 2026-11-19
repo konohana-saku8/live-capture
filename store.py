@@ -125,6 +125,13 @@ MIGRATIONS = {
                 "emote_map": "TEXT NOT NULL DEFAULT '{}'",
                 "import_key": "TEXT"},
     "room_event": {"import_key": "TEXT"},
+    # 多分片自动合并成单 MP4：状态与产物落库，进程重启不丢
+    "recordings": {"merge_status": "TEXT NOT NULL DEFAULT ''",
+                   "merged_path": "TEXT NOT NULL DEFAULT ''",
+                   "merged_bytes": "INTEGER NOT NULL DEFAULT 0",
+                   "merged_duration_ms": "INTEGER NOT NULL DEFAULT 0",
+                   "merge_error": "TEXT NOT NULL DEFAULT ''",
+                   "merge_seconds": "REAL NOT NULL DEFAULT 0"},
 }
 
 # 历史导入去重：同一份历史库反复导入不会重复写（NULL 不参与唯一约束）
@@ -471,7 +478,9 @@ class Store:
     def update_recording(self, rec_id, **fields):
         allowed = ("live_started_at", "started_at", "stopped_at", "status",
                    "requested_qn", "actual_qn", "flv_parts", "mp4_parts",
-                   "bytes", "duration_ms", "error")
+                   "bytes", "duration_ms", "error",
+                   "merge_status", "merged_path", "merged_bytes",
+                   "merged_duration_ms", "merge_error", "merge_seconds")
         sets, args = [], []
         for key in allowed:
             if key not in fields:

@@ -94,6 +94,10 @@ export interface RecordingInfo {
   has_video: boolean
   mp4_parts: RecordingPart[]
   flv_parts?: RecordingPart[]
+  merge_status?: string
+  merge_error?: string
+  merge_seconds?: number
+  merged?: { bytes: number; duration_ms: number } | null
 }
 
 export interface Segment {

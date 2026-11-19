@@ -1235,7 +1235,8 @@ class CaptureManager:
         self.lock = threading.RLock()
         self.workers = {}
         self.recordings = recordings or RecordingService(
-            store, os.path.dirname(os.path.abspath(store.path)), log_fn)
+            store, os.path.dirname(os.path.abspath(store.path)), log_fn,
+            config_getter=config_getter)
 
     @staticmethod
     def blank_state():

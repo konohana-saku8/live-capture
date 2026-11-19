@@ -7,9 +7,10 @@ import threading
 
 
 class RemuxWorker:
-    def __init__(self, runner, log=None):
+    def __init__(self, runner, log=None, name="recording-remux"):
         self.runner = runner
         self.log = log or (lambda *_: None)
+        self.name = name
         self.queue = queue.Queue()
         self.lock = threading.Lock()
         self.seen = set()
@@ -29,7 +30,7 @@ class RemuxWorker:
             if self.thread and self.thread.is_alive():
                 return
             self.thread = threading.Thread(
-                target=self._run, name="recording-remux", daemon=True)
+                target=self._run, name=self.name, daemon=True)
             self.thread.start()
 
     def _run(self):
