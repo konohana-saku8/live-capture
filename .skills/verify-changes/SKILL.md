@@ -9,7 +9,7 @@ description: live-capture 改动后的测试与验证流程——selftest、Flas
 
 1. **全量自测**（改了任何 .py）：
    ```bash
-   cd /d/HibaneHinome/live-capture && .venv-host/Scripts/python.exe selftest.py
+   cd live-capture && .venv-host/Scripts/python.exe selftest.py
    ```
    当前基线 240 项全过。失败先看是不是桩数据要同步（字段变化、房间事件累计），再怀疑实现。
    Windows 下先设 `PYTHONIOENCODING=utf-8`，否则检查名里的 ✕ 会触发 GBK 编码错误。

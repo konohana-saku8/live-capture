@@ -68,4 +68,4 @@ node node_modules/vite/bin/vite.js build   # 产物输出 ../web/dist/（入库�
 
 - 提交前确认：LF 无 CRLF、`git status` 无 node_modules/构建临时物混入。
 - 一次功能一个提交，消息写清「做了什么 + 为什么」。
-- 本仓库无远端，发布 = scp 推文件（见 operations.md）。
+- 远端 `origin` 只用于备份与分享；发布仍是 scp 推文件（见 operations.md）。

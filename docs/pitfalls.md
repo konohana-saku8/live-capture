@@ -29,7 +29,7 @@
 3. 本机沙箱外网走 `127.0.0.1:9094` 代理：curl 自动读 env；**headless Chrome 不读**，要显式 `--proxy-server`。验证防盗链图片优先本地 mock（`--host-resolver-rules=MAP *.hdslb.com 127.0.0.1` 让直连快速失败）。
 4. headless Chrome 最小窗口宽约 500px；390px 截图右边被裁是工具假象，判断溢出要量 `scrollWidth`。
 5. `Edit` 工具会把整档换行改 CRLF——shell 脚本 / HTML 提交前检查还原 LF。
-6. 多源 `scp -r a b v20:~/x/` 的目录目标会平铺落位（`web/dist` 变 `~/x/dist`），推完核对哈希。
+6. 多源 `scp -r a b phone:~/x/` 的目录目标会平铺落位（`web/dist` 变 `~/x/dist`），推完核对哈希。
 7. 常驻后台服务用 Bash 工具的 `run_in_background`，不要用 `&`（随 shell 退出被杀）。
 
 ## 前端

@@ -11,8 +11,8 @@ description: 整理 live-capture 采集到的直播数据——核对场次分�
 
 | 通道 | 适用 | 用法 |
 |---|---|---|
-| HTTP API（推荐） | 查询、导出、删段 | `curl -H "X-Access-Token: <口令>" http://192.168.10.107:8765/api/...`，口令 `1234` |
-| ssh + 只读 sqlite | API 没覆盖的复杂查询 | `ssh v20 "cd ~/live-capture && .venv/bin/python -c \"...\""`，连接串 `sqlite3.connect('file:data/capture.db?mode=ro', uri=True)` |
+| HTTP API（推荐） | 查询、导出、删段 | `curl -H "X-Access-Token: <口令>" http://<手机IP>:8765/api/...`，口令见手机 `data/config.json` |
+| ssh + 只读 sqlite | API 没覆盖的复杂查询 | `ssh phone "cd ~/live-capture && .venv/bin/python -c \"...\""`，连接串 `sqlite3.connect('file:data/capture.db?mode=ro', uri=True)` |
 
 路由明细见 `docs/api.md`。常用：
 
@@ -55,7 +55,7 @@ POST /api/session/delete
 
 ## 与 live-archive 的关系（别混库）
 
-- **两套库并存**：手机的 `capture.db` 是 live-capture 自己的库；live-archive 的枢纽是 `D:/HibaneHinome/live-archive/.data/translation_history.db`（LiveTranslate 写逐字稿、danmaku-it 写弹幕/SC）。表结构同源（danmaku/sc_message/room_event），但**互不读写**，不要把一边的数据写进另一边当作「同步」。
+- **两套库并存**：手机的 `capture.db` 是 live-capture 自己的库；live-archive 的枢纽是它仓库里的 `translation_history.db`（LiveTranslate 写逐字稿、danmaku-it 写弹幕/SC）。表结构同源（danmaku/sc_message/room_event），但**互不读写**，不要把一边的数据写进另一边当作「同步」。
 - 给 live-archive 提供 SC 校对素材（摘录择段、机器译文校准）时：从本服务导出 SC 原文，由人工/会话在 live-archive 侧按其 AGENT.md 的摘录标准整理，不直接改 live-archive 的库。
 - 历史库反向导入（旧 translate_history.db → 本服务）用 `import_history.py`，按内容哈希去重可重复执行，`--gap 30` 推断场次并补写开播事件。
 

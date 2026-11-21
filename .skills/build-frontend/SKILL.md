@@ -14,7 +14,7 @@ description: live-capture 的 Vue 3 前端开发与构建发布流程。改 fron
 ## 构建
 
 ```bash
-cd /d/HibaneHinome/live-capture/frontend
+cd live-capture/frontend
 node node_modules/vite/bin/vite.js build
 ```
 
@@ -23,9 +23,9 @@ node node_modules/vite/bin/vite.js build
 ## 发布到手机
 
 ```bash
-ssh v20 "rm -rf ~/live-capture/web/dist && mkdir -p ~/live-capture/web/dist"
-scp -q -r web/dist/. v20:~/live-capture/web/dist/
-curl -s http://192.168.10.107:8765/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'   # 确认新 hash 在线
+ssh phone "rm -rf ~/live-capture/web/dist && mkdir -p ~/live-capture/web/dist"
+scp -q -r web/dist/. phone:~/live-capture/web/dist/
+curl -s http://<手机IP>:8765/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'   # 确认新 hash 在线
 ```
 
 ## 开发约定（用户口径）

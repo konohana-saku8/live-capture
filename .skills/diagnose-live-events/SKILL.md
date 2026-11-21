@@ -10,7 +10,7 @@ description: 排查 live-capture 场次/开播事件异常——幻影「开播�
 ## 第一步：还原时间线
 
 ```bash
-ssh v20 "grep -n -B3 -A3 '<出事时刻 HH:MM:SS>' ~/live-capture/data/service.log; \
+ssh phone "grep -n -B3 -A3 '<出事时刻 HH:MM:SS>' ~/live-capture/data/service.log; \
   cd ~/live-capture && .venv/bin/python << 'PYEOF'
 import sqlite3
 c = sqlite3.connect('data/capture.db')
