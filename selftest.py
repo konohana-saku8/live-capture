@@ -795,7 +795,7 @@ def main():
         logs = LogBuffer()
         logs.add("info", "selftest")
         manager = CaptureManager(st, cfg.get,
-                                 lambda level, msg: logs.add(level, msg),
+                                 lambda level, msg, exc=None: logs.add(level, msg),
                                  rooms=rooms)
         old_brief = server.fetch_room_brief
         server.fetch_room_brief = lambda rid, timeout=3: {

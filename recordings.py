@@ -7,10 +7,14 @@ MP4。**绝不跨分片 concat -c copy**：重连后新分片的 SPS/PPS、AAC �
 帧率、时间戳基准都可能变，无损拼接会让 MP4 只保留第一片参数集去解后续分片，
 导致后半段画面和声音全部损坏（2026-11-19 场次踩过）。
 
-分片 MP4 各自就绪后，由单独的合并线程用 concat **滤镜重编码**（veryfast）
-统一成单个 MP4，前端只呈现一个可拖动的视频。重编码是跨参数合并的唯一安全
-方式，慢但一次到位；合并失败只记状态、绝不动 FLV 源。FLV 默认保留作兜底，
-等合并稳定或磁盘吃紧再清理。
+播放不走单文件合并，而是**分 P**：前端把 ``_p1.mp4``、``_p2.mp4`` 当成选集，
+用浏览器原生 ``<video>`` 依次播放。原生 MP4 不依赖 MSE，PC 和手机都能看。
+跨分片合并成单文件需要重编码（码率上涨、体积更大、整场几十分钟），不划算，
+因此不再自动合并；``run_merge`` 保留为手动接口，默认不排队。
+
+remux 成功后把原始 FLV 归档到 ``data/cache/flv/<room_id>/``：录节目录只留
+MP4 分片，缓存只做数据恢复用，不参与播放。等分 P 方案稳定、确认无需回滚
+再考虑清理。
 """
 from __future__ import annotations
 
@@ -22,18 +26,17 @@ import threading
 import time
 
 from remux import RemuxWorker
+from flv_index import inject as flv_inject_index
 
 MIN_FREE_BYTES = 1024 * 1024 * 1024      # 录制硬下限 1GB
 WARN_FREE_BYTES = 2 * 1024 * 1024 * 1024  # 页面预警 2GB
 MATCH_WINDOW_MS = 10 * 60 * 1000
 
-# 合并配置（可用 config.json 的 merge_* 覆盖）
-KEEP_FLV_DEFAULT = True       # 合并稳定前保留 FLV 原片兜底
-MERGE_PRESET = "veryfast"     # 画质优先的编码档
-MERGE_CRF = 20                # 恒定质量，数值越小画质越好
-MERGE_AUDIO_BITRATE = "160k"
-MERGE_NIGHT_START = 3         # 失败重试的夜间窗口 [3, 8)
-MERGE_NIGHT_END = 8
+# 播放与缓存
+KEEP_FLV_DEFAULT = True       # remux 后保留 FLV 原片，归档到缓存目录做恢复兜底
+FLV_CACHE_DIR = "cache/flv"   # 归档目录（相对 data_dir）
+RETRY_NIGHT_START = 3         # 失败重试的夜间窗口 [3, 8)
+RETRY_NIGHT_END = 8
 
 
 def _as_int(value, default=0):
@@ -201,6 +204,81 @@ class RecordingService:
         self.store.update_recording(rec_id, status="pending", error="")
         self.remux.enqueue(rec_id)
 
+    # ---------- 删除 ----------
+
+    @staticmethod
+    def _busy(rec):
+        """录制 / 转封装 / 合并中的录像不能删文件，免得和工作线程抢文件。"""
+        return ((rec.get("status") or "") in ("recording", "remuxing")
+                or (rec.get("merge_status") or "") == "merging")
+
+    def _unlink(self, paths):
+        """只删数据库登记过的相对路径，逐个报错，不按目录通配。"""
+        count, freed, errors = 0, 0, []
+        for rel in paths:
+            if not rel:
+                continue
+            try:
+                path = self.abs(rel)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            try:
+                if os.path.isfile(path):
+                    freed += os.path.getsize(path)
+                    os.remove(path)
+                    count += 1
+            except OSError as exc:
+                errors.append(os.path.basename(path) + "：" + str(exc))
+        return count, freed, errors
+
+    def delete_part(self, rec_id, kind, index):
+        """删一条录像的某个 MP4 分 P 或 FLV 原片，保留其余分片和录像记录。"""
+        rec = self.get(rec_id)
+        if not rec:
+            raise ValueError("录像不存在")
+        if self._busy(rec):
+            raise ValueError("录像正在处理中，稍后再删")
+        key = "mp4_parts" if kind == "mp4" else "flv_parts"
+        parts = rec.get(key) or []
+        index = _as_int(index, -1)
+        if index < 0 or index >= len(parts):
+            raise ValueError("分片不存在")
+        part = parts[index]
+        count, freed, errors = self._unlink([part.get("path")])
+        if errors:
+            raise OSError("；".join(errors))
+        parts.pop(index)
+        remain_flv = rec.get("flv_parts") or []
+        remain_mp4 = rec.get("mp4_parts") or []
+        basis = remain_flv or remain_mp4
+        fields = {key: parts,
+                  "bytes": sum(_as_int(p.get("bytes")) for p in basis),
+                  "duration_ms": sum(_as_int(p.get("duration_ms")) for p in basis)}
+        self.store.update_recording(rec_id, **fields)
+        self.log("info", "[录像 %s] 已删除 %s 第 %d 片，释放 %.1f MB" %
+                 (rec_id, kind, index + 1, freed / 1024.0 / 1024.0))
+        return {"rec_id": _as_int(rec_id), "kind": kind, "index": index,
+                "files": count, "bytes": freed}
+
+    def delete_recording(self, rec_id):
+        """删一整条录像：所有 MP4 / FLV / 旧合并文件 + 录像记录，不碰文本数据。"""
+        rec = self.get(rec_id)
+        if not rec:
+            return None
+        if self._busy(rec):
+            raise ValueError("录像正在处理中，稍后再删")
+        paths = [p.get("path") for p in
+                 (rec.get("mp4_parts") or []) + (rec.get("flv_parts") or [])]
+        paths.append(rec.get("merged_path"))
+        count, freed, errors = self._unlink(paths)
+        if errors:
+            raise OSError("；".join(errors))
+        self.store.delete_recording(rec_id)
+        self.log("info", "[录像 %s] 已删除整条录像：%d 个文件，释放 %.1f MB" %
+                 (rec_id, count, freed / 1024.0 / 1024.0))
+        return {"rec_id": _as_int(rec_id), "files": count, "bytes": freed}
+
     # ---------- 查询 ----------
 
     @staticmethod
@@ -230,15 +308,19 @@ class RecordingService:
             "merge_seconds": rec.get("merge_seconds") or 0,
             "merged": (None if not (rec.get("merged_path") or "")
                        else {"bytes": rec.get("merged_bytes") or 0,
-                             "duration_ms": rec.get("merged_duration_ms") or 0}),
+                             "duration_ms": rec.get("merged_duration_ms") or 0,
+                             "kind": ("flv" if (rec.get("merged_path") or "")
+                                      .lower().endswith(".flv") else "mp4")}),
             "mp4_parts": [
-                {"index": i, "started_at": p.get("started_at") or 0,
+                {"index": i, "name": os.path.basename(p.get("path") or ""),
+                 "started_at": p.get("started_at") or 0,
                  "bytes": p.get("bytes") or 0,
                  "duration_ms": p.get("duration_ms") or 0}
                 for i, p in enumerate(mp4)
             ],
             "flv_parts": [
-                {"index": i, "started_at": p.get("started_at") or 0,
+                {"index": i, "name": os.path.basename(p.get("path") or ""),
+                 "started_at": p.get("started_at") or 0,
                  "bytes": p.get("bytes") or 0,
                  "duration_ms": p.get("duration_ms") or 0}
                 for i, p in enumerate(flv)
@@ -271,29 +353,54 @@ class RecordingService:
 
     def attach_segments(self, room_id, segments):
         recs = self.store.list_recordings(room_id)
+        used: set[int] = set()          # 一场录像只能属于一场直播
         for seg in segments:
             if seg.get("kind") != "live":
                 seg["recording"] = None
                 continue
-            seg["recording"] = self.public(self._match(seg, recs))
+            rec = self._match(seg, recs, used)
+            seg["recording"] = self.public(rec)
+            if rec and rec.get("id"):
+                used.add(rec["id"])
         return segments
 
     @staticmethod
-    def _match(seg, recs):
+    def _match(seg, recs, used=None):
+        """把一段场次对到它的录像。
+
+        只认「录制真正开始的时间」（started_at）落在本场区间内，因为它无法
+        被别的场次继承；`live_started_at` 是补记开播时写进去的，可能残留上一
+        场的值（19 号那场就带着 18 号的开播时间），只在它离 started_at 足够近
+        时才作为兜底依据。
+        """
         start = _as_int(seg.get("start"))
         end = _as_int(seg.get("end")) or int(time.time() * 1000)
+        skip = used or set()
+        pool = [r for r in recs if r.get("id") not in skip]
+
         best, best_gap = None, MATCH_WINDOW_MS + 1
-        for rec in recs:
-            points = [x for x in (rec.get("live_started_at"),
-                                  rec.get("started_at")) if _as_int(x)]
-            for point in points:
-                gap = abs(_as_int(point) - start)
-                if gap < best_gap:
-                    best, best_gap = rec, gap
+        for rec in pool:
             rec_start = _as_int(rec.get("started_at"))
-            if start - MATCH_WINDOW_MS <= rec_start <= end + MATCH_WINDOW_MS:
-                if best is None:
-                    best = rec
+            if not rec_start:
+                continue
+            if not (start - MATCH_WINDOW_MS <= rec_start <= end + MATCH_WINDOW_MS):
+                continue
+            gap = abs(rec_start - start)
+            if gap < best_gap:
+                best, best_gap = rec, gap
+        if best is not None:
+            return best
+
+        for rec in pool:
+            point = _as_int(rec.get("live_started_at"))
+            if not point:
+                continue
+            rec_start = _as_int(rec.get("started_at"))
+            if rec_start and abs(point - rec_start) > MATCH_WINDOW_MS:
+                continue            # 上一场残留的开播时间，不可信
+            gap = abs(point - start)
+            if gap < best_gap:
+                best, best_gap = rec, gap
         return best
 
     # ---------- 启动对账 ----------
@@ -321,15 +428,24 @@ class RecordingService:
             for part in (rec.get("flv_parts") or []) + (rec.get("mp4_parts") or []):
                 if part.get("path"):
                     known.add(part["path"])
-            # merged 成品也算已登记，避免被当成新分片重复建记录
+            # 旧版合并成品（_merged.flv / _merged.mp4）也算已登记，
+            # 避免被当成新分片重复建记录
             if rec.get("merged_path"):
                 known.add(rec["merged_path"])
-            # 上次进程中断时正在合并的，重置为 pending 重新排队
-            if rec.get("merge_status") == "merging":
-                self.store.update_recording(rec["id"], merge_status="pending")
-            if (rec.get("merge_status") in ("pending", "merging", "error")
-                    and len(rec.get("mp4_parts") or []) >= 2):
-                self.merge.enqueue(rec["id"])
+            # 旧场次的 FLV 还留在录节目录里，MP4 已全部就绪时补一次归档
+            if rec.get("status") == "ready" and (rec.get("mp4_parts") or []):
+                flvs = rec.get("flv_parts") or []
+                stale = [self.abs(p["path"]) for p in flvs
+                         if (p.get("path") or "").startswith("recordings/")]
+                if stale and all(os.path.isfile(p) for p in stale):
+                    try:
+                        moved = self._archive_flv(rec, flvs, stale)
+                        self.store.update_recording(rec["id"], flv_parts=moved)
+                        self.log("info", "[录像 %s] 旧 FLV 已归档到缓存：%d 片" %
+                                 (rec["id"], len(moved)))
+                    except Exception as exc:
+                        self.log("warn", "[录像 %s] 旧 FLV 归档失败：%s" %
+                                 (rec["id"], exc), exc=exc)
         for room_name in os.listdir(root):
             room_dir = os.path.join(root, room_name)
             if not os.path.isdir(room_dir) or not room_name.isdigit():
@@ -338,8 +454,10 @@ class RecordingService:
             for name in os.listdir(room_dir):
                 if not name.lower().endswith((".flv", ".mp4")):
                     continue
-                if name.endswith("_merged.mp4"):
+                if name.endswith(("_merged.mp4", "_merged.flv")):
                     continue  # 合并成品不是分片
+                if name.startswith("_merge_"):
+                    continue  # 合并过程中的临时 FLV
                 rel = self.rel(os.path.join(room_dir, name))
                 if rel in known:
                     continue
@@ -450,10 +568,12 @@ class RecordingService:
             self.store.update_recording(
                 rec_id, status="ready", mp4_parts=mp4_parts,
                 bytes=total, duration_ms=duration, error="")
-            # FLV 源默认保留作兜底：合并功能稳定前不删，失败可重来。
-            # 只有 keep_flv=false 时才删源，且只在全部 MP4 成功后才动。
+            # 录节目录只留 MP4 分片：FLV 原片归档到缓存目录做恢复兜底，
+            # 只有 keep_flv=false 时才真删，且只在全部 MP4 成功后才动。
             if self.keep_flv:
-                self.log("info", "[录像 %s] remux 完成：%d 个 MP4，FLV 原片已保留兜底" %
+                moved = self._archive_flv(rec, parts, flv_paths)
+                self.store.update_recording(rec_id, flv_parts=moved)
+                self.log("info", "[录像 %s] remux 完成：%d 个 MP4，FLV 原片已归档到缓存" %
                          (rec_id, len(mp4_parts)))
             else:
                 for path in flv_paths:
@@ -464,21 +584,35 @@ class RecordingService:
                 self.store.update_recording(rec_id, flv_parts=[])
                 self.log("info", "[录像 %s] remux 完成：%d 个 MP4，FLV 源已清理" %
                          (rec_id, len(mp4_parts)))
-            # 多分片才需要合并；单分片本身就是完整视频，无需重编码
-            if len(mp4_parts) > 1:
-                self.store.update_recording(rec_id, merge_status="pending")
-                self.merge.enqueue(rec_id)
-            else:
-                # 单分片直接把它当作"合并成品"，前端走同一条单文件播放路径
-                only = mp4_parts[0]
-                self.store.update_recording(
-                    rec_id, merge_status="done", merged_path=only.get("path") or "",
-                    merged_bytes=only.get("bytes") or 0,
-                    merged_duration_ms=only.get("duration_ms") or 0)
         except Exception as exc:
             self.store.update_recording(rec_id, status="failed",
                                         error=str(exc)[:300])
-            self.log("warn", "[录像 %s] remux 失败：%s" % (rec_id, exc))
+            self.log("error", "[录像 %s] remux 失败：%s" % (rec_id, exc), exc=exc)
+
+    def _archive_flv(self, rec, parts, flv_paths):
+        """把 FLV 原片移到 ``data/cache/flv/<room_id>/``，返回新的 flv_parts。
+
+        只做备份：录节目录保持干净、播放全走 MP4 分片；需要重跑 remux 时，
+        后端仍按 flv_parts 里的新路径读得到文件。
+        """
+        room = str(_as_int(rec.get("room_id")))
+        dst_dir = os.path.join(self.data_dir, FLV_CACHE_DIR, room)
+        moved = []
+        for i, path in enumerate(flv_paths):
+            part = dict(parts[i]) if i < len(parts) else {}
+            dst = os.path.join(dst_dir, os.path.basename(path))
+            try:
+                if os.path.isfile(path):
+                    os.makedirs(dst_dir, exist_ok=True)
+                    shutil.move(path, dst)
+                part["path"] = self.rel(dst)
+                part["bytes"] = _file_size(dst)
+            except OSError as exc:
+                self.log("warn", "[录像] FLV 归档失败 %s：%s" %
+                         (os.path.basename(path), exc))
+                part["path"] = self.rel(path)
+            moved.append(part)
+        return moved
 
     def _part(self, path, started_at):
         return {"path": self.rel(path), "started_at": _as_int(started_at),
@@ -500,13 +634,13 @@ class RecordingService:
         if result.returncode != 0:
             raise RuntimeError((result.stderr or "ffmpeg 失败").strip()[:300])
 
-    # ---------- 合并成单 MP4 ----------
+    # ---------- 合并成单 FLV ----------
 
     def merged_path(self, rec):
-        """合并成品路径：与分片同目录的 ``<base>_merged.mp4``。"""
+        """合并成品路径：与分片同目录的 ``<base>_merged.flv``。"""
         parts = rec.get("mp4_parts") or []
         stored = rec.get("merged_path") or ""
-        if stored:
+        if stored.lower().endswith(".flv"):
             return self.abs(stored)
         if not parts:
             return ""
@@ -514,14 +648,15 @@ class RecordingService:
         if base.endswith("_p1"):
             base = base[:-3]
         return os.path.join(os.path.dirname(self.abs(parts[0].get("path"))),
-                            base + "_merged.mp4")
+                            base + "_merged.flv")
 
     def run_merge(self, rec_id):
-        """把多个 MP4 分片重编码合并成单个 MP4，前端只呈现一个视频。
+        """把多个 MP4 分片无损合并成单个 FLV，前端只播放一个视频。
 
-        用 concat 滤镜逐片解码后统一参数再编码——这是跨参数(分辨率/帧率/声道
-        不一致)合并的唯一安全方式。整场很慢(veryfast 约 25 分钟)，放独立队列；
-        失败只记状态、绝不动 FLV 与分片，夜间窗口或手动可重试。
+        先把每片 -c copy 转成 FLV，再 concat copy。FLV 每段开头都有
+        AVC/AAC sequence header，播放器遇到新参数会重新生成 init segment，
+        因此重连后 SPS/PPS、帧率、声道变化都能安全拼接；全程不重编码，
+        十几秒完成且画质零损失。失败只记状态、绝不动 FLV 源与分片。
         """
         rec = self.store.get_recording(rec_id)
         if not rec:
@@ -542,67 +677,101 @@ class RecordingService:
             pass
         self.store.update_recording(
             rec_id, merge_status="merging", merge_error="", merge_seconds=0)
+        started = time.time()
+        tag = "_merge_%d_%d" % (rec_id, int(started * 1000))
+        workdir = os.path.dirname(out)
+        tmp_parts = [os.path.join(workdir, "%s_p%d.flv" % (tag, i))
+                     for i in range(len(parts))]
+        list_file = os.path.join(workdir, tag + "_list.txt")
+        tmp_out = os.path.join(workdir, tag + ".tmp.flv")
         try:
             srcs = [self.abs(p.get("path")) for p in parts]
             missing = [s for s in srcs if not os.path.isfile(s)]
             if missing:
                 raise RuntimeError("有 %d 个分片文件丢失" % len(missing))
+            self.log("info", "[录像 %s] 开始合并：%d 片 → 单 FLV（无损 copy）" %
+                     (rec_id, len(srcs)))
 
-            # 探测所有分片参数，定统一基准：分辨率取第一片，帧率取最小，
-            # 采样率 48000、双声道（B 站直播流基本都是这套）。
-            # 帧率务必取最小：取最大会把低帧率片插帧，编码量翻倍、产物虚胖。
-            # 取最小只是把高帧率片降采样，肉眼几乎无差，手机合并能快一倍以上。
-            specs = [_probe_stream(s) for s in srcs]
-            w, h = specs[0]["width"], specs[0]["height"]
-            fps = min((sp["fps"] for sp in specs), default=30)
-            w, h, fps = w or 1280, h or 720, fps or 30
-            self.log("info", "[录像 %s] 开始合并：%d 片 → 单 MP4（%dx%d @%sfps，%s CRF%s）" %
-                     (rec_id, len(srcs), w, h, fps, MERGE_PRESET, MERGE_CRF))
+            try:
+                for src, dst in zip(srcs, tmp_parts):
+                    self._run([exe, "-nostdin", "-y", "-hide_banner",
+                               "-loglevel", "error", "-i", src,
+                               "-c", "copy", "-f", "flv", dst])
+                with open(list_file, "w", encoding="utf-8") as f:
+                    for p in tmp_parts:
+                        f.write("file '%s'\n" % p.replace("'", "'\\''"))
+                self._run([exe, "-nostdin", "-y", "-hide_banner",
+                           "-loglevel", "error", "-f", "concat", "-safe", "0",
+                           "-i", list_file, "-c", "copy", "-f", "flv", tmp_out])
+                if not os.path.getsize(tmp_out):
+                    raise RuntimeError("合并输出为空")
+                # 补写 keyframes 索引，否则播放器能顺序播但拖动会卡在加载。
+                # 先注入到另一个临时文件，成功后再整体替换，失败不污染产物。
+                indexed = tmp_out + ".idx.flv"
+                info = flv_inject_index(tmp_out, indexed)
+                os.replace(indexed, out)
+                self.log("info", "[录像 %s] 已写入 %d 个关键帧索引（%.0f–%.0fs）" %
+                         (rec_id, info["keyframes"], info["first_kf_sec"],
+                          info["last_kf_sec"]))
+            finally:
+                for p in tmp_parts + [list_file, tmp_out, tmp_out + ".idx.flv"]:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
-            # 每片统一分辨率/帧率/像素格式/采样率/声道后 concat
-            filt = []
-            for i in range(len(srcs)):
-                filt.append(
-                    "[%d:v:0]scale=%d:%d:force_original_aspect_ratio=decrease,"
-                    "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,"
-                    "format=yuv420p[v%d]" % (i, w, h, w, h, fps, i))
-                filt.append(
-                    "[%d:a:0]aresample=48000,aformat=sample_rates=48000:"
-                    "channel_layouts=stereo[a%d]" % (i, i))
-            chain = "".join("[v%d][a%d]" % (i, i) for i in range(len(srcs)))
-            filt.append("%sconcat=n=%d:v=1:a=1[outv][outa]" %
-                        (chain, len(srcs)))
-            filter_complex = ";".join(filt)
-
-            cmd = [exe, "-nostdin", "-y", "-hide_banner", "-loglevel", "error"]
-            for s in srcs:
-                cmd += ["-i", s]
-            cmd += ["-filter_complex", filter_complex,
-                    "-map", "[outv]", "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", MERGE_PRESET,
-                    "-crf", str(MERGE_CRF), "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", MERGE_AUDIO_BITRATE,
-                    "-movflags", "+faststart"]
-            tmp = out + ".tmp.mp4"
-            cmd.append(tmp)
-            t0 = time.time()
-            self._run(cmd)
-            if not os.path.getsize(tmp):
-                raise RuntimeError("合并输出为空")
-            os.replace(tmp, out)
-            seconds = round(time.time() - t0, 1)
+            seconds = round(time.time() - started, 1)
             dur, _ = _probe(out)
+            old = rec.get("merged_path") or ""
+            if old.lower().endswith(".mp4") and self.rel(out) != old:
+                try:
+                    os.remove(self.abs(old))
+                    self.log("info", "[录像 %s] 已清理旧的 MP4 合并产物" % rec_id)
+                except OSError:
+                    pass
             self.store.update_recording(
                 rec_id, merge_status="done", merged_path=self.rel(out),
                 merged_bytes=_file_size(out), merged_duration_ms=dur,
                 merge_error="", merge_seconds=seconds)
-            self.log("info", "[录像 %s] 合并完成：%d 片 → %.1fMB，耗时 %.1fs" %
+            self.log("info", "[录像 %s] 合并完成：%d 片 → 单 FLV %.1fMB，耗时 %.1fs" %
                      (rec_id, len(srcs), _file_size(out) / 1048576.0, seconds))
         except Exception as exc:
             self.store.update_recording(
                 rec_id, merge_status="error", merge_error=str(exc)[:300])
             self.log("warn", "[录像 %s] 合并失败（FLV 与分片均保留，可重试）：%s" %
                      (rec_id, exc))
+
+    def reindex_merged(self, rec_id):
+        """给旧的单 FLV 合并产物补写 keyframes 索引（幂等）。
+
+        早期版本合并出的 FLV 没有索引，能顺序播但拖动卡加载。已带索引的
+        文件跳过。返回 (是否处理, 关键帧数或说明)。
+        """
+        rec = self.store.get_recording(rec_id)
+        if not rec:
+            raise ValueError("录像不存在")
+        path = rec.get("merged_path") or ""
+        if not path.lower().endswith(".flv"):
+            return False, "不是 FLV 合并产物"
+        target = self.abs(path)
+        if not os.path.isfile(target):
+            return False, "合并文件不存在"
+        with open(target, "rb") as f:
+            head = f.read(64 * 1024)
+        if b"keyframes" in head:
+            return False, "已带索引"
+        tmp = target + ".idx.flv"
+        try:
+            info = flv_inject_index(target, tmp)
+            os.replace(tmp, target)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        self.log("info", "[录像 %s] 回填 %d 个关键帧索引" %
+                 (rec_id, info["keyframes"]))
+        return True, info["keyframes"]
 
     def retry_merge(self, rec_id):
         rec = self.store.get_recording(rec_id)
@@ -614,17 +783,19 @@ class RecordingService:
         self.merge.enqueue(rec_id)
 
     def nightly_retry(self):
-        """夜间窗口内把合并失败的记录重新排队；非窗口时段不动。"""
+        """夜间窗口内重跑失败的 remux；非窗口时段不动。
+
+        分 P 播放不依赖单文件合并，夜间只补转封装失败的场次：FLV 还在
+        缓存目录里就能重来。
+        """
         hour = time.localtime().tm_hour
-        if not (MERGE_NIGHT_START <= hour < MERGE_NIGHT_END):
+        if not (RETRY_NIGHT_START <= hour < RETRY_NIGHT_END):
             return 0
         pending = [r for r in self.store.list_recordings()
-                   if r.get("merge_status") in ("error", "pending")]
+                   if r.get("status") == "failed" and (r.get("flv_parts") or [])]
         for rec in pending:
-            if len(rec.get("mp4_parts") or []) < 2:
-                continue
-            self.log("info", "[录像 %s] 夜间重试合并" % rec["id"])
-            self.merge.enqueue(rec["id"])
+            self.log("info", "[录像 %s] 夜间重试转封装" % rec["id"])
+            self.remux.enqueue(rec["id"])
         return len(pending)
 
 

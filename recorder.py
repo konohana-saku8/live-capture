@@ -181,7 +181,7 @@ class LiveRecorder:
                     break
                 self._set_error(exc)
                 self.log("warn", "[%s] 录制中断：%s，%.0f 秒后重试" %
-                         (self.label, exc, delay))
+                         (self.label, exc, delay), exc=exc)
                 self._stop.wait(delay)
                 delay = min(60.0, delay * 2)
         with self.lock:
@@ -225,7 +225,8 @@ class LiveRecorder:
                 try:
                     self.recordings.add_part(self._rec_id, path, part_started)
                 except Exception as exc:
-                    self.log("warn", "[%s] 记录录像分片失败：%s" % (self.label, exc))
+                    self.log("warn", "[%s] 记录录像分片失败：%s" % (self.label, exc),
+                             exc=exc)
             self.log("info", "[%s] 录制写入 %s（第 %d 片，节点 %s）" %
                      (self.label, os.path.basename(path), part, host))
             reason = "流中断"  # read() 返回空 = 对端关闭,触发换片重连

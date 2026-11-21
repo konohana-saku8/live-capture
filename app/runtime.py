@@ -20,7 +20,8 @@ from store import Store
 import sysinfo
 
 from .scheduler import DynamicScheduler
-from .settings import CONTENT_KEYS, Config, LogBuffer, as_int, lan_ip
+from .settings import (CONTENT_KEYS, Config, LogBuffer, as_int,
+                       install_excepthooks, lan_ip)
 
 
 class EventBus:
@@ -70,7 +71,13 @@ class Runtime:
         os.makedirs(self.data_dir, exist_ok=True)
 
         self.logs = LogBuffer()
+        # 警告/错误另外落一份 jsonl，服务重启后回填到页面：
+        # 手机上的进程随时会被系统杀掉，内存日志一丢就查不到原因了。
+        self.logs.bind_journal(os.path.join(self.data_dir, "logs",
+                                            "journal.jsonl"))
         self.logs.install_root()
+        install_excepthooks(self.logs)
+        self.logs.replay()
         self.config = Config(os.path.join(self.data_dir, "config.json"))
         self.rooms = RoomStore(os.path.join(self.data_dir, "rooms.json"))
         self.accounts = AccountStore(os.path.join(self.data_dir, "accounts.json"))
@@ -90,24 +97,88 @@ class Runtime:
         self._dash_lock = threading.Lock()
         self._dash_cached_at = 0.0
         self._dash_cache = None
+        self._data_rooms_lock = threading.Lock()
+        self._data_rooms_cache: Any = None
+        self._dash_refreshing = False
         self.started_at = int(time.time() * 1000)
         self.host = host
         self.port = port
         self.lan_ip = lan_ip()
         self.ws_ok = not bool(WS_IMPORT_ERROR)
         self.fetcher_cls = DynamicsFetcher
+        # 存储明细由 Store 在后台算，算完直接补进首页缓存，省得等整体重算
+        self.store.on_storage_ready = self._patch_storage
 
     # ---------- 公共载荷 ----------
 
     def dashboard(self) -> dict[str, Any]:
-        now = time.time()
+        """仪表盘数据：命中缓存直接返回，过期了交给后台刷新，请求不等重算。
+
+        手机上完整聚合一次要两秒多，前端每 10 秒轮询一次，同步重算会把整个
+        请求线程连同全局锁一起占住。这里换成「先给旧值、后台再算」，页面永远
+        是毫秒级返回。
+        """
         with self._dash_lock:
-            if self._dash_cache is not None and now - self._dash_cached_at < 15:
+            if self._dash_cache is not None:
+                if time.time() - self._dash_cached_at >= self.DASH_TTL:
+                    self._dash_refresh_async()
                 return self._dash_cache
-            data = self.store.dashboard()
+            # 服务刚起、还没有任何缓存：第一次只能同步算
+            data = self._compute_dashboard()
             self._dash_cache = data
-            self._dash_cached_at = now
+            self._dash_cached_at = time.time()
             return data
+
+    DASH_TTL = 30.0
+
+    def _compute_dashboard(self) -> dict[str, Any]:
+        data = self.store.dashboard()
+        labels = {}
+        for room in (self.rooms.list().get("items") or []):
+            labels[as_int(room["id"])] = room.get("uname") or room.get("label") or ""
+        data["data_status"] = self.store.data_status(labels)
+        return data
+
+    def _dash_refresh_async(self) -> None:
+        """后台重算一次仪表盘，算完替换缓存；已有任务在跑就不重复起线程。"""
+        if self._dash_refreshing:
+            return
+        self._dash_refreshing = True
+
+        def run():
+            try:
+                data = self._compute_dashboard()
+                with self._dash_lock:
+                    # 期间被 invalidate（删过数据）就丢弃这次结果
+                    if self._dash_cached_at:
+                        self._dash_cache = data
+                        self._dash_cached_at = time.time()
+            except Exception:  # noqa: BLE001 - 后台任务失败保留旧数据
+                pass
+            finally:
+                self._dash_refreshing = False
+
+        threading.Thread(target=run, daemon=True, name="dash-refresh").start()
+
+    def _patch_storage(self, storage: dict[str, Any]) -> None:
+        """存储明细算完后就地替换首页缓存里的那一块，不用整体重算。"""
+        with self._dash_lock:
+            if not self._dash_cache:
+                return
+            status = self._dash_cache.get("data_status")
+            if isinstance(status, dict):
+                status["storage"] = storage
+
+    def invalidate_dashboard(self) -> None:
+        """删除数据后让下一次仪表盘请求重新聚合，避免看到旧数字。"""
+        with self._dash_lock:
+            self._dash_cache = None
+            self._dash_cached_at = 0.0
+        with self._data_rooms_lock:
+            self._data_rooms_cache = None
+        self.store.invalidate_segments()
+        self.store.invalidate_storage()
+        self.store.invalidate_viewers()
 
     def service(self) -> dict[str, Any]:
         return {"started_at": self.started_at,
@@ -118,6 +189,11 @@ class Runtime:
 
     def sys_snapshot(self) -> dict[str, Any]:
         return sysinfo.snapshot(self.data_dir, self.cpu_sampler, self.started_at)
+
+    def diagnostics(self) -> dict[str, Any]:
+        """线程 / 磁盘 / 数据库 / ffmpeg 的即时快照，给日志页用。"""
+        from . import diagnostics
+        return diagnostics.snapshot(self)
 
     def first_room_id(self) -> int:
         items = self.rooms.list().get("items") or []
@@ -199,6 +275,69 @@ class Runtime:
                         "last_at": agg.get("last_at", 0)}))
         return {"ok": True, "items": items, "active": snap["active"],
                 "running": snap["running"]}
+
+    def data_rooms_payload(self) -> dict[str, Any]:
+        """数据页的房间清单：采集器 + 库里还留着数据的房间。
+
+        采集器删掉后弹幕 / SC / 事件 / 录像仍在库里，这些房间不会出现在
+        ``/api/rooms``（那是采集器清单）。数据页只看数据，所以按数据侧并集
+        列出，并标出 ``configured``——没有采集器的房间仍能看场次和录像，
+        只是没有直播状态与动态。
+        """
+        recs: dict[int, dict[str, Any]] = {}
+        for rec in self.store.list_recordings():
+            rid = as_int(rec.get("room_id"))
+            if not rid:
+                continue
+            item = recs.setdefault(rid, {"count": 0, "bytes": 0,
+                                         "label": "", "last_at": 0})
+            item["count"] += 1
+            item["bytes"] += as_int(rec.get("bytes"))
+            item["last_at"] = max(item["last_at"], as_int(rec.get("started_at")))
+            if not item["label"] and rec.get("label"):
+                item["label"] = str(rec.get("label"))
+
+        # 只用 store 的聚合，不碰 runtime.dashboard()——那会顺带算存储明细，
+        # 数据页打开时没必要为这个等一两秒。
+        with self._data_rooms_lock:
+            cached = self._data_rooms_cache
+            if cached and time.time() - cached[0] < 15:
+                agg = cached[1]
+            else:
+                agg = {as_int(x.get("room_id")): x
+                       for x in self.store.dashboard().get("by_room") or []}
+                self._data_rooms_cache = (time.time(), agg)
+        rooms = {as_int(r["id"]): r
+                 for r in (self.rooms.list().get("items") or [])}
+
+        items = []
+        for rid in set(agg) | set(recs) | set(rooms):
+            room = rooms.get(rid) or {}
+            a = agg.get(rid) or {}
+            rec = recs.get(rid) or {}
+            items.append({
+                "id": rid,
+                "configured": bool(room),
+                "uid": as_int(room.get("uid")),
+                "uname": room.get("uname", ""),
+                "label": (room.get("label") or rec.get("label")
+                          or ("房间 " + str(rid))),
+                "face": room.get("face", ""),
+                "live_status": as_int(room.get("live_status")),
+                "totals": {"danmaku": a.get("danmaku", 0),
+                           "sc": a.get("sc", 0),
+                           "events": a.get("events", 0),
+                           "interactions": a.get("interactions", 0),
+                           "sessions": a.get("sessions", 0)},
+                "recordings": rec.get("count", 0),
+                "rec_bytes": rec.get("bytes", 0),
+                "has_data": bool(a or rec),
+                "last_at": max(as_int(a.get("last_at")),
+                               as_int(rec.get("last_at"))),
+            })
+        # 最近有数据的在前；只有采集器、一条数据都没有的排后面
+        items.sort(key=lambda x: (-x["last_at"], not x["configured"], x["id"]))
+        return {"ok": True, "items": items}
 
     def room_state(self, room_id: int) -> dict[str, Any]:
         for state in self.manager.snapshot()["rooms"]:

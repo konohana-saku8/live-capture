@@ -168,8 +168,38 @@ def session_delete(payload: dict):
         raise ApiError("缺少 room_id / start", 400)
     if kind not in ("live", "gap"):
         raise ApiError("kind 必须是 live 或 gap", 400)
+
+    # 整场删除要连录像一起删。先按场次列表找到当时挂在这场上的录像——
+    # 和采集器里显示的是同一条，避免按时间窗误删相邻场次。
+    video = {"recordings": 0, "files": 0, "bytes": 0}
+    if kind == "live":
+        segs = r.recordings.attach_segments(rid, r.store.live_segments(rid))
+        target = next((s for s in segs if s.get("start") == start
+                       and (s.get("end") or 0) == end), None)
+        if target is None:
+            # 场次边界刚好在加载前后变化时，用同样的匹配规则兜底一次。
+            target = r.recordings.attach_segments(
+                rid, [{"kind": "live", "start": start, "end": end}])[0]
+        rec = target.get("recording") or {}
+        if rec.get("id"):
+            try:
+                removed = r.recordings.delete_recording(rec["id"])
+            except ValueError as exc:
+                raise ApiError(str(exc), 409)
+            except OSError as exc:
+                raise ApiError("视频删除失败：" + str(exc), 500)
+            if removed:
+                video = {"recordings": 1, "files": removed["files"],
+                         "bytes": removed["bytes"]}
+
     deleted = r.store.delete_session(rid, start, end,
                                      with_marks=(kind == "live"))
+    deleted["video"] = video
+    r.invalidate_dashboard()
+    r.logs.add("info", "删除场次 room=%s %s–%s：文本 %s；录像 %s 条 / %s 个文件" %
+               (rid, start, end or "现在",
+                {k: v for k, v in deleted.items() if k != "video"},
+                video["recordings"], video["files"]))
     return {"ok": True, "room_id": rid, "deleted": deleted}
 
 

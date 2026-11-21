@@ -131,7 +131,7 @@ class LogBuffer:
         self.lock = threading.RLock()
         self.items = []
 
-    def add(self, level, message):
+    def add(self, level, message, exc=None):
         with self.lock:
             self.items.append({"ts": int(time.time() * 1000),
                                "level": level, "msg": str(message)})

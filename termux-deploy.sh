@@ -25,6 +25,14 @@ if [ -z "$PY" ]; then say "FATAL 仍无 python3，请手动执行 pkg install py
 
 mkdir -p "$DST/data" "$DST/web" >> "$ST" 2>&1
 cp "$SRC"/*.py "$SRC"/requirements.txt "$SRC"/start.sh "$DST"/ >> "$ST" 2>&1
+# app 包与前端构建产物同样要同步，只拷顶层 py 会跑起旧界面/缺模块
+rm -rf "$DST"/app/__pycache__ "$DST"/__pycache__
+cp -r "$SRC"/app "$DST"/ >> "$ST" 2>&1
+if [ -d "$SRC/web/dist" ]; then
+  mkdir -p "$DST/web/dist"
+  rm -rf "$DST/web/dist/assets"
+  cp -r "$SRC/web/dist/." "$DST/web/dist/" >> "$ST" 2>&1
+fi
 cp "$SRC"/web/index.html "$DST"/web/ >> "$ST" 2>&1
 cd "$DST" || { say "FATAL 无法进入 $DST"; exit 1; }
 

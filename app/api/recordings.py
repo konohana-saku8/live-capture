@@ -8,7 +8,8 @@ import urllib.request
 from flask import Blueprint, Response, send_file, stream_with_context
 
 from capture import BiliApi
-from ..http import ApiError, arg, int_arg
+from ..http import ApiError, arg, int_arg, json_post
+from ..settings import as_int
 from . import rt
 
 bp = Blueprint("recordings", __name__, url_prefix="/api")
@@ -48,16 +49,18 @@ def recordings_media(rec_id):
     kind = (arg("kind") or "").lower()
     mp4 = rec.get("mp4_parts") or []
     flv = rec.get("flv_parts") or []
-    # merged = 合并后的单 MP4（前端优先播放这一路）
+    # merged = 合并后的单文件（FLV 为主，旧 MP4 产物仍兼容）
     if kind == "merged":
-        if not (rec.get("merged_path") or ""):
+        merged_path = rec.get("merged_path") or ""
+        if not merged_path:
             raise ApiError("合并成品尚未就绪", 409)
         try:
-            path = r.recordings.abs(rec["merged_path"])
+            path = r.recordings.abs(merged_path)
         except ValueError:
             raise ApiError("录像路径不合法", 400)
+        mime = "video/x-flv" if merged_path.lower().endswith(".flv") else "video/mp4"
         try:
-            resp = send_file(path, conditional=True, mimetype="video/mp4")
+            resp = send_file(path, conditional=True, mimetype=mime)
         except OSError:
             raise ApiError("合并成品不存在", 404)
         resp.headers["Cache-Control"] = "private, max-age=3600"
@@ -82,6 +85,40 @@ def recordings_media(rec_id):
     return resp
 
 
+@bp.post("/recordings/<int:rec_id>/file/delete")
+@json_post
+def recording_file_delete(payload: dict, rec_id: int):
+    """删单个视频文件：kind=mp4|flv，index 是录像里的分片序号（从 0 起）。"""
+    r = rt()
+    kind = str(payload.get("kind") or "").lower()
+    if kind not in ("mp4", "flv"):
+        raise ApiError("kind 必须是 mp4 或 flv", 400)
+    try:
+        result = r.recordings.delete_part(rec_id, kind, as_int(payload.get("index"), -1))
+    except ValueError as exc:
+        raise ApiError(str(exc), 409)
+    except OSError as exc:
+        raise ApiError("删除失败：" + str(exc), 500)
+    r.invalidate_dashboard()
+    return {"ok": True, "deleted": result}
+
+
+@bp.post("/recordings/<int:rec_id>/delete")
+def recording_delete(rec_id: int):
+    """删整条录像（所有视频文件 + 录像记录），不碰弹幕 / SC / 事件。"""
+    r = rt()
+    try:
+        result = r.recordings.delete_recording(rec_id)
+    except ValueError as exc:
+        raise ApiError(str(exc), 409)
+    except OSError as exc:
+        raise ApiError("删除失败：" + str(exc), 500)
+    if result is None:
+        raise ApiError("录像不存在", 404)
+    r.invalidate_dashboard()
+    return {"ok": True, "deleted": result}
+
+
 @bp.post("/recordings/<int:rec_id>/remux")
 def recordings_remux(rec_id):
     r = rt()
@@ -101,6 +138,19 @@ def recordings_merge(rec_id):
     except ValueError as exc:
         raise ApiError(str(exc), 404)
     return {"ok": True, "id": rec_id}
+
+
+@bp.post("/recordings/<int:rec_id>/reindex")
+def recordings_reindex(rec_id):
+    """给旧的单 FLV 合并产物补写拖动索引（幂等，已带索引则跳过）。"""
+    r = rt()
+    try:
+        changed, detail = r.recordings.reindex_merged(rec_id)
+    except ValueError as exc:
+        raise ApiError(str(exc), 404)
+    except Exception as exc:
+        raise ApiError("索引写入失败：%s" % exc, 500)
+    return {"ok": True, "id": rec_id, "changed": changed, "detail": detail}
 
 
 @bp.get("/live/flv")

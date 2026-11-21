@@ -151,7 +151,7 @@ class DynamicScheduler:
             try:
                 self._tick()
             except Exception as exc:            # 定时线程不能因为一次异常就死
-                self.logs.add("error", "动态定时检查出错：%s" % exc)
+                self.logs.add("error", "动态定时检查出错：%s" % exc, exc=exc)
 
     def _tick(self) -> None:
         now = time.time()
@@ -183,7 +183,7 @@ class DynamicScheduler:
                 self._fail[rid] = (now, 1800, streak)
                 msg = "定时拉取 %s 的动态失败（%s）：%s（%d 分钟后重试）" % (
                     who, auth, exc, 30)
-                self.logs.add("error", msg)
+                self.logs.add("error", msg, exc=exc)
                 with self.lock:
                     self.last_result = {"ok": False, "msg": msg,
                                         "ts": int(now * 1000), "auth": auth,

@@ -17,7 +17,7 @@ from flask import Flask, request, send_from_directory
 
 from .api import register as register_api
 from .api import rt
-from .http import ApiError, register_errors
+from .http import ApiError, log_requests, register_errors
 from .settings import Config
 
 # 不需要访问口令的接口：探活、锁屏探测、表情图（<img> 带不了 header）
@@ -45,6 +45,8 @@ def create_app(data_dir: str | None = None, web_dir: str | None = None,
 
     register_errors(app)
     register_api(app)
+    # 放在鉴权钩子之前注册：401 也要有耗时基准
+    log_requests(app)
 
     # ---------- 鉴权 ----------
 

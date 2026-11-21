@@ -21,7 +21,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 from app import bootstrap, create_app, shutdown          # noqa: E402
-from app.settings import Config                         # noqa: E402
+from app.settings import Config, NoiseFilter            # noqa: E402
 
 BANNER = "=" * 52
 
@@ -58,7 +58,7 @@ def main() -> None:
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s",
         datefmt="%H:%M:%S")
 
     data_dir = os.path.abspath(args.data)
@@ -73,7 +73,10 @@ def main() -> None:
             os.path.join(log_dir, "service.log"),
             maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
         file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+            "%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s",
+            "%H:%M:%S"))
+        # 播放器每次拖动进度条都会断一次连接，这行会刷满整个文件
+        file_handler.addFilter(NoiseFilter())
         logging.getLogger().addHandler(file_handler)
     except OSError as exc:
         print("  日志文件写入失败：%s" % exc, flush=True)

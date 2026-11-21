@@ -798,13 +798,20 @@ class RoomWorker:
         if not self.recorder or self._stop.is_set():
             return
         try:
+            started = _as_int(self.state.get("live_started_at"))
+            now = int(time.time() * 1000)
+            # state 里的开播时间可能是上一场残留的（下播不清零、补记分支不覆盖），
+            # 离现在太远就当成没有，免得录像被挂到前一天的场次上。
+            if not started or abs(now - started) > 6 * 3600 * 1000:
+                started = now
+                self._set(live_started_at=now)
             self.recorder.start(
                 self.record_api,
-                live_started_at=_as_int(self.state.get("live_started_at")),
+                live_started_at=started,
                 qn=self.record_qn)
         except Exception as exc:
             self._set(record_error="启动录制失败：%s" % exc)
-            self.log("error", self.tag + "启动录制失败：%s" % exc)
+            self.log("error", self.tag + "启动录制失败：%s" % exc, exc=exc)
 
     def _stop_recording(self, reason=""):
         if not self.recorder:
@@ -832,7 +839,7 @@ class RoomWorker:
             asyncio.run(self._main())
         except Exception as exc:
             self._set(last_error="采集线程异常：%s" % exc)
-            self.log("error", self.tag + "采集线程异常：%s" % exc)
+            self.log("error", self.tag + "采集线程异常：%s" % exc, exc=exc)
         finally:
             self._stop_recording("采集线程退出")
             self._flush_danmaku()
@@ -1217,7 +1224,7 @@ class RoomWorker:
             self._inc("danmaku", self.store.insert_danmaku(rows))
             self._publish("danmaku", rows)
         except Exception as exc:
-            self.log("error", self.tag + "弹幕入库失败：%s" % exc)
+            self.log("error", self.tag + "弹幕入库失败：%s" % exc, exc=exc)
 
 
 class CaptureManager:

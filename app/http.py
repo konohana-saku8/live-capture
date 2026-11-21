@@ -7,14 +7,26 @@ from __future__ import annotations
 
 import functools
 import json
+import time
 from typing import Any, Callable
 
-from flask import jsonify, request
+from flask import current_app, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from .settings import as_bool, as_int
 
 MAX_BODY = 512 * 1024
+
+# 超过这个耗时的接口调用值得看一眼（手机上一秒级已经是全表扫描了）
+SLOW_MS = 2000
+
+
+def runtime():
+    """当前请求的 Runtime；拿不到就返回 None（错误处理里不能二次抛错）。"""
+    try:
+        return current_app.extensions.get("live")
+    except Exception:
+        return None
 
 
 class ApiError(Exception):
@@ -107,8 +119,56 @@ def register_errors(app) -> None:
 
     @app.errorhandler(Exception)
     def _crash(exc: Exception):
-        app.logger.exception("unhandled error on %s", request.path)
+        # 500 是真正需要排查的东西：记完整 traceback，页面上点开就能看到
+        # 是哪个文件的哪一行炸的，不用再把 service.log 拉下来翻。
+        g.__dict__["_logged_error"] = True
+        r = runtime()
+        if r is not None:
+            r.logs.add("error", "接口 500：%s %s → %s" %
+                       (request.method, request.path,
+                        exc.__class__.__name__ + ": " + str(exc)), exc=exc)
+        else:
+            app.logger.exception("unhandled error on %s", request.path)
         return fail(str(exc) or exc.__class__.__name__, 500)
+
+
+def log_requests(app) -> None:
+    """把 API 的 4xx / 5xx / 慢请求写进运行日志。
+
+    写代码的人需要知道“谁在报错”，而不是只有“登录成功”。静态资源不计，
+    否则 404 的 favicon 会把真正的错误淹掉。
+    """
+
+    @app.before_request
+    def _mark_start():
+        g.__dict__["_t0"] = time.monotonic()
+
+    @app.after_request
+    def _log_outcome(resp):
+        if not request.path.startswith("/api/"):
+            return resp
+        r = runtime()
+        if r is None:
+            return resp
+        start = g.__dict__.get("_t0")
+        ms = int((time.monotonic() - start) * 1000) if start else 0
+        code = resp.status_code
+        line = "%s %s → %s · %d ms" % (request.method, request.path, code, ms)
+        if code >= 500:
+            # _crash 已经记过带 traceback 的那条，这里不重复
+            if not g.__dict__.get("_logged_error"):
+                r.logs.add("error", "接口 5xx：" + line)
+        elif code >= 400:
+            detail = ""
+            if resp.is_json:
+                payload = resp.get_json(silent=True)
+                if isinstance(payload, dict):
+                    detail = str(payload.get("error") or "")[:200]
+            r.logs.add("warn", "接口 %s：%s%s" %
+                       (code, line, " · " + detail if detail else ""))
+        elif ms >= SLOW_MS:
+            r.logs.add("warn", "慢请求：" + line)
+        return resp
 
 
 def json_post(fn: Callable):

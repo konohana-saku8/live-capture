@@ -67,7 +67,8 @@ class FlaskApiTest(unittest.TestCase):
 
     def test_logs_file(self):
         log_dir = os.path.join(self.tmp, "logs")
-        os.makedirs(log_dir)
+        # Runtime 启动时已经建好 logs/（warn/error 会落 journal.jsonl）
+        os.makedirs(log_dir, exist_ok=True)
         with open(os.path.join(log_dir, "service.log"), "w",
                   encoding="utf-8") as handle:
             handle.write("hello log\n")
@@ -180,11 +181,94 @@ class FlaskApiTest(unittest.TestCase):
         self.assertStatus(self.get("/api/recordings/999999/media"), 404, "不存在")
         self.assertStatus(self.post("/api/recordings/999999/remux"), 404, "重试不存在")
 
+    def test_delete_single_video_parts(self):
+        rid, start, _end = self._seed_session()
+        rec_id = self._make_recording(rid, start, name="a.mp4")
+        folder = os.path.join(self.tmp, "recordings", str(rid))
+        second = os.path.join(folder, "b.mp4")
+        flv = os.path.join(folder, "c.flv")
+        with open(second, "wb") as fh:
+            fh.write(b"2222")
+        with open(flv, "wb") as fh:
+            fh.write(b"flv-data")
+        self.rt.store.update_recording(
+            rec_id,
+            mp4_parts=[
+                {"path": self.rt.recordings.rel(os.path.join(folder, "a.mp4")),
+                 "started_at": start, "bytes": 10, "duration_ms": 1000},
+                {"path": self.rt.recordings.rel(second),
+                 "started_at": start + 1, "bytes": 4, "duration_ms": 1000},
+            ],
+            flv_parts=[{"path": self.rt.recordings.rel(flv),
+                        "started_at": start, "bytes": 8, "duration_ms": 1000}])
+
+        resp = self.post("/api/recordings/%d/file/delete" % rec_id,
+                         {"kind": "mp4", "index": 0})
+        self.assertStatus(resp, 200, "删一个分 P")
+        self.assertEqual(resp.get_json()["deleted"]["files"], 1)
+        self.assertFalse(os.path.exists(os.path.join(folder, "a.mp4")))
+        self.assertTrue(os.path.exists(second))
+        rec = self.rt.store.get_recording(rec_id)
+        self.assertEqual(len(rec["mp4_parts"]), 1)
+        self.assertEqual(len(rec["flv_parts"]), 1)
+
+        resp = self.post("/api/recordings/%d/file/delete" % rec_id,
+                         {"kind": "flv", "index": 0})
+        self.assertStatus(resp, 200, "删 FLV 原片")
+        self.assertFalse(os.path.exists(flv))
+
+        segs = self.get("/api/sessions?room_id=%d&with_recordings=1" % rid
+                        ).get_json()["segments"]
+        rec = next(s["recording"] for s in segs if s.get("recording"))
+        self.assertEqual(len(rec["mp4_parts"]), 1)
+        self.assertEqual(rec["mp4_parts"][0]["name"], "b.mp4")
+        self.assertEqual(rec["flv_count"], 0)
+
+    def test_session_delete_removes_video_too(self):
+        rid, start, end = self._seed_session()
+        rec_id = self._make_recording(rid, start)
+        folder = os.path.join(self.tmp, "recordings", str(rid))
+        mp4 = os.path.join(folder, "a.mp4")
+        flv = os.path.join(folder, "d.flv")
+        with open(flv, "wb") as fh:
+            fh.write(b"flv-data")
+        self.rt.store.update_recording(
+            rec_id, flv_parts=[{"path": self.rt.recordings.rel(flv),
+                                "started_at": start, "bytes": 8,
+                                "duration_ms": 1000}])
+
+        resp = self.post("/api/session/delete",
+                         {"room_id": rid, "start": start, "end": end,
+                          "kind": "live"})
+        self.assertStatus(resp, 200, "整场删除")
+        video = resp.get_json()["deleted"]["video"]
+        self.assertEqual(video["recordings"], 1)
+        self.assertEqual(video["files"], 2)
+        self.assertFalse(os.path.exists(mp4))
+        self.assertFalse(os.path.exists(flv))
+        self.assertIsNone(self.rt.store.get_recording(rec_id))
+
     def test_sessions_attach_recordings(self):
         rid, start, _end = self._seed_session()
         rec_id = self._make_recording(rid, start)
         segs = self.get("/api/sessions?room_id=%d&with_recordings=1" % rid).get_json()
         self.assertEqual(segs["segments"][0]["recording"]["id"], rec_id)
+
+    def test_data_rooms_include_rooms_without_collector(self):
+        """数据页的房间清单要含「采集器已删、数据还在」的房间。"""
+        rid = 22749077
+        self.rt.store.insert_danmaku([
+            {"room_id": rid, "uid": 1, "uname": "a", "text": "1",
+             "received_at": 1794700000000}])
+        data = self.get("/api/data/rooms").get_json()
+        self.assertStatus(self.get("/api/data/rooms"), 200, "数据页房间清单")
+        rooms = {item["id"]: item for item in data["items"]}
+        self.assertIn(rid, rooms)
+        self.assertFalse(rooms[rid]["configured"])
+        self.assertTrue(rooms[rid]["has_data"])
+        self.assertEqual(rooms[rid]["totals"]["danmaku"], 1)
+        # 采集器清单里没有它，两个接口各管各的
+        self.assertNotIn(rid, [r["id"] for r in self.get("/api/rooms").get_json()["items"]])
 
     def test_feed_asc_after(self):
         rid = 22749013

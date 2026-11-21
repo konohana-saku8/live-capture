@@ -125,7 +125,7 @@ MIGRATIONS = {
                 "emote_map": "TEXT NOT NULL DEFAULT '{}'",
                 "import_key": "TEXT"},
     "room_event": {"import_key": "TEXT"},
-    # 多分片自动合并成单 MP4：状态与产物落库，进程重启不丢
+    # 多分片自动合并成单 FLV：状态与产物落库，进程重启不丢
     "recordings": {"merge_status": "TEXT NOT NULL DEFAULT ''",
                    "merged_path": "TEXT NOT NULL DEFAULT ''",
                    "merged_bytes": "INTEGER NOT NULL DEFAULT 0",
@@ -182,6 +182,11 @@ def _rec_row(row):
 
 
 class Store:
+    # 首页聚合与场次统计的缓存时长（秒）：手机上全量重算要几秒，页面 10-20 秒
+    # 才刷一次，短暂滞后不影响判断，但能省掉绝大部分重复扫描。
+    SEG_TTL = 10.0
+    STORAGE_TTL = 300.0
+
     def __init__(self, path: str):
         parent = os.path.dirname(os.path.abspath(path))
         os.makedirs(parent, exist_ok=True)
@@ -201,7 +206,47 @@ class Store:
                     self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" %
                                     (table, name, decl))
         self.db.executescript(POST_SCHEMA)
+        # 场次统计的覆盖索引：带 uid 后 COUNT(DISTINCT uid) 只读索引不回表，
+        # 12 场从 0.8 s 降到 0.25 s。极老的表结构没有 uid 列，跳过。
+        cols = {row[1] for row in self.db.execute("PRAGMA table_info(danmaku)")}
+        if "uid" in cols:
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dm_room_uid "
+                "ON danmaku(room_id, received_at, uid)")
         self.db.commit()
+        # 查询走另一条只读连接：WAL 下读不阻塞写，也不被写锁挡住。首页聚合
+        # 这类要扫好几秒的查询就不会把采集入库和别的接口一起堵住。
+        self.ro = self._open_reader(path)
+        self._seg_cache = {}        # room_id -> (ts, segments)
+        self._storage_cache = None  # (ts, payload)
+        self._viewer_cache = None   # (ts, {room_id: 去重观众数})
+        self._source_cache = None   # (ts, {room_id: live/import})
+        self._storage_refreshing = False
+        self._seg_refreshing: set[int] = set()
+        self._bg_lock = threading.Lock()
+        # 存储明细在后台算完后回调一次，调用方可以就地更新自己的缓存
+        self.on_storage_ready = None
+
+    @staticmethod
+    def _open_reader(path):
+        """独立的只读连接；内存库没法共享，返回 None 表示退回主连接。"""
+        if path == ":memory:" or path.startswith("file::memory:"):
+            return None
+        try:
+            conn = sqlite3.connect(path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=1")
+            conn.execute("PRAGMA busy_timeout=5000")
+            return conn
+        except sqlite3.Error:
+            return None
+
+    def _q(self, sql, args=()):
+        """只读查询入口：有只读连接就用它（不占写锁），否则退回主连接加锁。"""
+        if self.ro is not None:
+            return self.ro.execute(sql, args)
+        with self.lock:
+            return self.db.execute(sql, args)
 
     def _write(self, sql, args=()):
         with self.lock:
@@ -295,7 +340,10 @@ class Store:
             self.db.commit()
             if cur.rowcount > 0 and cur.lastrowid:
                 row["seq"] = cur.lastrowid
-            return cur.rowcount > 0
+        # 开播 / 下播会改变场次边界，立刻让缓存的场次重算；礼物、进入等不动边界。
+        if cur.rowcount > 0 and row.get("kind") == "live":
+            self.invalidate_segments(row.get("room_id"))
+        return cur.rowcount > 0
 
     def insert_events(self, rows):
         """批量写事件（礼物 / 上舰 / 开播下播），返回真正新增的条数。"""
@@ -312,7 +360,10 @@ class Store:
             before = self.db.total_changes
             self.db.executemany(sql, data)
             self.db.commit()
-            return self.db.total_changes - before
+            added = self.db.total_changes - before
+        for rid in {r.get("room_id") for r in rows if r.get("kind") == "live"}:
+            self.invalidate_segments(rid)
+        return added
 
     def start_run(self, room_id, config):
         cur = self._write(
@@ -340,6 +391,9 @@ class Store:
             elif not rid:
                 self.db.execute("DELETE FROM dynamics")
             self.db.commit()
+        self.invalidate_segments()
+        self.invalidate_storage()
+        self.invalidate_viewers()
 
     # ---------------- reads ----------------
 
@@ -578,32 +632,31 @@ class Store:
         until = _as_int(until_ms)
         if not rid or since <= 0:
             return None
-        with self.lock:
-            dm = self.db.execute(
-                "SELECT COUNT(*), COUNT(DISTINCT uid) FROM danmaku "
-                "WHERE room_id=? AND received_at>=?" +
-                (" AND received_at<?" if until else ""),
-                ((rid, since, until) if until else (rid, since))).fetchone()
-            sc = self.db.execute(
-                "SELECT COUNT(*), COALESCE(SUM(price),0), COUNT(DISTINCT uid) "
-                "FROM sc_message WHERE room_id=? AND received_at>=? AND deleted=0" +
-                (" AND received_at<?" if until else ""),
-                ((rid, since, until) if until else (rid, since))).fetchone()
-            ev = self.db.execute(
-                "SELECT COUNT(*) FROM room_event "
-                "WHERE room_id=? AND received_at>=? AND kind<>'live'" +
-                (" AND received_at<?" if until else ""),
-                ((rid, since, until) if until else (rid, since))).fetchone()[0]
-            # 观众数：弹幕与 SC 发送者 uid 的并集（SQL 去重）
-            extra = " AND received_at<?" if until else ""
-            vargs = (rid, since, until) if until else (rid, since)
-            viewers = self.db.execute(
-                "SELECT COUNT(*) FROM ("
-                "SELECT uid FROM danmaku WHERE uid>0 AND room_id=? "
-                "AND received_at>=?" + extra + " UNION "
-                "SELECT uid FROM sc_message WHERE uid>0 AND room_id=? "
-                "AND received_at>=?" + extra + ")",
-                vargs + vargs).fetchone()[0]
+        dm = self._q(
+            "SELECT COUNT(*), COUNT(DISTINCT uid) FROM danmaku "
+            "WHERE room_id=? AND received_at>=?" +
+            (" AND received_at<?" if until else ""),
+            ((rid, since, until) if until else (rid, since))).fetchone()
+        sc = self._q(
+            "SELECT COUNT(*), COALESCE(SUM(price),0), COUNT(DISTINCT uid) "
+            "FROM sc_message WHERE room_id=? AND received_at>=? AND deleted=0" +
+            (" AND received_at<?" if until else ""),
+            ((rid, since, until) if until else (rid, since))).fetchone()
+        ev = self._q(
+            "SELECT COUNT(*) FROM room_event "
+            "WHERE room_id=? AND received_at>=? AND kind<>'live'" +
+            (" AND received_at<?" if until else ""),
+            ((rid, since, until) if until else (rid, since))).fetchone()[0]
+        # 观众数：弹幕与 SC 发送者 uid 的并集（SQL 去重）
+        extra = " AND received_at<?" if until else ""
+        vargs = (rid, since, until) if until else (rid, since)
+        viewers = self._q(
+            "SELECT COUNT(*) FROM ("
+            "SELECT uid FROM danmaku WHERE uid>0 AND room_id=? "
+            "AND received_at>=?" + extra + " UNION "
+            "SELECT uid FROM sc_message WHERE uid>0 AND room_id=? "
+            "AND received_at>=?" + extra + ")",
+            vargs + vargs).fetchone()[0]
         return {"danmaku": dm[0], "sc": sc[0], "events": ev,
                 "sc_amount": sc[1], "viewers": viewers,
                 "interactions": dm[0] + sc[0] + ev,
@@ -621,15 +674,91 @@ class Store:
 
         一次开播记录都没有时（服务是开播中途才启动的、或旧版本数据），不去猜
         批次：所有采集到的内容归成一个「未分段」，等下一次开播才切开。
+
+        结果缓存 ``SEG_TTL`` 秒：直播中每段统计最多滞后十秒，但省掉反复扫表。
+        过期后先把旧结果给出去，后台再重算——数据页刷新不该为 1 秒的重扫等待。
         """
         rid = _as_int(room_id)
         if not rid:
             return []
-        with self.lock:
-            marks = [(r[0], r[1]) for r in self.db.execute(
-                "SELECT received_at, detail FROM room_event "
-                "WHERE room_id=? AND kind='live' "
-                "ORDER BY received_at ASC, seq ASC", (rid,))]
+        now = time.time()
+        hit = self._seg_cache.get(rid)
+        if hit is not None:
+            if now - hit[0] >= self.SEG_TTL:
+                self._refresh_segments_async(rid)
+            return hit[1]
+        segs = self._live_segments(rid)
+        self._seg_cache[rid] = (now, segs)
+        return segs
+
+    def _refresh_segments_async(self, rid):
+        """后台重算某个房间的场次统计；同房间已有任务在跑就不重复起线程。"""
+        with self._bg_lock:
+            if rid in self._seg_refreshing:
+                return
+            self._seg_refreshing.add(rid)
+
+        def run():
+            try:
+                segs = self._live_segments(rid)
+                self._seg_cache[rid] = (time.time(), segs)
+            except Exception:  # noqa: BLE001 - 后台任务失败保留旧结果
+                pass
+            finally:
+                with self._bg_lock:
+                    self._seg_refreshing.discard(rid)
+
+        threading.Thread(target=run, daemon=True,
+                         name="seg-refresh-%s" % rid).start()
+
+    def invalidate_segments(self, room_id=None):
+        """删过数据 / 录像后让场次统计重新算。"""
+        if room_id is None:
+            self._seg_cache.clear()
+        else:
+            self._seg_cache.pop(_as_int(room_id), None)
+
+    def invalidate_viewers(self):
+        """删过数据后让去重观众数重新统计。"""
+        self._viewer_cache = None
+
+    def _source_map(self):
+        """每个房间的数据来源（live / import / 混合）。全表扫一次即 0.3 秒，缓存。"""
+        now = time.time()
+        cached = self._source_cache
+        if cached and now - cached[0] < self.STORAGE_TTL:
+            return cached[1]
+        data = {}
+        for row in self._q(
+                "SELECT room_id, COALESCE(SUM(import_key IS NOT NULL),0), "
+                "COUNT(*) FROM danmaku GROUP BY room_id"):
+            imported, total = row[1], row[2]
+            live = total - imported
+            data[row[0]] = ("live+import" if imported and live
+                            else "import" if imported
+                            else "live" if live else "")
+        self._source_cache = (now, data)
+        return data
+
+    def _viewer_counts(self):
+        """每个房间的去重观众数（弹幕 ∪ SC）。全表 union 去重约 0.5 秒，缓存。"""
+        now = time.time()
+        cached = self._viewer_cache
+        if cached and now - cached[0] < self.STORAGE_TTL:
+            return cached[1]
+        data = {row["room_id"]: row[1] for row in self._q(
+            "SELECT room_id, COUNT(*) FROM ("
+            "SELECT room_id, uid FROM danmaku WHERE uid>0 "
+            "UNION SELECT room_id, uid FROM sc_message WHERE uid>0) "
+            "GROUP BY room_id")}
+        self._viewer_cache = (now, data)
+        return data
+
+    def _live_segments(self, rid):
+        marks = [(r[0], r[1]) for r in self._q(
+            "SELECT received_at, detail FROM room_event "
+            "WHERE room_id=? AND kind='live' "
+            "ORDER BY received_at ASC, seq ASC", (rid,))]
         if not marks:
             return self._segment_unsegmented(rid)
 
@@ -690,21 +819,27 @@ class Store:
 
     def first_data_at(self, rid):
         """这条采集器最早一条数据的 received_at（不含开播/下播事件本身）。"""
-        with self.lock:
-            return self.db.execute(
-                "SELECT MIN(t) FROM (SELECT MIN(received_at) AS t FROM danmaku "
-                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM sc_message "
-                "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM room_event "
-                "WHERE room_id=? AND kind<>'live')", (rid, rid, rid)).fetchone()[0]
+        return self._q(
+            "SELECT MIN(t) FROM (SELECT MIN(received_at) AS t FROM danmaku "
+            "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM sc_message "
+            "WHERE room_id=? UNION ALL SELECT MIN(received_at) FROM room_event "
+            "WHERE room_id=? AND kind<>'live')", (rid, rid, rid)).fetchone()[0]
 
     def last_live_mark(self, rid):
         """最近一条开播 / 下播记录：(received_at, detail)，没有则 None。"""
-        with self.lock:
-            row = self.db.execute(
-                "SELECT received_at, detail FROM room_event "
-                "WHERE room_id=? AND kind='live' "
-                "ORDER BY received_at DESC, seq DESC LIMIT 1", (rid,)).fetchone()
+        row = self._q(
+            "SELECT received_at, detail FROM room_event "
+            "WHERE room_id=? AND kind='live' "
+            "ORDER BY received_at DESC, seq DESC LIMIT 1", (rid,)).fetchone()
         return (row[0], row[1]) if row else None
+
+    def delete_recording(self, rec_id):
+        """删掉一条录像记录（视频文件由 Recordings.delete_recording 负责删）。"""
+        with self.lock:
+            cur = self.db.execute("DELETE FROM recordings WHERE id=?",
+                                  (_as_int(rec_id),))
+            self.db.commit()
+            return cur.rowcount > 0
 
     def delete_session(self, room_id, start, end, with_marks=False):
         """删掉一个场次（或场间）时间段内的全部数据，不可恢复。
@@ -740,6 +875,7 @@ class Store:
             args = [rid, start] + ([end] if end else [])
             out["events"] = max(0, self.db.execute(sql, args).rowcount)
             self.db.commit()
+        self.invalidate_segments(rid)
         return out
 
     def _segment_unsegmented(self, rid):
@@ -835,107 +971,293 @@ class Store:
         cur = self._write("DELETE FROM dynamics WHERE dyn_id=?", (str(dyn_id),))
         return cur.rowcount > 0
 
+    def data_status(self, labels=None):
+        """首页「数据状态」：按房间/场次统计 + data/ 目录体积分解。
+
+        与 dashboard() 不同，这里回答的是「存了多少、每场多少、占了多大地方」，
+        不产出任何按内容排序的榜单。调用方自带 15 秒缓存。
+        """
+        labels = labels or {}
+        rooms = []
+        sources = self._source_map()
+        ids = [r[0] for r in self._q(
+            "SELECT room_id FROM danmaku UNION "
+            "SELECT room_id FROM sc_message UNION "
+            "SELECT room_id FROM room_event ORDER BY 1")]
+        for rid in ids:
+            segs = self.live_segments(rid)
+            shows = [s for s in segs if s.get("kind") == "live"]
+            singles = [s for s in segs if s.get("single")]
+            gaps = [s for s in segs if s.get("kind") == "gap" and not s.get("single")]
+            dm = sum(s.get("danmaku", 0) for s in shows)
+            sc = sum(s.get("sc", 0) for s in shows)
+            records = sum(s.get("interactions", 0) for s in shows)
+            source = sources.get(rid, "")
+            name = labels.get(rid) or ""
+            rooms.append({
+                "room_id": rid, "label": name or ("房间 " + str(rid)),
+                "shows": len(shows), "records": records,
+                "danmaku": dm, "sc": sc,
+                "events": records - dm - sc,
+                "avg": int(records / len(shows)) if shows else 0,
+                "unsegmented": sum(s.get("interactions", 0) for s in singles),
+                "gap": sum(s.get("interactions", 0) for s in gaps),
+                "source": source,
+            })
+        rooms.sort(key=lambda x: (-x["records"], x["room_id"]))
+        total_shows = sum(r["shows"] for r in rooms)
+        total_records = sum(r["records"] for r in rooms)
+        sessions = {
+            "total_shows": total_shows,
+            "total_records": total_records,
+            "avg": int(total_records / total_shows) if total_shows else 0,
+            "unsegmented": sum(r["unsegmented"] for r in rooms),
+            "gap": sum(r["gap"] for r in rooms),
+            "rooms": rooms,
+        }
+        return {"sessions": sessions, "storage": self._storage_status()}
+
+    def _q_fallback(self, sql, args=()):
+        """只读连接跑不了的语句（有的 SQLite 构建不支持 dbstat）退回主连接。"""
+        try:
+            return self._q(sql, args)
+        except sqlite3.Error:
+            with self.lock:
+                return self.db.execute(sql, args)
+
+    def invalidate_storage(self):
+        """删过视频文件后让存储明细重新扫一遍。"""
+        self._storage_cache = None
+
+    def _storage_status(self):
+        """存储分解；``dbstat`` 与 raw_json 全表统计要 1.5 秒，缓存几分钟。
+
+        过期后先返回上一次的数字、后台再刷新：首页轮询不该为这 1.5 秒等一次。
+        """
+        now = time.time()
+        cached = self._storage_cache
+        if cached is None:
+            quick = self._storage_quick()
+            self._storage_cache = (0.0, quick)   # ts=0：只有快速版，标着待刷新
+            self._storage_refresh_async()
+            return quick
+        if now - cached[0] >= self.STORAGE_TTL:
+            self._storage_refresh_async()
+        return cached[1]
+
+    def _storage_refresh_async(self):
+        """后台重算存储明细，算完替换缓存；已有任务在跑就不重复起线程。"""
+        with self._bg_lock:
+            if self._storage_refreshing:
+                return
+            self._storage_refreshing = True
+
+        def run():
+            try:
+                data = self._storage_scan()
+                self._storage_cache = (time.time(), data)
+                # 就地补进首页缓存，不必等下一次整体重算
+                if self.on_storage_ready is not None:
+                    try:
+                        self.on_storage_ready(data)
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001 - 后台任务失败不该影响请求
+                pass
+            finally:
+                with self._bg_lock:
+                    self._storage_refreshing = False
+
+        threading.Thread(target=run, daemon=True, name="storage-scan").start()
+
+    def _scan_buckets(self):
+        """扫一遍 data/，按文件类型累计体积（几十个文件，毫秒级）。"""
+        data_dir = os.path.dirname(os.path.abspath(self.path))
+        buckets = {"mp4": 0, "flv": 0, "sqlite": 0,
+                   "wal": 0, "logs": 0, "config": 0, "other": 0}
+        for root, _dirs, files in os.walk(data_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                rel = os.path.relpath(path, data_dir).replace(os.sep, "/")
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    continue
+                if rel.startswith("recordings/") and name.lower().endswith(".mp4"):
+                    buckets["mp4"] += size
+                elif rel.startswith("cache/flv/") and name.lower().endswith(".flv"):
+                    buckets["flv"] += size
+                elif rel == "capture.db":
+                    buckets["sqlite"] += size
+                elif rel in ("capture.db-wal", "capture.db-shm"):
+                    buckets["wal"] += size
+                elif rel.startswith("logs/"):
+                    buckets["logs"] += size
+                elif rel.startswith("accounts/") or rel in ("config.json", "rooms.json"):
+                    buckets["config"] += size
+                else:
+                    buckets["other"] += size
+        return buckets
+
+    def _storage_payload(self, buckets, sqlite_detail):
+        """把分桶结果拼成页面用的结构（饼图 / 排行 / 合计）。"""
+        pie = [
+            {"key": "mp4", "label": "MP4 定稿", "bytes": buckets["mp4"], "group": "video"},
+            {"key": "flv", "label": "FLV 原片", "bytes": buckets["flv"], "group": "video"},
+            {"key": "sqlite", "label": "SQLite 数据库", "bytes": buckets["sqlite"], "group": "data"},
+            {"key": "other", "label": "WAL / 日志 / 配置",
+             "bytes": buckets["wal"] + buckets["logs"] + buckets["config"] + buckets["other"],
+             "group": "data"},
+        ]
+        ranking = sorted(
+            [{"key": k, "label": lab, "bytes": buckets[k], "group": grp}
+             for k, lab, grp in (
+                 ("mp4", "MP4 录像", "video"), ("flv", "FLV 原片", "video"),
+                 ("sqlite", "SQLite 数据库", "data"), ("wal", "WAL 与共享内存", "data"),
+                 ("logs", "日志", "data"), ("config", "配置与账号", "data"),
+                 ("other", "其它文件", "data")) if buckets[k] > 0],
+            key=lambda x: -x["bytes"])
+        total = sum(buckets.values())
+        return {
+            "total": total,
+            "video": buckets["mp4"] + buckets["flv"],
+            "data": total - buckets["mp4"] - buckets["flv"],
+            "pie": pie,
+            "ranking": ranking,
+            "sqlite_detail": sqlite_detail,
+        }
+
+    def _storage_quick(self):
+        """不扫 dbstat 的快速版：数据库按页数估算，明细随后台刷新补上。"""
+        buckets = self._scan_buckets()
+        return self._storage_payload(buckets, [
+            {"label": "数据库文件（明细统计中）", "bytes": buckets["sqlite"]}])
+
+    def _storage_scan(self):
+        """完整版：目录体积 + dbstat 表/索引明细 + raw_json 实际字节。"""
+        buckets = self._scan_buckets()
+        sqlite_detail = []
+        try:
+            kinds = {n: t for n, t in self._q_fallback(
+                "SELECT name,type FROM sqlite_master WHERE type IN ('table','index')")}
+            pages = {}
+            for name, nbytes in self._q_fallback(
+                    "SELECT name,SUM(pgsize) FROM dbstat GROUP BY name"):
+                pages[name] = nbytes
+            tables = {n: b for n, b in pages.items() if kinds.get(n) == "table"}
+            index_bytes = sum(b for n, b in pages.items() if kinds.get(n) == "index")
+            raw = self._q_fallback(
+                "SELECT COALESCE(SUM(LENGTH(CAST(raw_json AS BLOB))),0) "
+                "FROM danmaku").fetchone()[0]
+            dm = tables.get("danmaku", 0)
+            sqlite_detail = [
+                {"label": "弹幕原始报文 raw_json", "bytes": raw},
+                {"label": "弹幕其它字段与行开销", "bytes": max(0, dm - raw)},
+                {"label": "SC 表", "bytes": tables.get("sc_message", 0)},
+                {"label": "事件表", "bytes": tables.get("room_event", 0)},
+                {"label": "索引", "bytes": index_bytes},
+            ]
+            accounted = sum(x["bytes"] for x in sqlite_detail)
+            rest = buckets["sqlite"] - accounted
+            if rest > 0:
+                sqlite_detail.append({"label": "其它表与空闲页", "bytes": rest})
+        except sqlite3.Error:
+            # 某些 SQLite 构建没有 dbstat，退回只显示整个文件
+            sqlite_detail = [{"label": "数据库文件", "bytes": buckets["sqlite"]}]
+        return self._storage_payload(buckets, sqlite_detail)
+
     def dashboard(self):
-        """Aggregates used by the home page: totals, per-room, recent, timeline."""
-        with self.lock:
-            totals = {}
-            for key, table in TABLE_OF.items():
-                totals[key] = self.db.execute(
-                    "SELECT COUNT(*) FROM " + table).fetchone()[0]
-            sc = self.db.execute(
-                "SELECT COALESCE(SUM(price),0), COALESCE(MAX(price),0) "
-                "FROM sc_message WHERE deleted=0").fetchone()
-            totals["sc_amount"] = sc[0]
-            totals["sc_max"] = sc[1]
-            totals["rooms"] = self.db.execute(
-                "SELECT COUNT(DISTINCT room_id) FROM ("
-                "SELECT room_id FROM danmaku UNION "
-                "SELECT room_id FROM sc_message UNION "
-                "SELECT room_id FROM room_event)").fetchone()[0]
-            totals["dynamics"] = self.db.execute(
-                "SELECT COUNT(*) FROM dynamics").fetchone()[0]
+        """Aggregates used by the home page: totals, per-room, recent, timeline.
 
-            by_room = {}
-            for key, table in TABLE_OF.items():
-                for row in self.db.execute(
-                        "SELECT room_id, COUNT(*) AS n FROM %s GROUP BY room_id"
-                        % table):
-                    item = by_room.setdefault(row["room_id"], {"room_id": row["room_id"],
-                                                               "danmaku": 0, "sc": 0,
-                                                               "events": 0,
-                                                               "sc_amount": 0,
-                                                               "last_at": 0})
-                    item[key] = row["n"]
-                for row in self.db.execute(
-                        "SELECT room_id, MAX(received_at) AS t FROM %s GROUP BY room_id"
-                        % table):
-                    item = by_room.setdefault(row["room_id"], {"room_id": row["room_id"],
-                                                               "danmaku": 0, "sc": 0,
-                                                               "events": 0,
-                                                               "sc_amount": 0,
-                                                               "last_at": 0})
-                    item["last_at"] = max(item["last_at"], row["t"] or 0)
-            for row in self.db.execute(
-                    "SELECT room_id, COALESCE(SUM(price),0) AS s FROM sc_message "
-                    "WHERE deleted=0 GROUP BY room_id"):
-                item = by_room.setdefault(row["room_id"], {"room_id": row["room_id"],
-                                                           "danmaku": 0, "sc": 0,
-                                                           "events": 0,
-                                                           "sc_amount": 0,
-                                                           "last_at": 0})
-                item["sc_amount"] = row["s"]
+        每张表只扫一遍：`GROUP BY room_id` 同时取条数与最后时间，总量由分组结果
+        相加；时间线在 SQL 里直接分桶，不把几万行时间戳搬回 Python 再循环。
+        """
+        by_room = {}
+        totals = {"danmaku": 0, "sc": 0, "events": 0}
+        for key, table in TABLE_OF.items():
+            for row in self._q(
+                    "SELECT room_id, COUNT(*) AS n, "
+                    "COALESCE(MAX(received_at),0) AS t FROM %s GROUP BY room_id"
+                    % table):
+                item = by_room.setdefault(row["room_id"], {
+                    "room_id": row["room_id"], "danmaku": 0, "sc": 0,
+                    "events": 0, "sc_amount": 0, "last_at": 0})
+                item[key] = row["n"]
+                item["last_at"] = max(item["last_at"], row["t"] or 0)
+                totals[key] += row["n"]
 
-            # 以直播间为单位的聚合：开播次数、去重观众数、互动总量、场次流水峰值
-            for item in by_room.values():
-                rid = item["room_id"]
-                live_row = self.db.execute(
-                    "SELECT COUNT(*), COALESCE(MAX(received_at),0) FROM room_event "
-                    "WHERE room_id=? AND kind='live' AND detail='开播'",
-                    (rid,)).fetchone()
-                item["sessions"] = live_row[0]
-                item["last_live_at"] = live_row[1]
-                # 没有开播事件就是「还没记录过开播」，不拿采集批次冒充场次
-                item["sessions_approx"] = False
-                item["viewers"] = self.db.execute(
-                    "SELECT COUNT(*) FROM ("
-                    "SELECT uid FROM danmaku WHERE uid>0 AND room_id=? UNION "
-                    "SELECT uid FROM sc_message WHERE uid>0 AND room_id=?)",
-                    (rid, rid)).fetchone()[0]
-                item["interactions"] = (item["danmaku"] + item["sc"] +
-                                        item["events"])
-                item["sc_peak"] = self.db.execute(
-                    "SELECT COALESCE(MAX(price),0) FROM sc_message "
-                    "WHERE room_id=? AND deleted=0", (rid,)).fetchone()[0]
+        sc = self._q(
+            "SELECT COALESCE(SUM(price),0), COALESCE(MAX(price),0) "
+            "FROM sc_message WHERE deleted=0").fetchone()
+        totals["sc_amount"] = sc[0]
+        totals["sc_max"] = sc[1]
+        totals["rooms"] = len(by_room)
+        totals["dynamics"] = self._q(
+            "SELECT COUNT(*) FROM dynamics").fetchone()[0]
 
-            top_sc = [dict(r) for r in self.db.execute(
-                "SELECT room_id, uname, price, message, message_trans, received_at "
-                "FROM sc_message WHERE deleted=0 ORDER BY price DESC, received_at DESC "
-                "LIMIT 5")]
+        for row in self._q(
+                "SELECT room_id, COALESCE(SUM(price),0) AS s FROM sc_message "
+                "WHERE deleted=0 GROUP BY room_id"):
+            item = by_room.setdefault(row["room_id"], {
+                "room_id": row["room_id"], "danmaku": 0, "sc": 0,
+                "events": 0, "sc_amount": 0, "last_at": 0})
+            item["sc_amount"] = row["s"]
 
-            # 动态按 up 主 uid 聚合：条数 + 最近一次拉到的时间
-            dyn_by_mid = {}
-            for row in self.db.execute(
-                    "SELECT mid, COUNT(*), COALESCE(MAX(fetched_at),0) "
-                    "FROM dynamics GROUP BY mid"):
-                dyn_by_mid[row[0]] = {"n": row[1], "last_at": row[2] or 0}
+        # 以直播间为单位的聚合：开播次数、去重观众数、场次流水峰值。三条查询各
+        # 分组一次就够，别按房间循环发 SQL。
+        live_rows, peaks = {}, {}
+        for row in self._q(
+                "SELECT room_id, COUNT(*) AS n, COALESCE(MAX(received_at),0) AS t "
+                "FROM room_event WHERE kind='live' AND detail='开播' "
+                "GROUP BY room_id"):
+            live_rows[row["room_id"]] = (row["n"], row["t"])
+        for row in self._q(
+                "SELECT room_id, COALESCE(MAX(price),0) FROM sc_message "
+                "WHERE deleted=0 GROUP BY room_id"):
+            peaks[row["room_id"]] = row[1]
+        viewers = self._viewer_counts()
 
-            recent = []  # 最近动态不再在首页展示（接口保留字段兼容）
+        for item in by_room.values():
+            rid = item["room_id"]
+            n, t = live_rows.get(rid, (0, 0))
+            item["sessions"] = n
+            item["last_live_at"] = t
+            # 没有开播事件就是「还没记录过开播」，不拿采集批次冒充场次
+            item["sessions_approx"] = False
+            item["viewers"] = viewers.get(rid, 0)
+            item["interactions"] = (item["danmaku"] + item["sc"] +
+                                    item["events"])
+            item["sc_peak"] = peaks.get(rid, 0)
 
-            now = int(time.time() * 1000)
-            span = 3600 * 1000
-            start = now - 12 * span
-            timeline = {"danmaku": [0] * 12, "sc": [0] * 12, "events": [0] * 12}
-            for key, table in TABLE_OF.items():
-                for row in self.db.execute(
-                        "SELECT received_at FROM %s WHERE received_at>=?" % table,
-                        (start,)):
-                    idx = int((row[0] - start) / span)
-                    if 0 <= idx < 12:
-                        timeline[key][idx] += 1
-            labels = []
-            for i in range(12):
-                d = time.localtime((start + i * span) / 1000)
-                labels.append("%02d:00" % d.tm_hour)
+        top_sc = [dict(r) for r in self._q(
+            "SELECT room_id, uname, price, message, message_trans, received_at "
+            "FROM sc_message WHERE deleted=0 ORDER BY price DESC, received_at DESC "
+            "LIMIT 5")]
+
+        # 动态按 up 主 uid 聚合：条数 + 最近一次拉到的时间
+        dyn_by_mid = {}
+        for row in self._q(
+                "SELECT mid, COUNT(*), COALESCE(MAX(fetched_at),0) "
+                "FROM dynamics GROUP BY mid"):
+            dyn_by_mid[row[0]] = {"n": row[1], "last_at": row[2] or 0}
+
+        recent = []  # 最近动态不再在首页展示（接口保留字段兼容）
+
+        now = int(time.time() * 1000)
+        span = 3600 * 1000
+        start = now - 12 * span
+        timeline = {"danmaku": [0] * 12, "sc": [0] * 12, "events": [0] * 12}
+        for key, table in TABLE_OF.items():
+            for bucket, n in self._q(
+                    "SELECT CAST((received_at - ?) / ? AS INTEGER) AS b, "
+                    "COUNT(*) FROM %s WHERE received_at>=? GROUP BY b"
+                    % table, (start, span, start)):
+                if 0 <= bucket < 12:
+                    timeline[key][bucket] += n
+        labels = []
+        for i in range(12):
+            d = time.localtime((start + i * span) / 1000)
+            labels.append("%02d:00" % d.tm_hour)
         return {"totals": totals,
                 "by_room": sorted(by_room.values(), key=lambda x: x["room_id"]),
                 "top_sc": top_sc, "recent": recent, "dyn_by_mid": dyn_by_mid,
