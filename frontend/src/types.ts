@@ -1,5 +1,50 @@
 /** 接口返回的实体类型：只写页面真正用到的字段。 */
 
+/** 首页「数据状态」：只描述存了多少、占了多大，不按内容做榜单。 */
+export interface SessionRoom {
+  room_id: number
+  label: string
+  shows: number
+  records: number
+  danmaku: number
+  sc: number
+  events: number
+  avg: number
+  unsegmented: number
+  gap: number
+  source: 'live' | 'import' | 'live+import' | ''
+}
+
+export interface SessionStatus {
+  total_shows: number
+  total_records: number
+  avg: number
+  unsegmented: number
+  gap: number
+  rooms: SessionRoom[]
+}
+
+export interface StorageSlice {
+  key: string
+  label: string
+  bytes: number
+  group: 'video' | 'data'
+}
+
+export interface StorageStatus {
+  total: number
+  video: number
+  data: number
+  pie: StorageSlice[]
+  ranking: StorageSlice[]
+  sqlite_detail: { label: string; bytes: number }[]
+}
+
+export interface DataStatus {
+  sessions: SessionStatus
+  storage: StorageStatus
+}
+
 export interface RoomTotal {
   danmaku: number
   sc: number
@@ -69,8 +114,25 @@ export interface Room {
   totals?: RoomTotal
 }
 
+/** 数据页的房间：采集器里的房间 + 采集器删了但库里还有数据的房间。 */
+export interface DataRoom {
+  id: number
+  configured: boolean
+  uid: number
+  uname: string
+  label: string
+  face: string
+  live_status: number
+  totals: { danmaku: number; sc: number; events: number; interactions: number; sessions: number }
+  recordings: number
+  rec_bytes: number
+  has_data: boolean
+  last_at: number
+}
+
 export interface RecordingPart {
   index: number
+  name?: string
   started_at: number
   bytes: number
   duration_ms: number
@@ -97,7 +159,7 @@ export interface RecordingInfo {
   merge_status?: string
   merge_error?: string
   merge_seconds?: number
-  merged?: { bytes: number; duration_ms: number } | null
+  merged?: { bytes: number; duration_ms: number; kind?: 'flv' | 'mp4' } | null
 }
 
 export interface Segment {
@@ -199,6 +261,53 @@ export interface LogRow {
   ts: number
   level: string
   msg: string
+  /** 产生这条日志的位置，`文件:行号`（后端写的，网页日志没有）。 */
+  src?: string
+  /** error / warn 的完整 traceback。 */
+  tb?: string
+  /** 连续重复次数（同一行刷屏只留一条）。 */
+  n?: number
+  /** true = 服务重启前留下的历史记录。 */
+  replay?: boolean
+}
+
+export interface LogStats {
+  counts: Record<string, number>
+  buffered: number
+  capacity: number
+  last_error_at: number
+  journal_bytes: number
+  journal: string
+}
+
+/** 运行期诊断快照：日志回答“发生过什么”，这个回答“现在健康吗”。 */
+export interface LogDiagnostics {
+  ts: number
+  pid: number
+  python: string
+  platform: string
+  uptime_ms: number
+  threads: {
+    count: number
+    /** waitress 工作线程数（单独算，不挤进清单） */
+    pool: number
+    items: { name: string; alive: boolean; daemon: boolean }[]
+    expected_capture: string[]
+    missing: string[]
+  }
+  disk: { total: number; used: number; free: number; percent: number }
+  memory: { total: number; used: number; percent: number }
+  process: { rss: number }
+  db: { path: string; bytes: number; wal_bytes: number; shm_bytes: number }
+  logs: {
+    buffered: number
+    counts: Record<string, number>
+    last_error_at: number
+    journal_bytes: number
+    journal: string
+  }
+  ffmpeg: { path: string; version: string; ok: boolean }
+  websockets: boolean
 }
 
 export interface ConfigPayload {

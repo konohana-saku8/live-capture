@@ -1,23 +1,22 @@
 <script setup lang="ts">
-/** 仪表盘：设备与服务、采集器卡片、近 12 小时柱状图、高额 SC。 */
-import { computed } from 'vue'
-import { useRouter } from 'vue-router'
+/** 首页只描述数据状态：存了多少场、每场多少、占了多大空间。 */
+import { computed, ref } from 'vue'
 
-import { bytes, dur, fmt, fmtFull, num } from '@/lib/format'
-import { selectRoom, state } from '@/stores/app'
+import { bytes, dur, fmtFull, num } from '@/lib/format'
+import { state } from '@/stores/app'
 
-const router = useRouter()
+const ROOMS_PER_PAGE = 8
+const roomPage = ref(0)
 
-const timeline = computed(() => state.dash?.timeline || { labels: [], danmaku: [], sc: [], events: [] })
+const sessions = computed(() => state.dash?.data_status?.sessions || null)
+const storage = computed(() => state.dash?.data_status?.storage || null)
 
-/** 三组柱子共用一条纵轴，峰值至少为 1，避免全 0 时除零。 */
-const peak = computed(() => {
-  const tl = timeline.value
-  let max = 1
-  for (const k of ['danmaku', 'sc', 'events'] as const) {
-    for (const v of tl[k] || []) if (v > max) max = v
-  }
-  return max
+const roomPages = computed(() =>
+  Math.max(1, Math.ceil((sessions.value?.rooms.length || 0) / ROOMS_PER_PAGE)))
+const pageRooms = computed(() => {
+  const all = sessions.value?.rooms || []
+  return all.slice(roomPage.value * ROOMS_PER_PAGE,
+    (roomPage.value + 1) * ROOMS_PER_PAGE)
 })
 
 const serviceAddr = computed(() => {
@@ -25,40 +24,146 @@ const serviceAddr = computed(() => {
   return 'http://' + (svc?.lan_ip || '127.0.0.1') + ':' + (svc?.port || 8765)
 })
 
-const liveText: Record<number, string> = { 0: '未开播', 1: '直播中', 2: '轮播' }
-
-function barHeight(kind: 'danmaku' | 'sc' | 'events', i: number) {
-  const v = (timeline.value[kind] || [])[i] || 0
-  return Math.max(2, Math.round((v / peak.value) * 100)) + '%'
+function pct(part: number, total: number) {
+  return total ? (part / total * 100).toFixed(1) + '%' : '—'
 }
 
-function roomLabel(id: number) {
-  const r = state.rooms.find((x) => x.id === id)
-  return r ? (r.label || '房间 ' + id) : '房间 ' + id
+function sourceText(src: string) {
+  return ({ live: '实时采集', import: '历史导入', 'live+import': '实时 + 导入' } as Record<string, string>)[src] || '无数据'
 }
 
-async function openRoom(id: number, testSource: boolean) {
-  await selectRoom(id)
-  router.push(testSource ? '/live' : '/rooms')
+const PIE_COLORS: Record<string, string> = {
+  mp4: '#e0a45e', flv: '#c9772f', sqlite: '#6b9bd1', other: '#7d7770',
 }
+
+/** 纯 SVG 圆环，不引入图表库；极小切片至少给 1px 以免看不见。 */
+const donut = computed(() => {
+  const list = storage.value?.pie || []
+  const total = storage.value?.total || 0
+  const circumference = 2 * Math.PI * 46
+  let used = 0
+  return list.map((s) => {
+    const len = total ? Math.max(1, s.bytes / total * circumference) : 0
+    const item = { ...s, color: PIE_COLORS[s.key] || '#7d7770',
+      dash: len + ' ' + (circumference - len), offset: -used }
+    used += len
+    return item
+  })
+})
+
+const sqliteBytes = computed(() =>
+  (storage.value?.pie || []).find((x) => x.key === 'sqlite')?.bytes || 0)
+const sqliteMax = computed(() =>
+  Math.max(1, ...(storage.value?.sqlite_detail || []).map((x) => x.bytes)))
 </script>
 
 <template>
   <div class="page">
     <div class="hero">
-      <div class="eyebrow">Overview · 仪表盘</div>
-      <h1>采集总览<span class="thin">。</span></h1>
+      <div class="eyebrow">Overview · 数据状态</div>
+      <h1>数据状态<span class="thin">。</span></h1>
       <p class="lead">
-        弹幕、Super Chat 与 up 主动态都留在手机本机。切到「采集器」按 up 主 uid 添加，可以同时采集多位。
+        弹幕、Super Chat、动态与录像都留在手机本机。这里只记录存了多少、每场多少、占了多大空间。
       </p>
     </div>
+
+    <section class="card">
+      <div class="sec-head">
+        <h2><i>◆</i>数据家底</h2>
+        <span class="more">全部房间 · 只统计场次区间内的数据</span>
+      </div>
+      <template v-if="sessions">
+        <div class="stat-strip">
+          <div><b>{{ num(sessions.total_shows) }}</b><span>已记录场次</span></div>
+          <div><b>{{ num(sessions.total_records) }}</b><span>场内记录</span></div>
+          <div><b>{{ num(sessions.avg) }}</b><span>平均每场</span></div>
+        </div>
+        <p v-if="sessions.unsegmented || sessions.gap" class="stat-note">
+          另有 {{ num(sessions.unsegmented) }} 条未分段、{{ num(sessions.gap) }} 条落在场间，未计入场次平均。
+        </p>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>房间</th><th>场数</th><th>场内记录</th><th>平均每场</th><th>数据来源</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in pageRooms" :key="r.room_id">
+                <td>
+                  <b>{{ r.label }}</b>
+                  <small>#{{ r.room_id }} · <span class="src-mobile">{{ sourceText(r.source) }}</span></small>
+                </td>
+                <td>
+                  {{ num(r.shows) }}
+                  <small v-if="r.unsegmented">+ 未分段 {{ num(r.unsegmented) }}</small>
+                </td>
+                <td>{{ num(r.records) }}</td>
+                <td>{{ r.shows ? num(r.avg) : '—' }}</td>
+                <td><span class="src-tag" :class="r.source">{{ sourceText(r.source) }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="roomPages > 1" class="pager">
+          <button class="btn sm" :disabled="roomPage <= 0" @click="roomPage--">上一页</button>
+          <span>{{ roomPage + 1 }} / {{ roomPages }}</span>
+          <button class="btn sm" :disabled="roomPage >= roomPages - 1" @click="roomPage++">下一页</button>
+        </div>
+      </template>
+      <div v-else class="empty">还没有采集到数据。</div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
+        <h2><i>◆</i>存储构成</h2>
+        <span class="more">
+          合计 {{ bytes(storage?.total) }} · 视频 {{ pct(storage?.video || 0, storage?.total || 0) }}
+        </span>
+      </div>
+      <template v-if="storage">
+        <div class="storage-grid">
+          <div class="donut-box">
+            <svg viewBox="0 0 120 120" class="donut" role="img" aria-label="数据目录存储占用饼图">
+              <circle v-for="s in donut" :key="s.key" cx="60" cy="60" r="46"
+                fill="none" :stroke="s.color" stroke-width="13"
+                :stroke-dasharray="s.dash" :stroke-dashoffset="s.offset"
+                transform="rotate(-90 60 60)" />
+            </svg>
+            <div class="donut-center"><b>{{ bytes(storage.total) }}</b><span>data/</span></div>
+          </div>
+          <div class="storage-legend">
+            <div v-for="s in storage.pie" :key="s.key" class="legend-row">
+              <i :style="{ background: PIE_COLORS[s.key] || '#7d7770' }"></i>
+              <span>{{ s.label }}</span>
+              <b>{{ bytes(s.bytes) }}</b>
+              <em>{{ pct(s.bytes, storage.total) }}</em>
+            </div>
+          </div>
+        </div>
+        <div class="storage-detail">
+          <div class="detail-col">
+            <h3>SQLite 内部 · {{ bytes(sqliteBytes) }}</h3>
+            <div v-for="d in storage.sqlite_detail" :key="d.label" class="detail-row">
+              <div class="detail-top"><span>{{ d.label }}</span><b>{{ bytes(d.bytes) }}</b></div>
+              <div class="detail-bar"><i :style="{ width: Math.max(2, d.bytes / sqliteMax * 100) + '%' }"></i></div>
+            </div>
+          </div>
+          <div class="detail-col">
+            <h3>占用排行</h3>
+            <div v-for="(r, i) in storage.ranking.slice(0, 6)" :key="r.key" class="rank-row">
+              <em>{{ i + 1 }}</em><span>{{ r.label }}</span><b>{{ bytes(r.bytes) }}</b>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div v-else class="empty">还没有存储信息。</div>
+    </section>
 
     <section class="card">
       <div class="sec-head">
         <h2><i>◆</i>设备与服务</h2>
         <span class="more">
           <span>{{ serviceAddr }}</span>
-          <span>{{ state.sys?.ts ? ' · 更新于 ' + fmt(state.sys.ts) : '' }}</span>
+          <span>{{ state.sys?.ts ? ' · 更新于 ' + fmtFull(state.sys.ts) : '' }}</span>
         </span>
       </div>
       <div class="dev-grid">
@@ -146,79 +251,6 @@ async function openRoom(id: number, testSource: boolean) {
         </div>
         <div class="kv"><span>访问口令</span><b>{{ state.cfg?.token_set ? '已设置' : '无' }}</b></div>
         <div class="kv full"><span>数据目录</span><b>{{ state.svc?.data_dir || '—' }}</b></div>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="sec-head">
-        <h2><i>◆</i>采集器</h2>
-        <span class="more">{{ state.rooms.length }} 位 up 主 · {{ state.active }} 位正在采集</span>
-      </div>
-      <div class="room-grid">
-        <div v-for="r in state.rooms" :key="r.id" class="room-card" :class="{ on: r.running }">
-          <h3>{{ r.uname || r.label }}</h3>
-          <div class="sub">
-            {{ r.uid === 0 ? '测试源' : 'UID ' + (r.uid || '—') }} · ROOM {{ r.id }}
-            · {{ r.uid === 0 ? '本地视频' : (liveText[r.live_status ?? 0] || '未知') }}
-          </div>
-          <div class="metrics">
-            <div><b>{{ num(r.totals?.sessions) }}</b><span>开播场次</span></div>
-            <div class="hl"><b>¥{{ num(r.totals?.sc_amount) }}</b><span>累计流水</span></div>
-            <div><b>{{ num(r.totals?.interactions) }}</b><span>互动总数</span></div>
-            <div><b>{{ num(r.totals?.viewers) }}</b><span>观众数</span></div>
-          </div>
-          <div class="nums">
-            <span>弹幕 <b>{{ num(r.totals?.danmaku) }}</b></span>
-            <span>SC <b>{{ num(r.totals?.sc) }}</b></span>
-            <span>动态 <b>{{ num(r.dyns) }}</b></span>
-          </div>
-          <div class="foot">
-            <span class="dot" :class="{ on: r.running }">
-              <i></i>{{ r.uid === 0 ? '测试源' : (r.running ? '采集中' : '未采集') }}
-            </span>
-            <button class="btn sm" @click="openRoom(r.id, r.uid === 0)">查看内容 →</button>
-          </div>
-        </div>
-        <div v-if="!state.rooms.length" class="empty">
-          还没有采集器。切到「采集器」页填 up 主 uid 即可开始。
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="sec-head">
-        <h2><i>◆</i>近 12 小时</h2>
-        <span class="more">全部采集器合计 · 弹幕 / SC / 事件</span>
-      </div>
-      <div class="bars">
-        <div v-for="(label, i) in timeline.labels" :key="label + i" class="col">
-          <div class="bar">
-            <i :style="{ height: barHeight('danmaku', i) }"
-               :title="'danmaku ' + (timeline.danmaku[i] || 0)"></i>
-            <i class="sc" :style="{ height: barHeight('sc', i) }"
-               :title="'sc ' + (timeline.sc[i] || 0)"></i>
-            <i class="events" :style="{ height: barHeight('events', i) }"
-               :title="'events ' + (timeline.events[i] || 0)"></i>
-          </div>
-          <span>{{ label }}</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="sec-head">
-        <h2><i>◆</i>高额 SC</h2>
-        <span class="more">全部采集器 · 按金额前 5</span>
-      </div>
-      <div class="recent">
-        <div v-for="(row, i) in state.dash?.top_sc || []" :key="i" class="line">
-          <span class="t">{{ fmt(row.received_at) }}</span>
-          <span class="rk">¥{{ row.price }}</span>
-          <span class="rx">
-            <b>{{ roomLabel(row.room_id) }}</b> · {{ row.uname || '—' }}：{{ row.message || '' }}
-          </span>
-        </div>
-        <div v-if="!(state.dash?.top_sc || []).length" class="empty">还没有 Super Chat</div>
       </div>
     </section>
   </div>

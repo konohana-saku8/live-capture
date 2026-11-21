@@ -8,7 +8,7 @@ import { computed, reactive } from 'vue'
 
 import { api, postJson } from '@/api/client'
 import { dayKey } from '@/lib/calendar'
-import { state as appState } from '@/stores/app'
+import { loadDashboard, state as appState } from '@/stores/app'
 import type { FeedKind, FeedRow, Segment } from '@/types'
 
 const PAGE = 200
@@ -209,6 +209,7 @@ export async function deleteSegment(seg: Segment) {
     kind: seg.kind,
   })
   await loadCalendar()
+  void loadDashboard()
   return j
 }
 

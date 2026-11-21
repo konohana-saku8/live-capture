@@ -10,6 +10,7 @@ import RoomsView from './views/RoomsView.vue'
 import ConfigView from './views/ConfigView.vue'
 import LogsView from './views/LogsView.vue'
 import LiveRoomView from './views/LiveRoomView.vue'
+import { uiLog } from './stores/app'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -24,4 +25,20 @@ const router = createRouter({
   ],
 })
 
-createApp(App).use(router).mount('#app')
+// 前端异常也进日志页：否则页面白屏时只剩一条「已登录」，看不出哪儿炸了
+window.addEventListener('error', (e) => {
+  const file = String(e.filename || '').split('/').pop() || '?'
+  uiLog('error', '前端错误：' + (e.message || '未知') + ' @ ' + file + ':' + e.lineno)
+})
+window.addEventListener('unhandledrejection', (e) => {
+  const reason: any = e.reason
+  uiLog('error', '未处理的 Promise：' + (reason?.message || String(reason)))
+})
+
+const app = createApp(App)
+app.config.errorHandler = (err, _instance, info) => {
+  const e = err as Error
+  uiLog('error', 'Vue 运行错误（' + info + '）：' + (e?.message || e) +
+    (e?.stack ? '\n' + e.stack : ''))
+}
+app.use(router).mount('#app')

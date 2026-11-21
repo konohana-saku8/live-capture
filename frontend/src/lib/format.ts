@@ -30,6 +30,12 @@ export function fmtFull(ms?: number) {
   return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + fmt(ms)
 }
 
+/** 带年份的完整时间戳，用于悬停提示（日志行本身只留月日时分秒）。 */
+export function fmtStampFull(ms?: number) {
+  if (!ms) return '—'
+  return new Date(ms).getFullYear() + '-' + fmtFull(ms)
+}
+
 export function mdhm(ms: number) {
   const d = new Date(ms)
   return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + fmtHM(ms)

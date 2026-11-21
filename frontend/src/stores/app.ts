@@ -3,8 +3,8 @@ import { computed, reactive } from 'vue'
 
 import { api, postJson } from '@/api/client'
 import type {
-  Account, ConfigPayload, DynConfig, Dynamics, LogRow, Room,
-  ServiceInfo, SysInfo,
+  Account, ConfigPayload, DataRoom, DataStatus, DynConfig, Dynamics, LogDiagnostics,
+  LogRow, LogStats, Room, ServiceInfo, SysInfo,
 } from '@/types'
 
 /** 采集器清单每页 3 个。 */
@@ -18,6 +18,8 @@ export const state = reactive({
   gate: { open: false, mode: 'unlock' as 'unlock' | 'setup' },
 
   rooms: [] as Room[],
+  /** 数据页的房间：采集器 + 只剩数据的房间，顺序按最近有数据的时间倒序。 */
+  dataRooms: [] as DataRoom[],
   active: 0,
   running: false,
   roomId: Number(localStorage.getItem('lc-room') || 0) || 0,
@@ -43,11 +45,14 @@ export const state = reactive({
     totals: Record<string, number>
     timeline: { labels: string[]; danmaku: number[]; sc: number[]; events: number[] }
     top_sc: any[]
+    data_status: DataStatus | null
     last_received_at: number
   },
   accounts: [] as Account[],
   serverLogs: [] as LogRow[],
   webLogs: [] as LogRow[],
+  logStats: null as LogStats | null,
+  logDiag: null as LogDiagnostics | null,
 
   hints: {
     room: { msg: '', kind: '' } as Hint,
@@ -102,6 +107,13 @@ export async function loadDashboard() {
   } catch { /* 轮询里静默 */ }
 }
 
+/** 只删某个录像里的一个分片；录像记录与其它分片保留。 */
+export async function deleteVideoFile(kind: 'mp4' | 'flv', recId: number, index: number) {
+  const j = await postJson<any>('/api/recordings/' + recId + '/file/delete',
+    { kind, index })
+  return j.deleted
+}
+
 export async function loadSystem() {
   try {
     state.sys = (await api('/api/system')).system
@@ -124,6 +136,14 @@ export async function loadRooms() {
   try {
     setBadgeRooms(await api('/api/rooms'))
     normalizeSelection()
+  } catch { /* ignore */ }
+}
+
+/** 数据页的房间清单：采集器删掉后数据还在的房间也要能选到。 */
+export async function loadDataRooms() {
+  try {
+    const j = await api<{ items?: DataRoom[] }>('/api/data/rooms')
+    state.dataRooms = j.items || []
   } catch { /* ignore */ }
 }
 
@@ -292,6 +312,9 @@ export async function accountAction(action: 'remove' | 'activate', id: string) {
 
 export async function loadLogs() {
   try {
-    state.serverLogs = (await api('/api/logs?limit=2000')).items || []
+    const j = await api<any>('/api/logs?limit=2000')
+    state.serverLogs = j.items || []
+    state.logStats = j.stats || null
+    state.logDiag = j.diagnostics || null
   } catch { /* ignore */ }
 }

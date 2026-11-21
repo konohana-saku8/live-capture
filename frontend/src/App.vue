@@ -9,6 +9,8 @@ import {
   state, uiLog,
 } from '@/stores/app'
 import CdnImg from '@/components/CdnImg.vue'
+import BlockingOverlay from '@/components/BlockingOverlay.vue'
+import { busyText } from '@/stores/busy'
 
 const route = useRoute()
 const router = useRouter()
@@ -301,4 +303,7 @@ onBeforeUnmount(() => {
     </router-view>
     <footer>LIVE CAPTURE · 数据仅保存在本机 · 弹幕 / SC / 事件 / 动态</footer>
   </main>
+
+  <!-- 删除 / 清空等阻塞操作期间的全屏遮罩：给反馈，同时挡住其它点击 -->
+  <BlockingOverlay :show="!!busyText" :text="busyText" />
 </template>

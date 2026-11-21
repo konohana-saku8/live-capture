@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vu
 
 import { api, postJson, setToken } from '@/api/client'
 import { hint, loadAccounts, loadStatus, state, uiLog, uploadAccount, accountAction } from '@/stores/app'
+import { withBusy } from '@/stores/busy'
 import type { ConfigPayload } from '@/types'
 import CdnImg from '@/components/CdnImg.vue'
 
@@ -97,7 +98,8 @@ async function clearToken() {
 async function clearData() {
   if (!confirm('确定清空全部弹幕 / SC / 事件记录？此操作不可撤销。')) return
   try {
-    await api('/api/clear', { method: 'POST', body: JSON.stringify({ confirm: 'yes' }) })
+    await withBusy('正在清空弹幕 / SC / 事件…', () =>
+      api('/api/clear', { method: 'POST', body: JSON.stringify({ confirm: 'yes' }) }))
     hint('cfg', '数据已清空', 'ok')
   } catch (e: any) {
     hint('cfg', e.message, 'err')
@@ -132,7 +134,8 @@ async function onAccountAction(action: 'remove' | 'activate', id: string) {
     if (!confirm('删除账号「' + (item ? item.label : id) + '」？')) return
   }
   try {
-    const j = await accountAction(action, id)
+    const j = await withBusy(action === 'remove' ? '正在删除账号…' : '正在启用账号…',
+      () => accountAction(action, id))
     hint('acct', action === 'remove' ? '账号已删除' : '账号已启用', 'ok')
     if (j.restart_required && action === 'remove') {
       hint('acct', '账号已删除；采集运行中，需停止后重新启动才生效', 'ok')

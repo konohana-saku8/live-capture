@@ -27,11 +27,9 @@ function recText(rec: RecordingInfo | null) {
   if (!rec) return '无录像'
   if (rec.status === 'recording') return '录制中'
   if (rec.status === 'pending' || rec.status === 'remuxing') return '转封装中'
-  if (rec.merge_status === 'done') return '完整回放 · 单文件'
-  if (rec.merge_status === 'merging') return '合并中'
-  if (rec.merge_status === 'error') return '合并失败 · 待重试'
-  if (rec.merge_status === 'pending') return '待合并'
-  if (rec.status === 'ready') return 'MP4 · ' + rec.mp4_count + ' 段'
+  if (rec.status === 'ready') {
+    return rec.mp4_count > 1 ? 'MP4 · ' + rec.mp4_count + ' 段' : 'MP4 · 完整'
+  }
   if (rec.status === 'flv') return 'FLV · ' + rec.flv_count + ' 段'
   if (rec.status === 'failed') return '转封装失败'
   if (rec.status === 'interrupted') return '录像中断'
@@ -48,7 +46,7 @@ function recClass(rec: RecordingInfo | null) {
 
 function delTitle(s: Segment) {
   return s.kind === 'live'
-    ? '删除这一场（含开播 / 下播标记，不可恢复）'
+    ? '删除这一场（文本 + 视频含 FLV 原片，不可恢复）'
     : '删除这段场间内容（保留开播 / 下播标记）'
 }
 </script>

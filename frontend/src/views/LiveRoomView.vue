@@ -5,13 +5,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { download } from '@/api/client'
 import { bytes as fmtBytes, fmtFull, fmtHM, num, qnLabel, segRange, segTitle } from '@/lib/format'
 import { dayLabel } from '@/lib/calendar'
-import { loadDynamics, loadRooms, state } from '@/stores/app'
+import { deleteVideoFile, loadDataRooms, loadDynamics, loadRooms, state } from '@/stores/app'
+import { busyText, withBusy } from '@/stores/busy'
 import {
   anchorMs, canPlay, canSeek, deleteSegment, disposeLiveRoom, isLiveSeg, liveState,
   loadCalendar, loadWindow, recording, selectedDaySegs, selectedSeg,
   selectDate, selectSegment, setCurrent, setRoom, tickGap, tickLive,
 } from '@/stores/liveRoom'
-import type { Segment } from '@/types'
+import type { RecordingPart, Segment } from '@/types'
 import ArchiveCalendar from '@/components/live/ArchiveCalendar.vue'
 import DynamicsPanel from '@/components/DynamicsPanel.vue'
 import SessionCards from '@/components/live/SessionCards.vue'
@@ -30,10 +31,14 @@ let timer: number | undefined
 let noteTimer: number | undefined
 let calTick = 0
 
-const rooms = computed(() => state.rooms)
+const rooms = computed(() => state.dataRooms)
 const seg = computed(() => selectedSeg.value)
-const selectedRoom = computed(
+/** 采集器侧的记录：只有配置过采集器的房间才有直播状态 / 动态 */
+const collectorRoom = computed(
   () => state.rooms.find((r) => r.id === liveState.roomId) || null,
+)
+const selectedRoom = computed(
+  () => state.dataRooms.find((r) => r.id === liveState.roomId) || null,
 )
 const summary = computed(() => liveState.summary)
 const segName = computed(() => {
@@ -53,10 +58,18 @@ const recStatus = computed(() => {
 })
 
 onMounted(async () => {
-  await loadRooms()
-  const known = state.rooms.some((r) => r.id === liveState.roomId)
-  const rid = known ? liveState.roomId : (state.roomId || state.rooms[0]?.id || 0)
-  await setRoom(rid)
+  // 数据页自己记选中项：采集器页会按采集器清单回落，选中的「只剩数据」的
+  // 房间在那套逻辑里会被重置，所以这里用单独的键。
+  const saved = Number(localStorage.getItem('lc-data-room') || 0) || 0
+  await Promise.all([loadRooms(), loadDataRooms()])
+  const list = state.dataRooms
+  const pick =
+    (list.some((r) => r.id === liveState.roomId) ? liveState.roomId : 0) ||
+    (list.some((r) => r.id === saved) ? saved : 0) ||
+    (list.some((r) => r.id === state.roomId) ? state.roomId : 0) ||
+    list[0]?.id || 0
+  await setRoom(pick)
+  if (pick) localStorage.setItem('lc-data-room', String(pick))
   timer = window.setInterval(onTick, 2000)
 })
 
@@ -82,11 +95,10 @@ function onTick() {
     if (calTick % 10 === 0) void loadCalendar(true)
     return
   }
-  // 下播后轮询到 remux 完成、再轮询到合并完成，自动从 FLV/分片切到单文件
+  // 下播后轮询到 remux 完成，自动从直播画面切成 MP4 分片回放
   const r = recording.value
-  const merging = r && (r.merge_status === 'pending' || r.merge_status === 'merging')
   if (r && (r.status === 'recording' || r.status === 'pending' ||
-            r.status === 'remuxing' || merging)) {
+            r.status === 'remuxing')) {
     calTick += 1
     if (calTick % 5 === 0) void loadCalendar(true)
   }
@@ -101,6 +113,7 @@ async function onRoomChange(event: Event) {
     return
   }
   await setRoom(id)
+  if (id) localStorage.setItem('lc-data-room', String(id))
 }
 
 function switchTab(tab: 'live' | 'dyn') {
@@ -169,16 +182,43 @@ async function exportData(fmt: 'json' | 'csv') {
 }
 
 async function onDeleteSegment(s: Segment) {
+  if (busyText.value) return
   const label = segTitle(s) + ' · ' + segRange(s)
   const marks = s.kind === 'live' ? '，含开播 / 下播标记' : '（保留开播 / 下播标记）'
   const detail = '弹幕 ' + num(s.danmaku) + '、SC ' + num(s.sc) + marks
-  if (!window.confirm('确认删除「' + label + '」？\n' + detail +
+  const rec = s.recording
+  const video = rec && rec.has_video
+    ? '\n同时删除录像：' + (rec.mp4_count + rec.flv_count) + ' 个视频文件（含 FLV 原片），约 '
+      + fmtBytes(rec.bytes)
+    : ''
+  if (!window.confirm('确认删除「' + label + '」？\n' + detail + video +
       '\n删除后不可恢复。')) return
   try {
-    const j = await deleteSegment(s)
+    const j = await withBusy('正在删除这一场…', () => deleteSegment(s))
     const d = (j && j.deleted) || {}
+    const v = d.video || {}
     note('已删除：弹幕 ' + (d.danmaku || 0) + '、SC ' + (d.sc || 0) +
-      '、事件 ' + (d.events || 0))
+      '、事件 ' + (d.events || 0) +
+      (v.files ? '、视频 ' + v.files + ' 个文件（' + fmtBytes(v.bytes) + '）' : ''))
+  } catch (e: any) {
+    note('删除失败：' + e.message)
+  }
+}
+
+async function onDeletePart(kind: 'mp4' | 'flv', part: RecordingPart) {
+  if (busyText.value) return
+  const rec = recording.value
+  if (!rec) return
+  const label = kind === 'mp4' ? 'MP4 分 P' : 'FLV 原片'
+  const name = (part.name || (label + ' 第 ' + (part.index + 1) + ' 片'))
+  if (!window.confirm('确认删除「' + name + '」（' + fmtBytes(part.bytes) + '）？\n' +
+      '只删这一个文件；录像记录、其它分片和文本数据保留。\n不可恢复。')) return
+  try {
+    await withBusy('正在删除 ' + name + '…', async () => {
+      await deleteVideoFile(kind, rec.id, part.index)
+      await loadCalendar(true)
+    })
+    note('已删除' + label + ' ' + name + '（' + fmtBytes(part.bytes) + '）')
   } catch (e: any) {
     note('删除失败：' + e.message)
   }
@@ -203,27 +243,29 @@ watch(isLiveSeg, (live, prev) => {
         <select v-if="rooms.length" class="live-room-select" :value="liveState.roomId"
                 @change="onRoomChange">
           <option v-for="r in rooms" :key="r.id" :value="r.id">
-            {{ r.uname || r.label || r.id }}
+            {{ r.uname || r.label }}{{ r.configured ? '' : ' · 无采集器' }}
           </option>
         </select>
         <button class="btn sm" @click="refresh">刷新</button>
       </div>
     </div>
 
-    <div v-if="!rooms.length" class="empty pad">还没有采集器，请先到「采集器」页添加。</div>
+    <div v-if="!rooms.length" class="empty pad">还没有任何数据，请先到「采集器」页添加采集器。</div>
     <template v-else>
       <div class="sub-tabs data-tabs">
         <button class="sub-tab" :class="{ on: dataTab === 'live' }" @click="switchTab('live')">
           <i></i>直播场次<span class="n">{{ liveState.segments.length }} 段</span>
         </button>
         <button class="sub-tab" :class="{ on: dataTab === 'dyn' }" @click="switchTab('dyn')">
-          <i></i>up 主动态<span class="n">{{ selectedRoom?.dyns || 0 }} 条</span>
+          <i></i>up 主动态<span class="n">{{ collectorRoom?.dyns || 0 }} 条</span>
         </button>
       </div>
 
       <div v-if="liveMounted" v-show="dataTab === 'live'">
       <div class="live-summary">
-        <span v-if="selectedRoom">主播 <b>{{ selectedRoom.uname || selectedRoom.label }}</b></span>
+        <span v-if="selectedRoom">主播 <b>{{ selectedRoom.uname || selectedRoom.label }}</b>
+          <template v-if="!selectedRoom.configured">（无采集器）</template>
+        </span>
         <span>录像 <b>{{ summary ? summary.count : 0 }}</b> 场 · <b>{{ fmtBytes(summary?.total_bytes) }}</b></span>
         <span>磁盘剩余 <b>{{ fmtBytes(summary?.free_bytes) }}</b></span>
         <span v-if="summary?.warn" class="warn">剩余不足 2GB，建议清理</span>
@@ -272,7 +314,46 @@ watch(isLiveSeg, (live, prev) => {
         <StudioFeed :anchor-ms="anchorMs" :current-ms="liveState.currentMs"
                     :relative="!!seg" :seekable="!isLiveSeg" @pick="onPick" />
       </div>
-      <div v-else class="empty pad">这位主播还没有直播场次记录。</div>
+
+      <div v-if="seg && recording && (recording.mp4_count || recording.flv_count)"
+           class="rec-files">
+        <div class="rec-files-head">
+          <b>本场录像文件</b>
+          <span class="muted">
+            MP4 {{ fmtBytes(recording.mp4_parts.reduce((s, p) => s + p.bytes, 0)) }} ·
+            FLV {{ fmtBytes((recording.flv_parts || []).reduce((s, p) => s + p.bytes, 0)) }}
+          </span>
+        </div>
+        <div class="rec-files-grid">
+          <section>
+            <h4>MP4 分 P <span>{{ recording.mp4_count }}</span></h4>
+            <ul v-if="recording.mp4_parts.length">
+              <li v-for="p in recording.mp4_parts" :key="'mp4-' + p.index">
+                <span class="idx">P{{ p.index + 1 }}</span>
+                <span class="nm" :title="p.name">{{ p.name || ('分片 ' + (p.index + 1)) }}</span>
+                <span class="sz">{{ fmtBytes(p.bytes) }}</span>
+                <button class="btn sm danger" :disabled="!!busyText"
+                        @click="onDeletePart('mp4', p)">删除</button>
+              </li>
+            </ul>
+            <div v-else class="muted">没有 MP4 分片</div>
+          </section>
+          <section>
+            <h4>FLV 原片 <span>{{ recording.flv_count }}</span></h4>
+            <ul v-if="(recording.flv_parts || []).length">
+              <li v-for="p in recording.flv_parts" :key="'flv-' + p.index">
+                <span class="idx">F{{ p.index + 1 }}</span>
+                <span class="nm" :title="p.name">{{ p.name || ('原片 ' + (p.index + 1)) }}</span>
+                <span class="sz">{{ fmtBytes(p.bytes) }}</span>
+                <button class="btn sm danger" :disabled="!!busyText"
+                        @click="onDeletePart('flv', p)">删除</button>
+              </li>
+            </ul>
+            <div v-else class="muted">没有 FLV 原片（可能已清理）</div>
+          </section>
+        </div>
+      </div>
+      <div v-if="!seg" class="empty pad">这位主播还没有直播场次记录。</div>
 
       <div class="hint">{{ noteText || liveState.error }}</div>
       <div class="hint">
@@ -283,7 +364,10 @@ watch(isLiveSeg, (live, prev) => {
       </div>
       </div>
       <div v-if="dynMounted" v-show="dataTab === 'dyn'">
-        <DynamicsPanel />
+        <div v-if="selectedRoom && !selectedRoom.configured" class="empty pad">
+          这个房间没有采集器，没有 up 主动态可看；直播场次与录像仍然可以在这里查看。
+        </div>
+        <DynamicsPanel v-else />
       </div>
     </template>
   </div>

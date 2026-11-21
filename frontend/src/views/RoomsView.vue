@@ -7,6 +7,7 @@ import {
   state, stopAll, visibleRooms,
 } from '@/stores/app'
 import type { Room } from '@/types'
+import { withBusy } from '@/stores/busy'
 import AddRoomModal from '@/components/AddRoomModal.vue'
 import RoomCollectorItem from '@/components/RoomCollectorItem.vue'
 import RoomPanel from '@/components/RoomPanel.vue'
@@ -25,7 +26,7 @@ async function onSelect(room: Room) {
 async function onRemove(room: Room) {
   if (!confirm('删除采集器「' + (room.uname || room.label) + '」？\n已采集的历史数据会保留，可随时重新添加。')) return
   try {
-    await removeRoom(room)
+    await withBusy('正在删除采集器…', () => removeRoom(room))
     hint('room', '已删除「' + (room.uname || room.label) + '」（数据保留）', 'ok')
   } catch (e: any) {
     hint('room', '删除失败：' + e.message, 'err')
