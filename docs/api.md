@@ -26,6 +26,7 @@ Base URL：`http://<手机IP>:8765`（手机局域网地址）。
 | `/api/danmaku` `/api/superchats` `/api/events` | 单类数据查询（分页、按房间过滤） |
 | `/api/dynamics?mid=` | 某采集器的动态 + 该采集器的定时配置回填 |
 | `/api/accounts` | 账号池（SESSDATA 掩码 + uid + profile） |
+| `/api/notify` | 推送状态：是否已配 webhook、轮询间隔、上次结果（不回显 webhook） |
 | `/api/config` | 当前配置（token 永不回显） |
 | `/api/system` | 设备读数，CPU 带 `scope: system|process` 口径 |
 | `/api/logs` | 日志环形缓冲（含采集、waitress / HTTP、异常；最多 2000 条），`limit` 可调 |
@@ -50,6 +51,7 @@ Base URL：`http://<手机IP>:8765`（手机局域网地址）。
 | `/api/dynamics/config` | 设定时抓取（必须带 `room_id`，否则 400） |
 | `/api/dynamics/trans` | 补写动态译文 |
 | `/api/dynamics/delete` | 删一条动态 |
+| `/api/notify/test` | 发一条飞书测试消息；body 可带 `webhook` / `secret` 临时覆盖配置（不保存） |
 | `/api/accounts` | 添加账号（粘贴 cookie CSV） |
 | `/api/accounts/remove` `/api/accounts/activate` | 删除 / 启停用（空 id = 停用） |
 | `/api/config` | 保存配置（`token` / `port` 等有范围校验，非法返回 400） |

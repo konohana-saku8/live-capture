@@ -14,7 +14,7 @@ import argparse
 import logging
 import os
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -64,14 +64,15 @@ def main() -> None:
     data_dir = os.path.abspath(args.data)
     os.makedirs(data_dir, exist_ok=True)
 
-    # 应用自己也写一份日志文件（按大小轮转），不依赖 shell 的重定向；
-    # 页面 /api/logs/file 可以直接下载这份完整日志。
+    # 应用自己也写一份日志文件（按天轮转），不依赖 shell 的重定向；
+    # 页面 /api/logs/file 可以直接下载这份完整日志。跨天自动换文件，
+    # 保留最近 14 天，手机上翻旧问题不用在单个大文件里捞。
     log_dir = os.path.join(data_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
     try:
-        file_handler = RotatingFileHandler(
+        file_handler = TimedRotatingFileHandler(
             os.path.join(log_dir, "service.log"),
-            maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+            when="midnight", backupCount=14, encoding="utf-8")
         file_handler.setFormatter(logging.Formatter(
             "%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s",
             "%H:%M:%S"))

@@ -25,6 +25,8 @@ PARAM_KEYS = ("protover", "heartbeat_seconds", "stale_seconds",
 COLLECT_KEYS = ("collect_live", "collect_dynamics", "live_only")
 # 动态定时抓取：按 up 主各存一份（默认关闭），dyn_last_ts 是内部记录的上次成功时间
 SCHED_KEYS = ("dyn_auto", "dyn_hour", "dyn_minute", "dyn_last_ts")
+# 推送开关：按 up 主各存一份，默认开（全局 webhook 为空时一律不推）
+NOTIFY_KEYS = ("notify_live", "notify_dynamic")
 
 
 def _as_int(value, default=0):
@@ -83,6 +85,8 @@ class RoomStore:
                 "dyn_hour": min(23, max(0, _as_int(item.get("dyn_hour"), 8))),
                 "dyn_minute": min(59, max(0, _as_int(item.get("dyn_minute"), 0))),
                 "dyn_last_ts": _as_int(item.get("dyn_last_ts")),
+                "notify_live": item.get("notify_live", True) is not False,
+                "notify_dynamic": item.get("notify_dynamic", True) is not False,
                 "params": {k: params[k] for k in PARAM_KEYS if k in params},
                 "created_at": _as_int(item.get("created_at"))}
 
@@ -174,6 +178,8 @@ class RoomStore:
                         if key in PARAM_KEYS:
                             params[key] = value
                         elif key in COLLECT_KEYS:
+                            item[key] = bool(value)
+                        elif key in NOTIFY_KEYS:
                             item[key] = bool(value)
                         elif key == "dyn_auto":
                             item["dyn_auto"] = bool(value)

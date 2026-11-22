@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import urllib.request
 
-from flask import Blueprint, Response, send_file, stream_with_context
+from flask import Blueprint, Response, request, send_file, stream_with_context
 
 from capture import BiliApi
 from ..http import ApiError, arg, int_arg, json_post
@@ -121,9 +121,11 @@ def recording_delete(rec_id: int):
 
 @bp.post("/recordings/<int:rec_id>/remux")
 def recordings_remux(rec_id):
+    """手动补转：默认只转还没有 MP4 的分片；body 传 force=true 则全部重转。"""
     r = rt()
     try:
-        r.recordings.retry(rec_id)
+        data = request.get_json(silent=True) or {}
+        r.recordings.retry(rec_id, force=bool(data.get("force")))
     except ValueError as exc:
         raise ApiError(str(exc), 404)
     return {"ok": True, "id": rec_id}

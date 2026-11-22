@@ -105,6 +105,11 @@ main:has(.live-room-view){max-width:1320px}
   transition:.15s;padding:0}
 .sess-del:hover{color:#e07a4a;border-color:rgba(224,122,74,.5);
   background:rgba(224,122,74,.1)}
+.sess-remux{flex:none;width:28px;border:1px solid var(--line);border-radius:9px;
+  background:transparent;color:var(--dim-2);font-size:15px;line-height:1;cursor:pointer;
+  transition:.15s;padding:0}
+.sess-remux:hover{color:#5ab88a;border-color:rgba(90,184,138,.5);
+  background:rgba(90,184,138,.1)}
 .sess-card{display:flex;flex-direction:column;gap:3px;text-align:left;width:100%;
   border:1px solid var(--line);border-radius:10px;padding:8px 11px;
   background:rgba(255,255,255,.015);transition:.15s;min-width:0}

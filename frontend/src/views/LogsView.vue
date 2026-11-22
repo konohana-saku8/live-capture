@@ -22,6 +22,9 @@ interface Row extends LogRow {
 
 const sev = ref('all')
 const q = ref('')
+/** 空 = 实时（内存缓冲）；非空 = 从当天 journal 文件读完整历史。
+ *  存在 store 里，App.vue 的轮询才知道该刷哪份。 */
+const day = computed(() => state.logDay)
 const follow = ref(true)
 /** 全部展开 / 全部收起；默认只展开 error（看错误是第一诉求）。 */
 const openAll = ref(false)
@@ -49,10 +52,10 @@ function webRow(x: LogRow): Row {
 }
 
 const all = computed<Row[]>(() => {
-  const rows: Row[] = [
-    ...state.serverLogs.map((x) => ({ ...x, sev: x.level, srcLabel: x.src || '' })),
-    ...state.webLogs.map(webRow),
-  ]
+  const rows: Row[] = state.serverLogs.map(
+    (x) => ({ ...x, sev: x.level, srcLabel: x.src || '' }))
+  // 网页日志只属于当前会话，看历史某天时不要混进来
+  if (!day.value) rows.push(...state.webLogs.map(webRow))
   rows.sort((a, b) => a.ts - b.ts)
   return rows
 })
@@ -86,9 +89,13 @@ const lastError = computed(() => {
 
 const stats = computed(() => state.logStats)
 const diag = computed(() => state.logDiag)
+const days = computed<string[]>(() => stats.value?.days || [])
 const truncNote = computed(() => {
   const s = stats.value
-  return s ? '缓冲 ' + s.buffered + '/' + s.capacity : ''
+  if (!s) return ''
+  return day.value
+    ? '当天 ' + all.value.length + ' 条 · 文件 ' + bytes(s.journal_bytes)
+    : '缓冲 ' + s.buffered + '/' + s.capacity + ' · 落盘 ' + bytes(s.journal_bytes)
 })
 
 function rowId(x: Row) {
@@ -158,14 +165,23 @@ async function copyRow(x: Row) {
 }
 
 function reload() {
-  loadLogs()
-  uiLog('info', '手动刷新日志')
+  void loadLogs(day.value)
+  uiLog('info', day.value ? '已重新读取 ' + day.value + ' 的日志' : '手动刷新日志')
+}
+
+function pickDay(v: string) {
+  day.value = v
+  follow.value = !v
+  void loadLogs(v)
 }
 
 async function downloadLogs() {
   try {
-    await download('/api/logs/file', 'service.log')
-    uiLog('info', '已下载完整日志')
+    // 当天文件后端还没轮转，仍是 service.log；历史天才有 .YYYY-MM-DD 后缀
+    const isToday = !!day.value && stats.value?.days?.[0] === day.value
+    const name = day.value && !isToday ? 'service.log.' + day.value : 'service.log'
+    await download('/api/logs/file' + (day.value ? '?day=' + day.value : ''), name)
+    uiLog('info', '已下载' + (day.value ? day.value + ' 的' : '') + '日志')
   } catch (e: any) {
     uiLog('error', '下载日志失败：' + e.message)
   }
@@ -203,6 +219,11 @@ watch(rows, async () => {
       </div>
 
       <div class="row logv-tools">
+        <select :value="day" style="width:132px" title="实时看内存缓冲，或选某一天看当天的完整日志"
+                @change="pickDay(($event.target as HTMLSelectElement).value)">
+          <option value="">实时（今天）</option>
+          <option v-for="d in days" :key="d" :value="d">{{ d }}</option>
+        </select>
         <select v-model="sev" style="width:120px">
           <option v-for="[k, label] in SEVS" :key="k" :value="k">{{ label }}</option>
         </select>
@@ -309,9 +330,10 @@ watch(rows, async () => {
       </div>
       <div v-show="showDiag" class="hint">
         错误与警告会带完整 traceback，点那一条展开；行首是产生日志的 `文件:行号`。
-        同一行连续重复只留一条并标 ×N。warn/error 额外落在
-        <code>data/logs/journal.jsonl</code>，服务重启后仍会显示（标「重启前」）。
-        完整日志按 5MB 轮转，可下载。
+        同一行连续重复只留一条并标 ×N。日志按天存在
+        <code>data/logs/journal-YYYY-MM-DD.jsonl</code> 与
+        <code>service.log.YYYY-MM-DD</code>，选上面的日期即可回看当天完整内容；
+        实时视图只显示当前内存缓冲，重启前的内容标「重启前」。可下载当天文本日志。
       </div>
     </section>
   </div>

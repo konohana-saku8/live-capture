@@ -4,7 +4,7 @@ import { computed } from 'vue'
 
 import type { FeedKind } from '@/types'
 import {
-  liveState, loadOlder, setFilter, setLayout, setQuery,
+  liveState, loadNewer, loadOlder, setFilter, setLayout, setQuery,
 } from '@/stores/liveRoom'
 import StudioFeedColumn from './StudioFeedColumn.vue'
 
@@ -59,12 +59,12 @@ function onSearch(event: Event) {
       <template v-if="anyOn">
         <StudioFeedColumn v-for="k in KINDS" v-show="liveState.filters[k]" :key="k"
                           :kind="k" :rows="liveState.rows[k]"
-                          :older="liveState.older[k]"
+                          :older="liveState.older[k]" :newer="liveState.newer[k]"
                           :loading="liveState.loading[k]" :anchor-ms="props.anchorMs"
                           :current-ms="props.currentMs" :relative="props.relative"
                           :seekable="props.seekable" :session-key="liveState.selectedKey"
                           :empty-hint="emptyHint(k)"
-                          @older="loadOlder(k)"
+                          @older="loadOlder(k)" @newer="loadNewer(k)"
                           @pick="emit('pick', $event)" />
       </template>
       <div v-else class="empty">三类内容都关了，勾选上面的类型查看</div>

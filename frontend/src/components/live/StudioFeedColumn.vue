@@ -10,6 +10,7 @@ const props = defineProps<{
   kind: FeedKind
   rows: FeedRow[]
   older: boolean
+  newer: boolean
   loading: boolean
   anchorMs: number
   currentMs: number
@@ -20,6 +21,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'older'): void
+  (e: 'newer'): void
   (e: 'pick', at: number): void
 }>()
 
@@ -133,13 +135,21 @@ function onScroll() {
   updateJump()
   // 用户刚动过滚轮 / 手指时，即使程序刚滚过也要按用户位置判断
   if (Date.now() < autoScrollUntil && Date.now() - userGestureAt > 300) return
-  if (isAtBottom(el)) return
+  if (isAtBottom(el)) {
+    // 回放：后面还有更新的就手动补下一页（原来只靠播放头推进补，滚到底没反应）
+    if (props.newer && !props.loading && Date.now() >= suppressNewerUntil) {
+      if (follow.value) { follow.value = false; updateJump() }
+      stickBottom = true
+      emit('newer')
+    }
+    return
+  }
   // 用户主动滑离底部：这一列暂停跟随，露出「跟随最新」按钮
   if (follow.value) {
     follow.value = false
     updateJump()
   }
-  // 默认看最新一页；只有滑到列顶才继续向前加载
+  // 滑到列顶继续向前加载更早的
   if (el.scrollTop < 24 && props.older && !props.loading) emit('older')
 }
 
@@ -159,6 +169,9 @@ function jumpToLatest() {
 
 let prevFirst = ''
 let prevLast = ''
+/** 手动滚到底触发补页：加载后把视图带回底部；短时间内不再连锁触发。 */
+let stickBottom = false
+let suppressNewerUntil = 0
 
 watch([() => props.rows.length, lastKey], async () => {
   const el = box.value
@@ -173,6 +186,12 @@ watch([() => props.rows.length, lastKey], async () => {
   setActiveRow()
   if (prepended && body) {
     body.scrollTop = oldTop + (body.scrollHeight - oldHeight)
+  } else if (stickBottom && body) {
+    // 手动补页后停在底部，让用户继续往下翻；抑制连锁触发，等用户再次主动滚动
+    stickBottom = false
+    suppressNewerUntil = Date.now() + 400
+    markAutoScroll()
+    body.scrollTop = body.scrollHeight
   } else if (follow.value) {
     if (props.seekable && activeKey.value) scrollToActive()
     else scrollToBottom()

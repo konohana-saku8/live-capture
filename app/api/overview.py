@@ -53,22 +53,44 @@ def system():
 def logs():
     """运行日志：支持按级别 / 关键词过滤，附带级别统计与诊断快照。
 
-    页面是给写代码的人看的，所以一条日志除了时间与文本，还带 `src`
-    （文件:行号）和 error 的 `tb`（完整 traceback）。
+    传 `day=YYYY-MM-DD` 时从当天的 journal 文件读完整历史（不占内存缓冲
+    ，重启也在）；不传则是内存里的实时日志。页面是给写代码的人看的，
+    所以一条日志除了时间与文本，还带 `src`（文件:行号）和 error 的 `tb`。
     """
     r = rt()
-    items = r.logs.tail(int_arg("limit", 300), arg("level"), arg("q"),
-                        int_arg("since", 0))
+    day = arg("day")
+    if day and r.logs.DAY_RE.match(day):
+        items = r.logs.read_day(day, int_arg("limit", 2000))
+        # 文件查询也支持级别 / 关键词，和实时视图保持一致的筛选口径
+        want = {x.strip() for x in arg("level").split(",") if x.strip()}
+        needle = arg("q").strip().lower()
+        if want and "all" not in want:
+            items = [x for x in items if x["level"] in want]
+        if needle:
+            items = [x for x in items
+                     if needle in x["msg"].lower()
+                     or needle in (x.get("tb") or "").lower()
+                     or needle in (x.get("src") or "").lower()]
+        items = items[-int_arg("limit", 2000):]
+    else:
+        items = r.logs.tail(int_arg("limit", 300), arg("level"), arg("q"),
+                            int_arg("since", 0))
     return {"ok": True, "items": items, "stats": r.logs.stats(),
-            "diagnostics": r.diagnostics()}
+            "day": day, "diagnostics": r.diagnostics()}
 
 
 @bp.get("/logs/file")
 def logs_file():
-    """下载应用自己写的完整日志（data/logs/service.log，按大小轮转）。"""
+    """下载日志：当天是 service.log，历史天是 service.log.YYYY-MM-DD。"""
     r = rt()
-    path = os.path.join(r.data_dir, "logs", "service.log")
+    day = arg("day")
+    name = "service.log"
+    if day and r.logs.DAY_RE.match(day):
+        # 当天的还在 service.log 里（TimedRotatingFileHandler 跨天才换名）
+        name = ("service.log." + day
+                if day != r.logs._local_day() else "service.log")
+    path = os.path.join(r.data_dir, "logs", name)
     if not os.path.isfile(path):
-        raise ApiError("还没有日志文件", 404)
+        raise ApiError("这一天还没有日志文件", 404)
     return send_file(path, mimetype="text/plain; charset=utf-8",
-                     as_attachment=True, download_name="service.log")
+                     as_attachment=True, download_name=name)

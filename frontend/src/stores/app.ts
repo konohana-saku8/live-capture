@@ -51,6 +51,7 @@ export const state = reactive({
   accounts: [] as Account[],
   serverLogs: [] as LogRow[],
   webLogs: [] as LogRow[],
+  logDay: '',                 // 日志页选中的日期；空 = 实时
   logStats: null as LogStats | null,
   logDiag: null as LogDiagnostics | null,
 
@@ -62,6 +63,7 @@ export const state = reactive({
     dyn: { msg: '', kind: '' } as Hint,
     acct: { msg: '', kind: '' } as Hint,
     cfg: { msg: '', kind: '' } as Hint,
+    push: { msg: '', kind: '' } as Hint,
     add: { msg: '', kind: '' } as Hint,
   },
 })
@@ -265,10 +267,12 @@ export async function fetchDynamics() {
 }
 
 export async function saveDynConfig(room: Room, collectDyn: boolean,
-                                    dynAuto: boolean, hour: number, minute: number) {
+                                    dynAuto: boolean, hour: number, minute: number,
+                                    notifyDyn = true) {
   const j = await postJson('/api/dynamics/config', {
     room_id: room.id, collect_dynamics: collectDyn,
     dyn_auto: dynAuto, dyn_hour: hour, dyn_minute: minute,
+    notify_dynamic: notifyDyn,
   })
   if (state.dyn) state.dyn.config = j.config
   if (j.rooms) setBadgeRooms(j.rooms)
@@ -310,9 +314,15 @@ export async function accountAction(action: 'remove' | 'activate', id: string) {
 
 /* ---------------- 日志 ---------------- */
 
-export async function loadLogs() {
+/** day 为空 = 内存里的实时日志；传 YYYY-MM-DD = 从当天文件读完整历史。
+ *  不传参时沿用 state.logDay，这样 App.vue 的定时轮询不会把历史视图刷回实时。 */
+export async function loadLogs(day?: string) {
+  const selected = day === undefined ? state.logDay : day
+  state.logDay = selected
   try {
-    const j = await api<any>('/api/logs?limit=2000')
+    const q = '/api/logs?limit=2000' +
+      (selected ? '&day=' + encodeURIComponent(selected) : '')
+    const j = await api<any>(q)
     state.serverLogs = j.items || []
     state.logStats = j.stats || null
     state.logDiag = j.diagnostics || null

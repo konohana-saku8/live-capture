@@ -110,6 +110,8 @@ export interface Room {
   dyn_schedule?: string
   dyn_auto?: boolean
   dyn_last_ts?: number
+  notify_live?: boolean
+  notify_dynamic?: boolean
   last_live_at?: number
   totals?: RoomTotal
 }
@@ -327,4 +329,8 @@ export interface ConfigPayload {
   record_interact?: boolean
   token_set?: boolean
   token?: string
+  feishu_webhook_set?: boolean
+  feishu_secret_set?: boolean
+  notify_live_seconds?: number
+  notify_dyn_seconds?: number
 }

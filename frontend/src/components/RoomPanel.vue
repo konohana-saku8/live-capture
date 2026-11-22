@@ -25,6 +25,9 @@ const recRedPocket = ref(true)
 const recEnter = ref(false)
 const recInteract = ref(true)
 const busy = ref(false)
+/** 推送开关：开播 / 新动态，按 up 主保存，默认开。 */
+const notifyLive = ref(true)
+const notifyDyn = ref(true)
 
 /** 动态定时：按当前 up 主保存，和采集开关一起放在采集器页。 */
 const dynAuto = ref(false)
@@ -160,6 +163,8 @@ watch(() => props.room.id, () => {
   const sched = String(props.room.dyn_schedule || '08:00').split(':')
   dynHour.value = Number(sched[0]) || 0
   dynMinute.value = Number(sched[1]) || 0
+  notifyLive.value = props.room.notify_live !== false
+  notifyDyn.value = props.room.notify_dynamic !== false
 }, { immediate: true })
 
 watch(colLive, (on) => {
@@ -203,6 +208,7 @@ async function doSaveCollect() {
       record_red_pocket: recRedPocket.value,
       record_enter: recEnter.value,
       record_interact: recInteract.value,
+      notify_live: notifyLive.value,
     })
     hint('collect', '直播配置已保存：' + (colLive.value ? '采集直播间' : '不采直播间') +
       (only ? '（只在开播时）' : '') + ' · ' + contentText.value +
@@ -225,6 +231,7 @@ async function doSaveCollect() {
       recRedPocket.value = p.record_red_pocket !== false
       recEnter.value = p.record_enter === true
       recInteract.value = p.record_interact !== false
+      notifyLive.value = j.room.notify_live !== false
     }
   } catch (e: any) {
     hint('collect', '保存失败：' + e.message, 'err')
@@ -236,7 +243,7 @@ async function saveSchedule() {
   if (schedBusy.value) return
   schedBusy.value = true
   try {
-    const j = await saveDynConfig(props.room, colDyn.value, dynAuto.value, dynHour.value, dynMinute.value)
+    const j = await saveDynConfig(props.room, colDyn.value, dynAuto.value, dynHour.value, dynMinute.value, notifyDyn.value)
     const c = j.config || {}
     hint('sched', (props.room.uname || props.room.label) + '：' +
       (colDyn.value ? '采集动态' : '不采动态') + ' · ' +
@@ -247,6 +254,7 @@ async function saveSchedule() {
       dynAuto.value = !!c.dyn_auto
       dynHour.value = Number(c.dyn_hour) || 0
       dynMinute.value = Number(c.dyn_minute) || 0
+      if (j.room) notifyDyn.value = j.room.notify_dynamic !== false
     }
     flashSaved('sched')
   } catch (e: any) {
@@ -352,6 +360,9 @@ async function saveSchedule() {
               <option :value="80">360P</option>
             </select>
           </label>
+          <label title="这位 up 主开播时推送到飞书（需在配置页填 webhook）">
+            <input v-model="notifyLive" type="checkbox"> 开播推送
+          </label>
         </div>
 
         <div class="collect-row sub">
@@ -392,6 +403,9 @@ async function saveSchedule() {
         <h3><span class="cfg-dot"></span>动态 <small>up 主动态</small></h3>
         <div class="collect-row">
           <label><input v-model="colDyn" type="checkbox"> up 主动态</label>
+          <label title="这位 up 主发新动态时推送到飞书（需在配置页填 webhook）">
+            <input v-model="notifyDyn" type="checkbox" :disabled="!colDyn"> 新动态推送
+          </label>
         </div>
         <div class="collect-row sub sched-row">
           <span class="lab">定时拉取</span>

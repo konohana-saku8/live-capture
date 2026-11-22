@@ -60,7 +60,7 @@ class FlaskApiTest(unittest.TestCase):
                  "/api/system", "/api/sessions", "/api/dynamics", "/api/config",
                  "/api/logs", "/api/accounts", "/api/danmaku",
                  "/api/superchats", "/api/events", "/api/recordings",
-                 "/api/recordings/summary"]
+                 "/api/recordings/summary", "/api/notify"]
         for path in paths:
             with self.subTest(path=path):
                 self.assertStatus(self.get(path), 200, path)
@@ -90,6 +90,21 @@ class FlaskApiTest(unittest.TestCase):
                        headers={"X-Access-Token": "topsecret9"}).get_json()["config"]
         self.assertTrue(cfg["token_set"])
         self.assertNotEqual(cfg["token"], "topsecret9")
+
+    def test_feishu_webhook_is_masked(self):
+        resp = self.post("/api/config",
+                         {"feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/abcdef"})
+        self.assertStatus(resp, 200, "保存 webhook")
+        cfg = self.get("/api/config").get_json()["config"]
+        self.assertTrue(cfg["feishu_webhook_set"])
+        self.assertNotIn("abcdef", cfg["feishu_webhook"])
+        # 通知状态能反映「已配置」
+        status = self.get("/api/notify").get_json()["status"]
+        self.assertTrue(status["enabled"])
+
+    def test_notify_test_requires_webhook(self):
+        resp = self.post("/api/notify/test", {})
+        self.assertStatus(resp, 400, "没有 webhook 时不发请求")
 
     # ---------- 鉴权 ----------
 

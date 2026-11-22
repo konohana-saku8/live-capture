@@ -20,6 +20,7 @@ from store import Store
 import sysinfo
 
 from .scheduler import DynamicScheduler
+from .notifier import NotifierScheduler
 from .settings import (CONTENT_KEYS, Config, LogBuffer, as_int,
                        install_excepthooks, lan_ip)
 
@@ -92,6 +93,11 @@ class Runtime:
         self.cpu_sampler = sysinfo.CpuSampler()
         self.dynamics = DynamicScheduler(self.store, self.config, self.logs,
                                          rooms=self.rooms, accounts=self.accounts)
+        # 开播 / 新动态推送：独立线程，分钟级轮询，和上面的定时采集互不影响
+        self.notifier = NotifierScheduler(self.store, self.config, self.logs,
+                                          self.rooms, self.data_dir,
+                                          dynamics=self.dynamics,
+                                          accounts=self.accounts)
         # 首页 / 采集器页每 10 秒拉一次仪表盘；手机上一次聚合要 1-2 秒，
         # 缓存十几秒，避免重复全表扫描。数据最多晚十几秒，不影响使用。
         self._dash_lock = threading.Lock()
@@ -359,6 +365,7 @@ class Runtime:
                           "自动开始采集 %s：%s" % (room["id"], message))
 
     def shutdown(self) -> None:
+        self.notifier.stop()
         self.dynamics.stop()
         self.recordings.stop()
         self.manager.stop_all()

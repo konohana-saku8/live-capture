@@ -13,6 +13,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select', seg: Segment): void
   (e: 'delete', seg: Segment): void
+  (e: 'remux', seg: Segment): void
 }>()
 
 const cards = computed(() => props.segments.map((s) => ({
@@ -42,6 +43,13 @@ function recClass(rec: RecordingInfo | null) {
   if (rec.status === 'ready') return 'ok'
   if (rec.status === 'failed' || rec.status === 'interrupted') return 'bad'
   return 'wait'
+}
+
+// 转封装失败 / 未装 ffmpeg 时，只要还有 FLV 没变成 MP4 就允许补转
+function canRemux(rec: RecordingInfo | null) {
+  if (!rec || !rec.flv_count) return false
+  if (rec.status !== 'failed' && rec.status !== 'flv') return false
+  return rec.mp4_count < rec.flv_count
 }
 
 function delTitle(s: Segment) {
@@ -75,6 +83,9 @@ function delTitle(s: Segment) {
         </span>
         <span v-else class="sess-rec none">场间数据 · 无录像</span>
       </button>
+      <button v-if="canRemux(c.rec)" class="sess-remux"
+              title="补转缺失的 MP4 分片（已有的不重转）"
+              @click.stop="emit('remux', c.seg)">↻</button>
       <button class="sess-del" :title="delTitle(c.seg)"
               @click.stop="emit('delete', c.seg)">✕</button>
     </div>

@@ -8,6 +8,7 @@
 |---|---|
 | HTTP 服务 | `waitress.serve`（未安装则退回 Werkzeug），监听 `0.0.0.0:8765`，16 线程 |
 | `DynamicScheduler` | 常驻 daemon 线程，每 30 秒 `_tick()` 对表，只拉到点的采集器的动态 |
+| `NotifierScheduler` | 常驻 daemon 线程，每 5 秒对表；开播按 `notify_live_seconds`（默认 60）探状态，动态按 `notify_dyn_seconds`（默认 300）轮询，有新变化推飞书 |
 | `RoomWorker × N` | **每个直播间一条 daemon 线程**，线程内 `asyncio.run()` 跑 websockets 长连接 |
 | 共享状态 | `CaptureManager` 持一把 `RLock` 保护 `workers` 与各自 `state` 字典；HTTP 侧只读快照 |
 
@@ -27,6 +28,8 @@
 | `rooms.py` | `data/rooms.json`：采集器（up 主）清单，开关、参数、定时配置 |
 | `accounts.py` | B 站 cookie 账号池（CSV 解析、profile 补拉、启停用） |
 | `dynamics.py` | up 主动态抓取 |
+| `notify.py` | 飞书自定义机器人推送（卡片构造 + 签名校验），只用标准库 |
+| `app/notifier.py` | `NotifierScheduler`：开播 / 新动态判重与推送，状态存 `data/notify-state.json` |
 | `images.py` | 表情/头像同源代理（`/api/emote`），绕 B 站 CDN 防盗链 |
 | `sysinfo.py` | 设备读数（Android 上 `/proc/stat` 不可读，退化为本进程单核占用） |
 | `import_history.py` | 从 `translate_history.db` 导入历史弹幕（内容哈希去重、空档推断场次） |

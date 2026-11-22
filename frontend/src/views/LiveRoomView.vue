@@ -2,7 +2,7 @@
 /** 数据：直播场次 + up 主动态。直播场次含日历、画面、弹幕 / SC / 事件。 */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { download } from '@/api/client'
+import { download, postJson } from '@/api/client'
 import { bytes as fmtBytes, fmtFull, fmtHM, num, qnLabel, segRange, segTitle } from '@/lib/format'
 import { dayLabel } from '@/lib/calendar'
 import { deleteVideoFile, loadDataRooms, loadDynamics, loadRooms, state } from '@/stores/app'
@@ -181,6 +181,21 @@ async function exportData(fmt: 'json' | 'csv') {
   }
 }
 
+async function onRemuxSegment(s: Segment) {
+  if (busyText.value) return
+  const rec = s.recording
+  if (!rec) return
+  try {
+    await withBusy('正在补转 MP4 分片…', async () => {
+      await postJson('/api/recordings/' + rec.id + '/remux', {})
+      await loadCalendar(true)
+    })
+    note('已重新排队转封装；已有的 MP4 分片不会重转')
+  } catch (e: any) {
+    note('补转失败：' + e.message)
+  }
+}
+
 async function onDeleteSegment(s: Segment) {
   if (busyText.value) return
   const label = segTitle(s) + ' · ' + segRange(s)
@@ -292,7 +307,8 @@ watch(isLiveSeg, (live, prev) => {
             <span class="muted">{{ selectedDaySegs.length }} 段</span>
           </div>
           <SessionCards :segments="selectedDaySegs" :selected-key="liveState.selectedKey"
-                        @select="selectSegment" @delete="onDeleteSegment" />
+                        @select="selectSegment" @delete="onDeleteSegment"
+                        @remux="onRemuxSegment" />
         </div>
       </div>
 

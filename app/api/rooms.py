@@ -4,7 +4,7 @@ from __future__ import annotations
 from flask import Blueprint
 
 from capture import fetch_room_brief, fetch_room_by_uid
-from rooms import PARAM_KEYS
+from rooms import NOTIFY_KEYS, PARAM_KEYS
 
 from ..http import ApiError, body, int_in, ok
 from ..settings import BOOL_KEYS, INT_BOUNDS, as_int
@@ -77,6 +77,10 @@ def save_settings():
     clean = {}
     for key, value in params.items():
         if key in ("collect_live", "collect_dynamics", "live_only"):
+            clean[key] = bool(value)
+            continue
+        # 推送开关也按 up 主存，和定时抓取一样走这个接口
+        if key in NOTIFY_KEYS:
             clean[key] = bool(value)
             continue
         # 定时抓取也按 up 主存，走同一个接口

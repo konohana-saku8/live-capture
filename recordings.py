@@ -170,6 +170,17 @@ class RecordingService:
             if part.get("path") == rel:
                 full = self.abs(rel)
                 part["bytes"] = _file_size(full)
+                if part["bytes"] <= 0:
+                    # 重连时可能连上就断，写出 0 字节空分片。ffmpeg 打不开它，
+                    # 会让整场 remux 失败（11-22 下午场）；当场丢掉，别留到后面。
+                    parts.remove(part)
+                    try:
+                        os.remove(full)
+                    except OSError:
+                        pass
+                    self.log("warn", "[录像 %s] 空分片已丢弃：%s" %
+                             (rec_id, os.path.basename(rel)))
+                    break
                 dur, desc = _probe(full)
                 part["duration_ms"] = dur
                 # 分片落盘即记录编码参数:重连后若参数变化,日志里逐片可见,
@@ -195,13 +206,17 @@ class RecordingService:
             status=status, bytes=sum(_as_int(p.get("bytes")) for p in parts))
         self.remux.enqueue(rec_id)
 
-    def retry(self, rec_id):
+    def retry(self, rec_id, force=False):
+        """手动重转。默认只补缺失的 MP4；force=True 才全部重转。"""
         rec = self.store.get_recording(rec_id)
         if not rec:
             raise ValueError("录像不存在")
         if not rec.get("flv_parts"):
             raise ValueError("没有 FLV 分片可 remux")
-        self.store.update_recording(rec_id, status="pending", error="")
+        patch = {"status": "pending", "error": ""}
+        if force:
+            patch["mp4_parts"] = []
+        self.store.update_recording(rec_id, **patch)
         self.remux.enqueue(rec_id)
 
     # ---------- 删除 ----------
@@ -424,10 +439,17 @@ class RecordingService:
         if not os.path.isdir(root):
             return
         known = set()
+        rec_starts = []
         for rec in self.store.list_recordings():
             for part in (rec.get("flv_parts") or []) + (rec.get("mp4_parts") or []):
                 if part.get("path"):
                     known.add(part["path"])
+            # 补转产物（_p3_p1.mp4）和原 FLV 的时间戳相同、路径却不在已登记
+            # 列表里。只按路径判重会把它当成新场次再建一条记录，然后 attach
+            # 又绑到那条没有 FLV 的记录上。用起始时间再兜一层。
+            start = _as_int(rec.get("started_at"))
+            if start:
+                rec_starts.append(start)
             # 旧版合并成品（_merged.flv / _merged.mp4）也算已登记，
             # 避免被当成新分片重复建记录
             if rec.get("merged_path"):
@@ -464,6 +486,13 @@ class RecordingService:
                 base = name.rsplit(".", 1)[0]
                 groups.setdefault(base, []).append(name)
             for base, names in groups.items():
+                # 磁盘文件的场次时间戳若落在已有录像的起始时间附近，说明它
+                # 是那场的补转产物 / 归档残留，不是新录像（11-22 的重复记录
+                # 就是因为补转产生的 _p3_p1.mp4 没登记而新建了一条）。
+                file_stamp = _stamp_from_name(base)
+                if file_stamp and any(abs(file_stamp - s) <= 60_000
+                                      for s in rec_starts):
+                    continue
                 flv = sorted(n for n in names if n.lower().endswith(".flv"))
                 mp4 = sorted(n for n in names if n.lower().endswith(".mp4"))
                 stamp = _stamp_from_name(base) or int(
@@ -540,16 +569,51 @@ class RecordingService:
         except (AttributeError, OSError):
             pass
         self.store.update_recording(rec_id, status="remuxing", error="")
+        mp4_parts = []
         try:
-            flv_paths = [self.abs(p["path"]) for p in parts]
+            # 再兜一层：旧场次 / 手工导入的库里可能还留着空分片。
+            usable = []
+            for part in parts:
+                full = self.abs(part.get("path") or "")
+                if _as_int(part.get("bytes")) <= 0 or _file_size(full) <= 0:
+                    self.log("warn", "[录像 %s] 跳过空/缺失分片：%s" %
+                             (rec_id, os.path.basename(full)))
+                    continue
+                usable.append((part, full))
+            if not usable:
+                raise RuntimeError("没有可 remux 的有效 FLV 分片")
+            parts = [part for part, _ in usable]
+            flv_paths = [full for _, full in usable]
             base = os.path.splitext(os.path.basename(flv_paths[0]))[0]
             room_dir = os.path.dirname(flv_paths[0])
-            mp4_parts = []
+            # 手动补转（以及夜间重试）只处理还没有 MP4 的分片。按 started_at
+            # 对齐：它是分片落盘时刻，不受重连改名 / 归档目录影响。force 重试
+            # 会在 retry() 里先清空 mp4_parts，走到这里就是全转。
+            done = {}
+            for prev in (rec.get("mp4_parts") or []):
+                stamp = _as_int(prev.get("started_at"))
+                if stamp <= 0:
+                    continue
+                try:
+                    if _file_size(self.abs(prev.get("path") or "")) > 0:
+                        done[stamp] = prev
+                except ValueError:
+                    continue
+            if done:
+                self.log("info", "[录像 %s] 已有 %d 个 MP4，本次只补缺失分片" %
+                         (rec_id, len(done)))
             self.log("info", "[录像 %s] 开始 remux：%d 个分片，%s" %
                      (rec_id, len(flv_paths), base))
             # 每个分片独立 remux，绝不跨分片 concat。重连后各分片的编码参数、
             # 帧率、时间戳基准可能不同，合并会损坏后半段（见模块说明）。
             for i, path in enumerate(flv_paths, 1):
+                stamp = _as_int(parts[i - 1].get("started_at"))
+                prev = done.get(stamp) if stamp > 0 else None
+                if prev:
+                    mp4_parts.append(prev)
+                    self.log("info", "[录像 %s] 复用已有 MP4：%s" %
+                             (rec_id, os.path.basename(prev.get("path") or "")))
+                    continue
                 if len(flv_paths) == 1:
                     out = os.path.join(room_dir, base + ".mp4")
                 else:
@@ -559,7 +623,7 @@ class RecordingService:
                 self.log("info", "[录像 %s] remux 完成第 %d/%d 片：%s → %s（%.1f 秒）" %
                          (rec_id, i, len(flv_paths), os.path.basename(path),
                           os.path.basename(out), time.time() - t0))
-                mp4_parts.append(self._part(out, parts[i - 1].get("started_at") or 0))
+                mp4_parts.append(self._part(out, stamp))
             if not mp4_parts or any(not os.path.getsize(self.abs(p["path"]))
                                     for p in mp4_parts):
                 raise RuntimeError("remux 输出为空")
@@ -585,8 +649,12 @@ class RecordingService:
                 self.log("info", "[录像 %s] remux 完成：%d 个 MP4，FLV 源已清理" %
                          (rec_id, len(mp4_parts)))
         except Exception as exc:
-            self.store.update_recording(rec_id, status="failed",
-                                        error=str(exc)[:300])
+            # 已转好的分片留在数据库里，失败时前端还能看这部分，
+            # 重试也不会把它们当孤立文件重复生成（11-22 下午场的问题）。
+            patch = {"status": "failed", "error": str(exc)[:300]}
+            if mp4_parts:
+                patch["mp4_parts"] = mp4_parts
+            self.store.update_recording(rec_id, **patch)
             self.log("error", "[录像 %s] remux 失败：%s" % (rec_id, exc), exc=exc)
 
     def _archive_flv(self, rec, parts, flv_paths):

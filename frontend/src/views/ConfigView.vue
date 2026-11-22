@@ -8,6 +8,7 @@ import { withBusy } from '@/stores/busy'
 import type { ConfigPayload } from '@/types'
 import CdnImg from '@/components/CdnImg.vue'
 
+/** 采集参数与推送参数分成两张表单，各自有保存按钮，互不干扰。 */
 const form = reactive({
   host: '0.0.0.0',
   port: 8765,
@@ -16,24 +17,45 @@ const form = reactive({
   heartbeat_seconds: 30,
   stale_seconds: 120,
 })
+const pushForm = reactive({
+  notify_live_seconds: 60,
+  notify_dyn_seconds: 300,
+})
 
 let snapshot = ''
+let pushSnapshot = ''
 const tokenField = ref('')
+const webhookField = ref('')
+const secretField = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const acctName = ref('')
 const uploading = ref(false)
-/** 保存按钮的即时反馈：'ok' / 'err' / ''，几秒后自动收回。 */
+/** 两个保存按钮各自的即时反馈：'ok' / 'err' / ''，几秒后自动收回。 */
 const savedFlash = ref('')
+const pushFlash = ref('')
 let flashTimer: number | undefined
+let pushFlashTimer: number | undefined
 
-function flashSaved(kind: string) {
-  savedFlash.value = kind
-  window.clearTimeout(flashTimer)
-  flashTimer = window.setTimeout(() => { savedFlash.value = '' }, 2600)
+function flashSaved(which: 'cfg' | 'push', kind: string) {
+  if (which === 'push') {
+    pushFlash.value = kind
+    window.clearTimeout(pushFlashTimer)
+    pushFlashTimer = window.setTimeout(() => { pushFlash.value = '' }, 2600)
+  } else {
+    savedFlash.value = kind
+    window.clearTimeout(flashTimer)
+    flashTimer = window.setTimeout(() => { savedFlash.value = '' }, 2600)
+  }
 }
-onBeforeUnmount(() => window.clearTimeout(flashTimer))
+onBeforeUnmount(() => {
+  window.clearTimeout(flashTimer)
+  window.clearTimeout(pushFlashTimer)
+})
 
-const dirty = computed(() => snapshot !== '' && JSON.stringify(form) !== snapshot)
+const dirty = computed(() =>
+  (snapshot !== '' && JSON.stringify(form) !== snapshot) ||
+  (pushSnapshot !== '' && JSON.stringify(pushForm) !== pushSnapshot) ||
+  !!webhookField.value || !!secretField.value)
 
 watchEffect(() => {
   state.dirty.cfg = dirty.value
@@ -49,7 +71,10 @@ function applyConfig(cfg: ConfigPayload | null) {
   form.protover = cfg.protover || 2
   form.heartbeat_seconds = cfg.heartbeat_seconds || 30
   form.stale_seconds = cfg.stale_seconds || 120
+  pushForm.notify_live_seconds = cfg.notify_live_seconds || 60
+  pushForm.notify_dyn_seconds = cfg.notify_dyn_seconds || 300
   snapshot = JSON.stringify(form)
+  pushSnapshot = JSON.stringify(pushForm)
 }
 
 watch(() => state.cfg, applyConfig, { immediate: true })
@@ -67,7 +92,7 @@ async function saveConfig() {
   if (t) payload.token = t
   try {
     const j = await postJson('/api/config', payload)
-    hint('cfg', '配置已保存' + (j.restart_required ? '；采集运行中，需停止后重新启动才生效' : ''), 'ok')
+    hint('cfg', '采集参数已保存' + (j.restart_required ? '；采集运行中，需停止后重新启动才生效' : ''), 'ok')
     if (t) {
       // 同步新口令，避免把自己锁在外面
       setToken(t)
@@ -75,11 +100,35 @@ async function saveConfig() {
     }
     tokenField.value = ''
     snapshot = JSON.stringify(form)
-    flashSaved('ok')
+    flashSaved('cfg', 'ok')
     await loadStatus()
   } catch (e: any) {
     hint('cfg', '保存失败：' + e.message, 'err')
-    flashSaved('err')
+    flashSaved('cfg', 'err')
+  }
+}
+
+async function savePush() {
+  const payload: Record<string, unknown> = {
+    notify_live_seconds: Number(pushForm.notify_live_seconds),
+    notify_dyn_seconds: Number(pushForm.notify_dyn_seconds),
+  }
+  const hook = webhookField.value.trim()
+  if (hook) payload.feishu_webhook = hook
+  const sec = secretField.value.trim()
+  if (sec) payload.feishu_secret = sec
+  try {
+    const j = await postJson('/api/config', payload)
+    hint('push', '推送配置已保存' +
+      (j.restart_required ? '；采集运行中，需停止后重新启动才生效' : ''), 'ok')
+    webhookField.value = ''
+    secretField.value = ''
+    pushSnapshot = JSON.stringify(pushForm)
+    flashSaved('push', 'ok')
+    await loadStatus()
+  } catch (e: any) {
+    hint('push', '保存失败：' + e.message, 'err')
+    flashSaved('push', 'err')
   }
 }
 
@@ -92,6 +141,17 @@ async function clearToken() {
     await loadStatus()
   } catch (e: any) {
     hint('cfg', e.message, 'err')
+  }
+}
+
+async function testPush() {
+  const hook = webhookField.value.trim() || undefined
+  const secret = secretField.value.trim() || undefined
+  try {
+    await postJson('/api/notify/test', { webhook: hook, secret })
+    hint('push', '测试消息已发出，去飞书看看', 'ok')
+  } catch (e: any) {
+    hint('push', '推送测试失败：' + e.message, 'err')
   }
 }
 
@@ -241,13 +301,52 @@ function refreshAccounts() {
         </div>
         <div class="row" style="margin-top:14px">
           <button class="btn primary" :class="savedFlash" type="submit">
-            {{ savedFlash === 'ok' ? '✓ 已保存' : savedFlash === 'err' ? '保存失败' : '保存配置' }}
+            {{ savedFlash === 'ok' ? '✓ 已保存' : savedFlash === 'err' ? '保存失败' : '保存采集参数' }}
           </button>
           <button class="btn" type="button" @click="clearToken">清除访问口令</button>
           <span class="muted">口令留空表示不修改；采集参数改动需停止后重新启动才生效</span>
         </div>
       </form>
       <div class="hint" :class="state.hints.cfg.kind">{{ state.hints.cfg.msg }}</div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
+        <h2><i>◆</i>开播 / 动态推送</h2>
+        <span class="more">飞书自定义机器人；每位 up 主的开关在采集器页</span>
+      </div>
+      <form @submit.prevent="savePush">
+        <div class="fields">
+          <div>
+            <label>飞书 webhook</label>
+            <input v-model="webhookField" type="password" autocomplete="off"
+                   :placeholder="state.cfg?.feishu_webhook_set ? '已设置 · 留空不修改' : 'https://open.feishu.cn/open-apis/bot/v2/hook/…'">
+          </div>
+          <div>
+            <label>签名校验 secret</label>
+            <input v-model="secretField" type="password" autocomplete="off"
+                   :placeholder="state.cfg?.feishu_secret_set ? '已设置 · 留空不修改' : '机器人没开签名校验就留空'">
+          </div>
+        </div>
+        <div class="fields" style="margin-top:16px">
+          <div>
+            <label>开播探测间隔（秒）</label>
+            <input v-model.number="pushForm.notify_live_seconds" type="number" min="20" max="3600">
+          </div>
+          <div>
+            <label>动态轮询间隔（秒）</label>
+            <input v-model.number="pushForm.notify_dyn_seconds" type="number" min="60" max="3600">
+          </div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn primary" :class="pushFlash" type="submit">
+            {{ pushFlash === 'ok' ? '✓ 已保存' : pushFlash === 'err' ? '保存失败' : '保存推送配置' }}
+          </button>
+          <button class="btn" type="button" @click="testPush">发一条测试消息</button>
+          <span class="muted">webhook 留空表示不修改或不推送；改完点本栏的「保存推送配置」才生效</span>
+        </div>
+      </form>
+      <div class="hint" :class="state.hints.push.kind">{{ state.hints.push.msg }}</div>
     </section>
 
     <section class="card">

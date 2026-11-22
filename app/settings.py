@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -36,9 +37,14 @@ DEFAULTS: dict[str, Any] = {
     "auto_start": True,
     "dyn_mid": 0,                  # 旧版全局动态 uid，仅在没有采集器时兜底
     "keep_flv": True,              # 合并稳定前保留 FLV 原片作兜底
+    # 飞书自定义机器人：webhook 为空 = 不推送
+    "feishu_webhook": "",
+    "feishu_secret": "",           # 机器人开了「签名校验」时填，否则留空
+    "notify_live_seconds": 60,     # 开播探测间隔
+    "notify_dyn_seconds": 300,     # 动态轮询间隔
 }
 
-SECRET_KEYS = ("token",)
+SECRET_KEYS = ("token", "feishu_webhook", "feishu_secret")
 BOOL_KEYS = ("record_danmaku", "record_sc", "record_events", "record_guard",
              "record_gift", "record_red_pocket", "record_enter",
              "record_interact", "auto_record", "auto_start", "keep_flv")
@@ -54,6 +60,8 @@ INT_BOUNDS = {
     "port": (1, 65535),
     "dyn_mid": (0, 999999999),
     "record_qn": (80, 10000),
+    "notify_live_seconds": (20, 3600),
+    "notify_dyn_seconds": (60, 3600),
 }
 VALID_KINDS = ("danmaku", "sc", "events")
 
@@ -125,7 +133,7 @@ class Config:
                 if not low <= num <= high:
                     raise ValueError("%s 需要在 %s–%s 之间" % (key, low, high))
                 clean[key] = num
-            elif key in ("host", "token"):
+            elif key in ("host", "token", "feishu_webhook", "feishu_secret"):
                 clean[key] = str(value).strip()
             else:
                 clean[key] = value
@@ -248,16 +256,19 @@ class LogBuffer:
       不用翻下载的 service.log 才知道刚才为什么挂了。
     """
 
-    JOURNAL_MAX = 1_000_000          # 约 1MB，超了重写成最后 800 条
+    JOURNAL_MAX = 1_000_000          # 单日文件约 1MB，超了重写成最后 800 条
     JOURNAL_KEEP = 800
+    DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
     def __init__(self, capacity: int = 4000):
         self.capacity = capacity
         self.lock = threading.RLock()
         self.items: list[dict[str, Any]] = []
-        self.journal_path = ""
+        self.journal_path = ""       # 兼容旧版：单文件路径
+        self.journal_dir = ""        # 按天模式：日志目录
         self.dropped = 0             # 被噪音规则丢掉的条数
         self._journal_size = 0
+        self._journal_day = ""
         self._journal_ok = True
         self._logger = logging.getLogger("livecapture")
         self._root_handler: logging.Handler | None = None
@@ -265,13 +276,106 @@ class LogBuffer:
     # ---------- 写入 ----------
 
     def bind_journal(self, path: str) -> None:
-        self.journal_path = path
+        """绑定日志目录，按天写 ``journal-YYYY-MM-DD.jsonl``。
+
+        传旧的单文件路径（journal.jsonl）时取其目录，并保留原路径用于
+        兼容读取——手机上已有历史文件，不能因为升级就读不到。
+        """
+        if path.lower().endswith(".jsonl"):
+            self.journal_path = path
+            path = os.path.dirname(os.path.abspath(path))
+        self.journal_dir = os.path.abspath(path)
         try:
-            parent = os.path.dirname(os.path.abspath(path))
-            os.makedirs(parent, exist_ok=True)
-            self._journal_size = os.path.getsize(path)
+            os.makedirs(self.journal_dir, exist_ok=True)
         except OSError:
-            self._journal_size = 0
+            self._journal_ok = False
+        self._journal_day = self._local_day()
+        self._journal_size = self._day_size(self._journal_day)
+
+    @staticmethod
+    def _local_day(ts: int | None = None) -> str:
+        """用本地时区把毫秒时间戳转成 YYYY-MM-DD。"""
+        return time.strftime("%Y-%m-%d", time.localtime((ts or time.time() * 1000) / 1000))
+
+    def _day_path(self, day: str) -> str:
+        return os.path.join(self.journal_dir, "journal-%s.jsonl" % day)
+
+    def _day_size(self, day: str) -> int:
+        try:
+            return os.path.getsize(self._day_path(day))
+        except OSError:
+            return 0
+
+    def days(self) -> list[str]:
+        """列出有日志的日期（新到旧），含旧版单文件里的记录。"""
+        found: set[str] = set()
+        if self.journal_dir:
+            try:
+                for name in os.listdir(self.journal_dir):
+                    m = re.fullmatch(r"journal-(\d{4}-\d{2}-\d{2})\.jsonl", name)
+                    if m:
+                        found.add(m.group(1))
+            except OSError:
+                pass
+        found.update(self._legacy_days())
+        return sorted(found, reverse=True)
+
+    def _legacy_days(self) -> set[str]:
+        """旧 journal.jsonl 里混着多天的 warn/error，逐条按时间戳归类。"""
+        days: set[str] = set()
+        if not self.journal_path or not os.path.isfile(self.journal_path):
+            return days
+        try:
+            with open(self.journal_path, encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            return days
+        for line in lines:
+            row = self._parse_row(line)
+            if row and row["ts"]:
+                days.add(self._local_day(row["ts"]))
+        return days
+
+    def read_day(self, day: str, limit: int = 2000) -> list[dict[str, Any]]:
+        """读某一天的完整日志（所有级别），新到旧按时间正序返回。"""
+        if not self.DAY_RE.match(day or ""):
+            return []
+        paths = []
+        if self.journal_path and day in self._legacy_days():
+            paths.append(self.journal_path)   # 旧单文件里那天的 warn/error
+        paths.append(self._day_path(day))
+        rows: list[dict[str, Any]] = []
+        for path in paths:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    lines = handle.readlines()
+            except OSError:
+                continue
+            # 单日文件超限时 _journal_rotate 只保留尾部，这里再截一次 limit
+            for line in lines[-max(1, limit):]:
+                row = self._parse_row(line)
+                if row:
+                    # 旧单文件里可能混着别的天，按日期再过一遍
+                    if path == self.journal_path and self._local_day(row["ts"]) != day:
+                        continue
+                    rows.append(row)
+        rows.sort(key=lambda x: x["ts"])
+        return rows[-max(1, limit):]
+
+    @staticmethod
+    def _parse_row(line: str) -> dict[str, Any] | None:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(row, dict) or not row.get("msg"):
+            return None
+        return {"ts": as_int(row.get("ts")),
+                "level": str(row.get("level") or "info"),
+                "msg": str(row.get("msg")),
+                "src": str(row.get("src") or ""),
+                "tb": str(row.get("tb") or ""),
+                "n": as_int(row.get("n"), 1) or 1}
 
     def append(self, level: str, message: Any, ts: int | None = None,
                src: str = "", tb: str = "", merge: bool = True) -> None:
@@ -313,54 +417,72 @@ class LogBuffer:
     # ---------- 持久化 ----------
 
     def _journal_write(self, row: dict[str, Any]) -> None:
-        if not self.journal_path or row["level"] == "info" or not self._journal_ok:
+        if not self.journal_dir or not self._journal_ok:
             return
+        # 所有级别都落盘：按天查看要能看到当天发生了什么，只留 warn/error
+        # 会让历史天几乎空白。info 量大，靠单日 1MB 上限兜住。
+        day = self._local_day(row["ts"])
+        path = self._day_path(day)
         line = json.dumps(row, ensure_ascii=False) + "\n"
         try:
+            if day != self._journal_day:
+                self._journal_day = day
+                self._journal_size = self._day_size(day)
             if self._journal_size + len(line) > self.JOURNAL_MAX:
-                self._journal_rotate()
-            with open(self.journal_path, "a", encoding="utf-8") as handle:
+                self._journal_rotate(path)
+            with open(path, "a", encoding="utf-8") as handle:
                 handle.write(line)
             self._journal_size += len(line)
         except OSError:
             # 磁盘满 / 无权限：只关掉写盘，内存日志照常，不要递归报错
             self._journal_ok = False
 
-    def _journal_rotate(self) -> None:
+    def _journal_rotate(self, path: str) -> None:
         keep: list[str] = []
         try:
-            with open(self.journal_path, encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 keep = handle.readlines()[-self.JOURNAL_KEEP:]
         except OSError:
             keep = []
-        with open(self.journal_path, "w", encoding="utf-8") as handle:
+        with open(path, "w", encoding="utf-8") as handle:
             handle.writelines(keep)
         self._journal_size = sum(len(x) for x in keep)
 
     def replay(self, limit: int = 300) -> int:
-        """服务启动时把上次的 warn/error 读回内存，重启不丢错误现场。"""
-        if not self.journal_path or not os.path.isfile(self.journal_path):
-            return 0
-        try:
-            with open(self.journal_path, encoding="utf-8") as handle:
-                lines = handle.readlines()[-max(1, limit):]
-        except OSError:
-            return 0
+        """服务启动时把上次的日志读回内存，重启不丢错误现场。
+
+        只读今天的（按本地日期），历史天从页面按天查看即可；旧版单文件
+        journal.jsonl 仍作为补充来源，升级后不会丢掉旧错误。
+        """
+        today = self._local_day()
+        paths = [self._day_path(today)]
+        if self.journal_path and os.path.isfile(self.journal_path):
+            paths.append(self.journal_path)
         restored: list[dict[str, Any]] = []
-        for line in lines:
+        for path in paths:
             try:
-                row = json.loads(line)
-            except ValueError:
+                with open(path, encoding="utf-8") as handle:
+                    lines = handle.readlines()
+            except OSError:
                 continue
-            if not isinstance(row, dict) or not row.get("msg"):
+            for line in lines[-max(1, limit):]:
+                row = self._parse_row(line)
+                if not row:
+                    continue
+                if path == self.journal_path and self._local_day(row["ts"]) != today:
+                    continue
+                row["replay"] = True
+                restored.append(row)
+        # 同一条（ts + 文本）可能在新旧文件里各有一份，去重
+        seen: set[tuple[int, str, str]] = set()
+        unique: list[dict[str, Any]] = []
+        for row in restored:
+            key = (row["ts"], row["msg"], row["tb"])
+            if key in seen:
                 continue
-            restored.append({"ts": as_int(row.get("ts")),
-                             "level": str(row.get("level") or "info"),
-                             "msg": str(row.get("msg")),
-                             "src": str(row.get("src") or ""),
-                             "tb": str(row.get("tb") or ""),
-                             "n": as_int(row.get("n"), 1) or 1,
-                             "replay": True})
+            seen.add(key)
+            unique.append(row)
+        restored = unique
         if not restored:
             return 0
         with self.lock:
@@ -413,8 +535,10 @@ class LogBuffer:
                     last_error_at = row["ts"]
             return {"counts": counts, "buffered": len(self.items),
                     "capacity": self.capacity, "last_error_at": last_error_at,
-                    "journal": self.journal_path,
-                    "journal_bytes": self._journal_size}
+                    "journal": self._day_path(self._journal_day) if self.journal_dir
+                               else self.journal_path,
+                    "journal_bytes": self._journal_size,
+                    "days": self.days()}
 
 
 def install_excepthooks(buffer: LogBuffer) -> None:

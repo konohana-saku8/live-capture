@@ -84,6 +84,8 @@ def save_dynamics_config():
         patch["collect_dynamics"] = bool(data["collect_dynamics"])
     if "dyn_auto" in data:
         patch["dyn_auto"] = bool(data["dyn_auto"])
+    if "notify_dynamic" in data:
+        patch["notify_dynamic"] = bool(data["notify_dynamic"])
     if as_int(data.get("dyn_hour"), -1) >= 0:
         patch["dyn_hour"] = as_int(data["dyn_hour"])
     if as_int(data.get("dyn_minute"), -1) >= 0:

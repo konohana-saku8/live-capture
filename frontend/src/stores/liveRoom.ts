@@ -345,6 +345,13 @@ async function fetchOlder(kind: FeedKind, before: number, myGen: number) {
   }
 }
 
+/** 手动滚到底部时补下一页；和播放头推进走同一条补页逻辑。 */
+export function loadNewer(kind: FeedKind) {
+  if (!liveState.newer[kind] || liveState.loading[kind]) return
+  const tail = lastTime(kind)
+  void fetchNewer(kind, tail, gen)
+}
+
 /** 向后补一页（回放：从最早开始，播放头推进时追着补）。 */
 async function fetchNewer(kind: FeedKind, after: number, myGen: number): Promise<boolean> {
   if (!liveState.roomId) return false
@@ -429,7 +436,9 @@ function followPlayback() {
   lastFollowAt = now
   void (async () => {
     for (const k of need) {
-      for (let guard = 0; guard < 60 && myGen === gen && liveState.newer[k]; guard++) {
+      // 一轮只补 200 条；长场（上万条弹幕）需要 60 轮以上才能追到播放头，
+      // 上限太低会让尾部几百条永远补不上，所以留足余量。
+      for (let guard = 0; guard < 200 && myGen === gen && liveState.newer[k]; guard++) {
         const tail = lastTime(k)
         // 播放头后面已留出足够一屏的余量，停止补页
         if (tail > 0 && target < tail - FOLLOW_AHEAD) break
@@ -449,10 +458,13 @@ async function seekWindow(target: number, myGen: number) {
   if (!seg || !liveState.roomId) return
   lastFollowAt = Date.now()
   const after = Math.max(0, target - FOLLOW_AHEAD / 2)
+  // 开窗后前面还有内容就保留「载入更早」入口，否则拖动进度条后
+  // 只能看到这一页，滚到列顶也补不出更早的弹幕 / SC。
+  const hasOlder = after > (seg.start || 0)
   for (const k of KINDS) {
     liveState.loading[k] = true
     liveState.rows[k] = []
-    liveState.older[k] = false
+    liveState.older[k] = hasOlder
   }
   await Promise.all(KINDS.map(async (k) => {
     try {
