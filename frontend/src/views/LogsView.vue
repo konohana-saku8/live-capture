@@ -170,7 +170,6 @@ function reload() {
 }
 
 function pickDay(v: string) {
-  day.value = v
   follow.value = !v
   void loadLogs(v)
 }

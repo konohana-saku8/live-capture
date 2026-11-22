@@ -280,6 +280,7 @@ export interface LogStats {
   last_error_at: number
   journal_bytes: number
   journal: string
+  days?: string[]
 }
 
 /** 运行期诊断快照：日志回答“发生过什么”，这个回答“现在健康吗”。 */

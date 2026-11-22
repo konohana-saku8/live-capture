@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 右侧一列：弹幕 / SC / 事件。滚到底追加下一页，滚到顶追加更早页。 */
+/** 右侧一列：弹幕 / SC / 事件。默认停在最早一条；向下滚到底追加更新，向上滚到顶追加更早。 */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import { GUARD, KIND, fmt, fmtOffset } from '@/lib/format'
@@ -27,12 +27,20 @@ const emit = defineEmits<{
 
 const box = ref<HTMLDivElement | null>(null)
 const showJump = ref(false)
-/** 每列独立：加载 / 换场次时默认跟随，用户自己滑动后暂停。 */
-const follow = ref(true)
-/** 程序自己滚动时短暂标记，避免 scroll 事件把「跟随」关掉。 */
+/** 每列独立：默认停在最早一条，用户点「跟随」后才自动跟播放头 / 最新。 */
+const follow = ref(false)
+/** 程序自己滚动时短暂标记，避免 scroll 事件把「跟随」状态改掉。 */
 let autoScrollUntil = 0
 /** 用户最近一次滚轮 / 触摸：用来区分「程序滚动」与「用户主动滚动」。 */
 let userGestureAt = 0
+/** 上次 scrollTop：分页只认「朝那个方向滑到边」，避免刚打开时轻轻一滑就加载。 */
+let lastScrollTop = 0
+/** 首屏 / 换场次后，等消息到位再把视图放到最早一条。 */
+let pendingInitial = true
+/** 初始定位 / 手动触发补页后，短暂抑制连锁的边沿触发。
+ *  新页追加时保持原滚动位置，不再强制跳到扩展后的底部。 */
+let suppressNewerUntil = 0
+let suppressOlderUntil = 0
 
 const TITLES: Record<FeedKind, string> = { danmaku: '弹幕', sc: 'Super Chat', events: '直播间事件' }
 const title = computed(() => TITLES[props.kind])
@@ -91,11 +99,25 @@ function markAutoScroll() {
   autoScrollUntil = Date.now() + 220
 }
 
+function syncScrollTop() {
+  const el = box.value
+  if (el) lastScrollTop = el.scrollTop
+}
+
+function scrollToTop() {
+  const el = box.value
+  if (!el) return
+  markAutoScroll()
+  el.scrollTop = 0
+  lastScrollTop = 0
+}
+
 function scrollToBottom() {
   const el = box.value
   if (!el) return
   markAutoScroll()
   el.scrollTop = el.scrollHeight
+  syncScrollTop()
 }
 
 function setActiveRow() {
@@ -117,6 +139,7 @@ function scrollToActive() {
   markAutoScroll()
   // 跟随播放时把当前消息放在这一栏的第一行：手机高度有限，后面的内容往下排
   el.scrollTop = Math.max(0, target.offsetTop - 4)
+  syncScrollTop()
 }
 
 function updateJump() {
@@ -134,12 +157,16 @@ function onScroll() {
   if (!el) return
   updateJump()
   // 用户刚动过滚轮 / 手指时，即使程序刚滚过也要按用户位置判断
-  if (Date.now() < autoScrollUntil && Date.now() - userGestureAt > 300) return
+  const now = Date.now()
+  if (now < autoScrollUntil && now - userGestureAt > 300) return
+  const delta = el.scrollTop - lastScrollTop
+  lastScrollTop = el.scrollTop
   if (isAtBottom(el)) {
-    // 回放：后面还有更新的就手动补下一页（原来只靠播放头推进补，滚到底没反应）
-    if (props.newer && !props.loading && Date.now() >= suppressNewerUntil) {
+    // 只有「向下滑到底」才补下一页：停在底部向上轻滑不算，避免打开页面就连锁加载
+    if (delta > 0 && props.newer && !props.loading && now >= suppressNewerUntil) {
       if (follow.value) { follow.value = false; updateJump() }
-      stickBottom = true
+      // 抑制放在触发这一刻：新页追加后不跳到底，用户仍停在旧页末尾继续往下读
+      suppressNewerUntil = now + 400
       emit('newer')
     }
     return
@@ -149,16 +176,45 @@ function onScroll() {
     follow.value = false
     updateJump()
   }
-  // 滑到列顶继续向前加载更早的
-  if (el.scrollTop < 24 && props.older && !props.loading) emit('older')
+  // 只有「向上滑到顶」才继续向前加载更早的；直播取的是最新一页，打开时已经在顶，
+  // 这时要用列首的「载入更早」按钮显式触发，不能靠初始定位自动加载。
+  if (delta < 0 && el.scrollTop < 24 && props.older && !props.loading && now >= suppressOlderUntil) {
+    suppressOlderUntil = now + 400
+    emit('older')
+  }
+}
+
+function onOlderClick() {
+  if (!props.older || props.loading) return
+  suppressOlderUntil = Date.now() + 400
+  emit('older')
 }
 
 async function applyFollowPosition() {
   await nextTick()
   setActiveRow()
-  // 首屏默认停在最新；只有当前播放位置对应的消息已经加载时才跟随到栏顶
+  // 跟随模式：当前播放位置对应的消息已加载就跟到栏顶，否则跟最新
   if (props.seekable && activeKey.value) scrollToActive()
   else scrollToBottom()
+  updateJump()
+}
+
+async function applyInitialPosition() {
+  await nextTick()
+  if (!props.rows.length) return
+  pendingInitial = false
+  setActiveRow()
+  // 深链带播放位置（如 ?t=）时仍按原逻辑对齐播放头并跟随
+  if (props.seekable && props.currentMs > 0 && activeKey.value) {
+    follow.value = true
+    scrollToActive()
+  } else {
+    follow.value = false
+    scrollToTop()
+  }
+  const now = Date.now()
+  suppressNewerUntil = now + 400
+  suppressOlderUntil = now + 400
   updateJump()
 }
 
@@ -169,9 +225,6 @@ function jumpToLatest() {
 
 let prevFirst = ''
 let prevLast = ''
-/** 手动滚到底触发补页：加载后把视图带回底部；短时间内不再连锁触发。 */
-let stickBottom = false
-let suppressNewerUntil = 0
 
 watch([() => props.rows.length, lastKey], async () => {
   const el = box.value
@@ -181,17 +234,15 @@ watch([() => props.rows.length, lastKey], async () => {
   const last = props.rows.length ? rowKey(props.rows[props.rows.length - 1]) : ''
   // 前面追加了更早的页：保持当前视线不动
   const prepended = !!prevFirst && first !== prevFirst && last === prevLast
+  if (!props.rows.length) pendingInitial = true
   await nextTick()
   const body = box.value
   setActiveRow()
-  if (prepended && body) {
+  if (pendingInitial && props.rows.length) {
+    await applyInitialPosition()
+  } else if (prepended && body) {
     body.scrollTop = oldTop + (body.scrollHeight - oldHeight)
-  } else if (stickBottom && body) {
-    // 手动补页后停在底部，让用户继续往下翻；抑制连锁触发，等用户再次主动滚动
-    stickBottom = false
-    suppressNewerUntil = Date.now() + 400
-    markAutoScroll()
-    body.scrollTop = body.scrollHeight
+    syncScrollTop()
   } else if (follow.value) {
     if (props.seekable && activeKey.value) scrollToActive()
     else scrollToBottom()
@@ -215,8 +266,16 @@ watch(follow, async (on) => {
   else updateJump()
 })
 
-// 换场次时这一列重新默认跟随；其它列的跟随状态不受影响
-watch(() => props.sessionKey, () => { follow.value = true })
+// 换场次时这一列重新默认停在最早；其它列的状态不受影响
+watch(() => props.sessionKey, async () => {
+  pendingInitial = true
+  follow.value = false
+  const now = Date.now()
+  suppressNewerUntil = now + 400
+  suppressOlderUntil = now + 400
+  await nextTick()
+  if (props.rows.length) void applyInitialPosition()
+})
 
 watch(() => props.loading, async (v) => {
   if (v) return
@@ -224,7 +283,7 @@ watch(() => props.loading, async (v) => {
   updateJump()
 })
 
-onMounted(() => { void applyFollowPosition() })
+onMounted(() => { void applyInitialPosition() })
 </script>
 
 <template>
@@ -232,6 +291,7 @@ onMounted(() => { void applyFollowPosition() })
     <h3>{{ title }} <span class="n">{{ rows.length }}</span></h3>
     <div ref="box" class="studio-feed-body" @scroll.passive="onScroll"
          @wheel.passive="onUserGesture" @touchmove.passive="onUserGesture">
+      <button v-if="older && !loading" class="feed-older" @click="onOlderClick">载入更早 ↑</button>
       <div v-if="loading && older" class="feed-loading">正在载入更早…</div>
       <template v-if="rows.length">
         <template v-for="r in rows" :key="rowKey(r)">
