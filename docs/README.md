@@ -10,65 +10,84 @@ B 站直播弹幕 / SC / 礼物 / 动态采集服务，运行在手机 Termux �
 
 ### 访问验证
 
-![访问验证](img/gate.png)
+<table>
+<tr>
+<td align="center" valign="top"><img src="img/gate.png" width="240" alt="访问验证"><br><sub>访问验证</sub></td>
+</tr>
+</table>
 
 服务默认要口令才能进，防止同一局域网里谁都能翻记录。口令存在手机 `data/config.json` 的 `token` 字段，页面上的「清除访问码」会把它一起抹掉（等于关掉门禁）。
 
 ### 仪表盘
 
-![仪表盘](img/home.png)
+<table>
+<tr>
+<td align="center" valign="top"><img src="img/home.png" width="240" alt="数据家底"><br><sub>数据家底</sub></td>
+<td align="center" valign="top"><img src="img/home-storage.png" width="240" alt="存储构成"><br><sub>存储构成</sub></td>
+</tr>
+</table>
 
 数据家底：总共记录了多少场、多少条、每场平均多少条，按房间分列。数字只统计场次区间内的记录，场间灌进来的零散弹幕不算在内。
-
-![存储构成](img/home-storage.png)
 
 同一页往下是存储构成：MP4 定稿 / FLV 原片 / SQLite / WAL 与日志各自的体积，SQLite 内部再按 `raw_json`、其它字段、SC、事件、索引拆开，最后是占用排行。手机空间吃紧时先看这一块。
 
 ### 数据（回放与查阅）
 
-![数据页](img/live-calendar.png)
+<table>
+<tr>
+<td align="center" valign="top"><img src="img/live-calendar.png" width="240" alt="日历与场次"><br><sub>日历与场次</sub></td>
+<td align="center" valign="top"><img src="img/live-stage.png" width="240" alt="播放器与三列弹幕"><br><sub>播放器与三列弹幕</sub></td>
+<td align="center" valign="top"><img src="img/live-recordings.png" width="240" alt="本场录像文件"><br><sub>本场录像文件</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><img src="img/live-dynamics.png" width="240" alt="up 主动态"><br><sub>up 主动态</sub></td>
+</tr>
+</table>
 
 日历上每一天标着当天几段，选日期 → 下方列出当天场次（直播间场次与「场间」分开算）。顶部能切 `直播场次` / `up 主动态` 两个标签，右侧按当前段导出 JSON / CSV。
 
-![播放器与三列弹幕](img/live-stage.png)
-
 选中一场就是回放台：MP4 播放器 + 三列并排的弹幕 / Super Chat / 直播间事件，按时间轴对齐。点某条消息可以跳到对应画面；只看某一列就取消另外两列的勾选。
 
-![本场录像文件](img/live-recordings.png)
-
 播放器下方是本场录像文件：MP4 分 P 与 FLV 原片分开列，各自能单独删。分 P 是定稿产物，FLV 原片只作留档。
-
-![up 主动态](img/live-dynamics.png)
 
 同一个页面的第二个标签：这位 up 主的 B 站动态，原文 + 译文，可手动抓取、按关键词搜、单独改译文。定时抓取的开关和时间在采集器页按 up 主分别设置。
 
 ### 采集器
 
-![采集器](img/rooms.png)
+<table>
+<tr>
+<td align="center" valign="top"><img src="img/rooms.png" width="240" alt="采集目标"><br><sub>采集目标</sub></td>
+<td align="center" valign="top"><img src="img/rooms-capture.png" width="240" alt="直播采集配置"><br><sub>直播采集配置</sub></td>
+</tr>
+</table>
 
 采集目标列表，绿点=采集中，红点=未采集。每个房间显示 UID / 房间号、累计开播与最近开播、动态条数与下次抓取时间；点开是这一间的实时统计（本次运行收了多少弹幕 / SC / 事件）与采集开关。
-
-![采集配置](img/rooms-capture.png)
 
 直播配置按 up 主保存：采不采直播间、只开播时采、开播自动录制与清晰度、开播推送，以及弹幕 / SC / 事件和事件类型（上舰、礼物、红包、入场、互动）逐项勾选。改完要点保存，且要停止再重新开始采集才生效。
 
 ### 配置
 
-![配置页](img/config.png)
+<table>
+<tr>
+<td align="center" valign="top"><img src="img/config.png" width="240" alt="账号池与采集参数"><br><sub>账号池与采集参数</sub></td>
+<td align="center" valign="top"><img src="img/config-push.png" width="240" alt="推送配置"><br><sub>推送配置</sub></td>
+</tr>
+</table>
 
 账号池只收 cookie CSV（Netscape 或扩展导出都行），对外只回 SESSDATA 掩码；下面是采集参数：压缩协议、心跳间隔、静默重连、监听地址与端口、访问口令。
-
-![推送配置](img/config-push.png)
 
 开播 / 新动态推送用飞书自定义机器人：填 webhook（可选签名 secret）、开播探测与动态轮询的间隔，改完可以「发一条测试消息」验证。每个 up 主的推送开关在采集器页单独勾。
 
 ### 日志
 
-![运行日志](img/logs.png)
+<table>
+<tr>
+<td align="center" valign="top"><img src="img/logs.png" width="240" alt="运行日志"><br><sub>运行日志</sub></td>
+<td align="center" valign="top"><img src="img/logs-errors.png" width="240" alt="错误与堆栈"><br><sub>错误与堆栈</sub></td>
+</tr>
+</table>
 
 日志按级别计数，每条带来源文件与行号；重启前的告警会保留下来并标注。可以按级别、关键词、时间筛选，也能下载完整日志。
-
-![错误与堆栈](img/logs-errors.png)
 
 错误默认展开完整 traceback，「复制这条（含堆栈）」直接拿去排查；页面上还有线程清单、磁盘、DB+WAL、RSS、ffmpeg 可用性这些运行时信息。
 
