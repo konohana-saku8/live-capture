@@ -1,0 +1,2 @@
+# 只需要 Widgets，用 Essentials 就够（完整包多带 WebEngine 等，约 200 MB）
+PySide6-Essentials>=6.6,<6.9

@@ -40,7 +40,9 @@ def create_app(data_dir: str | None = None, web_dir: str | None = None,
 
     app = Flask(__name__, static_folder=None)
     app.json.ensure_ascii = False
-    app.config["MAX_CONTENT_LENGTH"] = 512 * 1024
+    # 512 KB 够所有 JSON 接口用；录像分片回传（PC 端 pctools）按 16 MB
+    # 分块上传，所以放宽到 32 MB —— 留一倍余量，仍能挡住误传大文件。
+    app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
     app.extensions["live"] = r
 
     register_errors(app)

@@ -65,8 +65,12 @@ const mediaUrl = computed(() => {
     return '/api/live/flv?room_id=' + r.room_id + '&qn=' + qn + tokenQuery
   }
   if (mode.value === 'mp4' || mode.value === 'flv') {
+    // 分片被 PC 端重压替换后 bytes/duration 都变了，路径没变；
+    // 带上 recompressed_at 让浏览器丢掉 max-age 里的旧片子。
+    const cur = parts.value[Number(part.value)] as RecordingPart | undefined
+    const stamp = cur && cur.recompressed_at ? '&v=' + cur.recompressed_at : ''
     return '/api/recordings/' + r.id + '/media?part=' + part.value +
-      '&kind=' + mode.value + tokenQuery
+      '&kind=' + mode.value + stamp + tokenQuery
   }
   return ''
 })

@@ -138,6 +138,8 @@ export interface RecordingPart {
   started_at: number
   bytes: number
   duration_ms: number
+  /** PC 端重压替换后写入，用来给 media URL 加版本号丢缓存 */
+  recompressed_at?: number
 }
 
 export interface RecordingInfo {
