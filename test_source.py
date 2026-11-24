@@ -9,18 +9,18 @@
 
     .venv-host/Scripts/python.exe test_source.py \
         --video "D:\\Repository\\ai-corver\\MSST-GUI-1.4.0\\input\\96570601-1-208.mp4" \
-        --data data \
-        --source-db .state/uitest/capture.db \
         --source-room 22748536 --source-index 1
 
 参数：
-- ``--data``        目标数据目录（默认 ./data；不存在会自动创建）
+- ``--data``        目标数据目录（默认 .state/uitest，与正式库隔离；
+                    要写进正式 data/ 必须显式传 --data data）
 - ``--video``       本地视频路径（必填）
-- ``--source-db``   复用数据的 DB（默认用目标 data 目录下的 capture.db）
+- ``--source-db``   复用数据的 DB（默认正式库 data/capture.db）
 - ``--source-room`` 源房间号（省略时取源库里有开播记录的第一个房间）
 - ``--source-index`` 第几场（从 1 开始；0 或负数 = 最后一场）
 - ``--room-id``     测试源的合成房间号（默认 999999999）
 - ``--uid``         测试源 uid（默认 0）
+- ``--cleanup``     只删掉测试源（配置 + 该房间数据 + 录像目录），不造数据
 """
 from __future__ import annotations
 
@@ -43,6 +43,38 @@ from rooms import RoomStore            # noqa: E402
 from store import Store                # noqa: E402
 
 TEST_ROOM_ID = 999999999
+# 测试源默认落在 .state/uitest，正式 data/ 里不该有它：服务只认 data/，
+# 写进去就会被当成真采集器（连 B 站探测、进推送、进自动采集）。
+TEST_DATA_DIR = os.path.join(ROOT, ".state", "uitest")
+PROD_DATA_DIR = os.path.join(ROOT, "data")
+
+
+def cleanup(data_dir, room_id):
+    """删掉测试源：配置条目、该房间的弹幕/SC/事件/录像记录、录像目录。"""
+    data_dir = os.path.abspath(data_dir)
+    rid = int(room_id)
+    removed = []
+
+    rooms_path = os.path.join(data_dir, "rooms.json")
+    if os.path.isfile(rooms_path):
+        if RoomStore(rooms_path).remove(rid):
+            removed.append("rooms.json")
+
+    db_path = os.path.join(data_dir, "capture.db")
+    if os.path.isfile(db_path):
+        store = Store(db_path)
+        store.clear(rid)
+        with store.lock:
+            store.db.execute("DELETE FROM recordings WHERE room_id=?", (rid,))
+            store.db.execute("DELETE FROM runs WHERE room_id=?", (rid,))
+            store.db.commit()
+        removed.append("capture.db")
+
+    rec_dir = os.path.join(data_dir, "recordings", str(rid))
+    if os.path.isdir(rec_dir):
+        shutil.rmtree(rec_dir, ignore_errors=True)
+        removed.append("recordings/%s" % rid)
+    return removed
 
 
 def _mvhd_duration_ms(moov):
@@ -200,8 +232,9 @@ def build(args):
         raise SystemExit("视频不存在：%s" % video)
     os.makedirs(data_dir, exist_ok=True)
 
+    # 复用数据的来源默认是正式库；测试源自己写到 --data（默认 .state/uitest）
     source_db = os.path.abspath(args.source_db or
-                               os.path.join(data_dir, "capture.db"))
+                               os.path.join(PROD_DATA_DIR, "capture.db"))
     if not os.path.isfile(source_db):
         raise SystemExit("源库不存在：%s" % source_db)
     if source_db == os.path.join(data_dir, "capture.db") and \
@@ -329,8 +362,8 @@ def main():
         pass
     parser = argparse.ArgumentParser(
         description="生成本地视频 + 复用直播数据的 uid=0 测试源")
-    parser.add_argument("--data", default=os.path.join(ROOT, "data"))
-    parser.add_argument("--video", required=True)
+    parser.add_argument("--data", default=TEST_DATA_DIR)
+    parser.add_argument("--video", default=None)
     parser.add_argument("--source-db", default=None)
     parser.add_argument("--source-room", type=int, default=0)
     parser.add_argument("--source-index", type=int, default=0,
@@ -338,7 +371,15 @@ def main():
     parser.add_argument("--room-id", type=int, default=TEST_ROOM_ID)
     parser.add_argument("--uid", type=int, default=0)
     parser.add_argument("--label", default="测试源")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="只删掉测试源（配置 + 数据 + 录像目录）")
     args = parser.parse_args()
+    if args.cleanup:
+        print(json.dumps({"removed": cleanup(args.data, args.room_id)},
+                         ensure_ascii=False, indent=2))
+        return
+    if not args.video:
+        parser.error("--video 必填（或用 --cleanup 只删测试源）")
     print(json.dumps(build(args), ensure_ascii=False, indent=2))
 
 

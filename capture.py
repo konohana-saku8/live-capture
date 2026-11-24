@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 import zlib
 
-from rooms import PARAM_KEYS
+from rooms import PARAM_KEYS, is_test_room
 from recorder import LiveRecorder
 from recordings import RecordingService
 from raw_fields import RawCache
@@ -1347,6 +1347,9 @@ class CaptureManager:
         room = self._room(rid)
         if not room:
             return False, "直播间 %s 不在列表里，请先添加" % rid
+        # 测试源只有本地视频和复用数据，连 B 站一定失败
+        if is_test_room(room):
+            return False, "本地测试源不连接 B 站，无需开始采集"
         with self.lock:
             worker = self.workers.get(rid)
         if worker and worker.thread and worker.thread.is_alive():

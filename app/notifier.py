@@ -24,6 +24,8 @@ from typing import Any, Callable
 
 import notify
 
+from rooms import is_test_room
+
 from .settings import as_int
 
 
@@ -136,6 +138,9 @@ class NotifierScheduler:
         sent = 0
         for room in (self.rooms.list().get("items") or []):
             if room.get("notify_live", True) is False:
+                continue
+            # 测试源没有 up 主，去 B 站探开播只会 404，别让它刷日志
+            if is_test_room(room):
                 continue
             rid = as_int(room.get("id"))
             if rid <= 0:

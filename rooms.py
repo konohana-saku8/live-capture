@@ -36,6 +36,13 @@ def _as_int(value, default=0):
         return default
 
 
+# 本地测试源（test_source.py 造的假房间）没有 up 主，uid 恒为 0。前端四处、
+# 动态定时抓取、动态推送都按这个判据认它；后端任何要连 B 站的入口都先问一句
+# is_test_room()，免得拿假房间去调接口刷日志。
+def is_test_room(room):
+    return _as_int((room or {}).get("uid")) <= 0
+
+
 class RoomStore:
     def __init__(self, path):
         self.path = path

@@ -49,13 +49,18 @@ node node_modules/vite/bin/vite.js build   # 产物输出 ../web/dist/（入库�
 ```bash
 .venv-host/Scripts/python.exe test_source.py \
   --video "D:/path/to/video.mp4" \
-  --data data \
-  --source-db .state/uitest/capture.db --source-room 22748536 --source-index 1
+  --source-room 22748536 --source-index 1
 ```
 
+- **默认写到 `.state/uitest/`，与正式 `data/` 隔离**；要写进正式库必须显式 `--data data`。
+  测试源一旦进了正式库，服务就会把它当真采集器（探测开播、进推送），所以默认不这么做。
+- 清理：`test_source.py --cleanup`（读 `--data`，默认清 `.state/uitest`），删掉配置条目 + 该房间
+  的弹幕/SC/事件/录像记录 + 录像目录；要清正式库里的残留必须显式 `--data data`。
 - 测试源房间号默认 `999999999`，uid=0；弹幕 / SC / 事件按视频时长线性缩放后复制。
-- 视频默认硬链接进 `data/recordings/<room_id>/`（跨盘自动退化为复制）。
+- 视频默认硬链接进 `<data>/recordings/<room_id>/`（跨盘自动退化为复制）。
 - 重复执行会先清掉该测试源房间的旧数据，不影响其他采集器。
+- 后端一律用 `rooms.is_test_room(room)`（`uid <= 0`）判测试源，**任何要连 B 站的入口先短路**：
+  开播探测 / 推送、动态轮询、定时抓取、`CaptureManager.start()`。新加外呼路径照着调。
 
 ## 添加新的数据源 / 子标签（采集器页）
 
