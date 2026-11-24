@@ -28,6 +28,7 @@ import zlib
 from rooms import PARAM_KEYS
 from recorder import LiveRecorder
 from recordings import RecordingService
+from raw_fields import RawCache
 
 try:
     import brotli
@@ -765,8 +766,10 @@ class RoomWorker:
         self.thread = None
         self.recorder = None
         self.record_qn = _as_int(cfg.get("record_qn")) or 250
+        data_dir = os.path.dirname(os.path.abspath(self.store.path))
+        # 原始报文在解析之前落盘，解析失败/被丢弃的消息也能事后回溯。
+        self.raw_cache = RawCache(data_dir, log=self.log)
         if cfg.get("auto_record"):
-            data_dir = os.path.dirname(os.path.abspath(self.store.path))
             self.recorder = LiveRecorder(
                 data_dir, room_id, self.label, self.log,
                 on_state=lambda **kw: self._set(**kw),
@@ -789,8 +792,12 @@ class RoomWorker:
         """刚入库的数据推给页面；推送失败不能影响采集本身。"""
         if not rows:
             return
+        # _raw 是给入库提取字段用的完整原始报文（几 KB/条），不能推给页面；
+        # 页面只需要展示字段，raw_json 已在入库前清空。
+        clean = [{k: v for k, v in row.items()
+                  if k not in ("_raw", "raw_json")} for row in rows]
         try:
-            self.manager.publish(kind, rows)
+            self.manager.publish(kind, clean)
         except Exception as exc:
             self.log("warn", self.tag + "实时推送失败：%s" % exc)
 
@@ -843,6 +850,8 @@ class RoomWorker:
         finally:
             self._stop_recording("采集线程退出")
             self._flush_danmaku()
+            # 原始报文是缓冲写的（50 条或 2 秒），停下前把尾巴落盘
+            self.raw_cache.flush()
             if self.run_id:
                 self.store.end_run(self.run_id)
             with self.lock:
@@ -941,6 +950,8 @@ class RoomWorker:
         row = event_row(self.room_id, "live", {"live": 1, "start_time": ts // 1000},
                         ts)
         row["run_id"] = self.run_id
+        row["_raw"] = {"live": 1, "start_time": ts // 1000}
+        row["raw_json"] = ""
         try:
             self.store.insert_event(row)
             self._inc("events")
@@ -1068,6 +1079,9 @@ class RoomWorker:
         cmd = (message.get("cmd") or "").split(":", 1)[0]
         data = message.get("data")
         now = int(time.time() * 1000)
+        # 先存档再解析：只有入库成功的消息才有 raw_json，解析失败的那批恰恰
+        # 是最需要原始报文的；统一在入口写，所有消息都在文件里。
+        self.raw_cache.write(now, self.room_id, cmd, message)
         self._set(last_packet_at=now)
         cfg = self.cfg
         room_id = self.room_id
@@ -1078,8 +1092,7 @@ class RoomWorker:
             row = build_danmaku(room_id, message.get("info"), now)
             if row:
                 row["run_id"] = run_id
-                row["raw_json"] = json.dumps(
-                    message, ensure_ascii=False, separators=(",", ":"))[:4000]
+                row["_raw"] = message
                 self._dm_buf.append(row)
                 if len(self._dm_buf) >= 50:
                     self._flush_danmaku()
@@ -1096,6 +1109,8 @@ class RoomWorker:
             if pending and not row.get("message_trans"):
                 row["message_trans"] = pending
             row["run_id"] = run_id
+            row["_raw"] = data
+            row["raw_json"] = ""
             if self.store.insert_sc(row):
                 self._inc("sc")
                 self._publish("sc", [row])
@@ -1191,6 +1206,8 @@ class RoomWorker:
             row = event_row(room_id, "live", {"live": 1,
                                               "start_time": now // 1000}, now)
             row["run_id"] = run_id
+            row["_raw"] = {"live": 1, "start_time": now // 1000}
+            row["raw_json"] = ""
             self.store.insert_event(row)
             self._inc("events")
             self._publish("events", [row])
@@ -1202,6 +1219,8 @@ class RoomWorker:
             row = event_row(room_id, "live", {"live": 0,
                                               "start_time": now // 1000}, now)
             row["run_id"] = run_id
+            row["_raw"] = {"live": 0, "start_time": now // 1000}
+            row["raw_json"] = ""
             self.store.insert_event(row)
             self._inc("events")
             self._publish("events", [row])
@@ -1211,6 +1230,8 @@ class RoomWorker:
         """入库并推一条事件；礼物 / 红包 / 互动都走这里。"""
         row = event_row(self.room_id, kind, data, now)
         row["run_id"] = run_id
+        row["_raw"] = data
+        row["raw_json"] = ""
         self.store.insert_event(row)
         self._inc("events")
         self._publish("events", [row])

@@ -64,6 +64,10 @@ def main() -> None:
     data_dir = os.path.abspath(args.data)
     os.makedirs(data_dir, exist_ok=True)
 
+    # 动态抓取走 HTTP，没有 RoomWorker；给它一个进程级原始报文缓存。
+    from raw_fields import configure_default as _configure_raw
+    _configure_raw(data_dir)
+
     # 应用自己也写一份日志文件（按天轮转），不依赖 shell 的重定向；
     # 页面 /api/logs/file 可以直接下载这份完整日志。跨天自动换文件，
     # 保留最近 14 天，手机上翻旧问题不用在单个大文件里捞。

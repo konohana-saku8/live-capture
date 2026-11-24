@@ -15,6 +15,8 @@ import sqlite3
 import threading
 import time
 
+import raw_fields
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS danmaku (
   seq          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +35,31 @@ CREATE TABLE IF NOT EXISTS danmaku (
   emote_url    TEXT NOT NULL DEFAULT '',
   emote_px     INTEGER NOT NULL DEFAULT 20,
   emote_map    TEXT NOT NULL DEFAULT '{}',
+  client_ts    INTEGER NOT NULL DEFAULT 0,
+  dm_mode      INTEGER NOT NULL DEFAULT 0,
+  font_size    INTEGER NOT NULL DEFAULT 0,
+  dm_color     INTEGER NOT NULL DEFAULT 0,
+  dm_type      INTEGER NOT NULL DEFAULT 0,
+  player_mode  INTEGER NOT NULL DEFAULT 0,
+  show_player_type INTEGER NOT NULL DEFAULT 0,
+  send_from_me INTEGER NOT NULL DEFAULT 0,
+  dm_id        TEXT NOT NULL DEFAULT '',
+  user_hash    TEXT NOT NULL DEFAULT '',
+  emoticon_unique TEXT NOT NULL DEFAULT '',
+  user_level   TEXT NOT NULL DEFAULT '',
+  name_color   TEXT NOT NULL DEFAULT '',
+  is_mystery   INTEGER NOT NULL DEFAULT 0,
+  medal_id     INTEGER NOT NULL DEFAULT 0,
+  medal_score  INTEGER NOT NULL DEFAULT 0,
+  title_id     INTEGER NOT NULL DEFAULT 0,
+  is_audited   INTEGER NOT NULL DEFAULT 0,
+  dm_score     INTEGER NOT NULL DEFAULT 0,
+  reply_mid    INTEGER NOT NULL DEFAULT 0,
+  reply_uname  TEXT NOT NULL DEFAULT '',
+  reply_type   INTEGER NOT NULL DEFAULT 0,
+  animation    TEXT NOT NULL DEFAULT '',
+  direction    INTEGER NOT NULL DEFAULT 0,
+  voice        TEXT NOT NULL DEFAULT '',
   raw_json     TEXT,
   import_key   TEXT
 );
@@ -55,6 +82,21 @@ CREATE TABLE IF NOT EXISTS sc_message (
   medal_name    TEXT,
   medal_level   INTEGER,
   deleted       INTEGER NOT NULL DEFAULT 0,
+  gift_id       INTEGER NOT NULL DEFAULT 0,
+  gift_name     TEXT NOT NULL DEFAULT '',
+  gift_num      INTEGER NOT NULL DEFAULT 0,
+  face          TEXT NOT NULL DEFAULT '',
+  rate          INTEGER NOT NULL DEFAULT 0,
+  dmscore       INTEGER NOT NULL DEFAULT 0,
+  token         TEXT NOT NULL DEFAULT '',
+  duration      INTEGER NOT NULL DEFAULT 0,
+  trans_mark    INTEGER NOT NULL DEFAULT 0,
+  is_ranked     INTEGER NOT NULL DEFAULT 0,
+  is_mystery    INTEGER NOT NULL DEFAULT 0,
+  medal_color   TEXT NOT NULL DEFAULT '',
+  medal_special TEXT NOT NULL DEFAULT '',
+  message_font_color TEXT NOT NULL DEFAULT '',
+  background_color   TEXT NOT NULL DEFAULT '',
   raw_json      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sc_time ON sc_message(start_time DESC);
@@ -70,6 +112,14 @@ CREATE TABLE IF NOT EXISTS room_event (
   detail      TEXT,
   event_time  INTEGER,
   received_at INTEGER NOT NULL,
+  gift_id     INTEGER NOT NULL DEFAULT 0,
+  gift_name   TEXT NOT NULL DEFAULT '',
+  gift_num    INTEGER NOT NULL DEFAULT 0,
+  price       INTEGER NOT NULL DEFAULT 0,
+  coin_type   TEXT NOT NULL DEFAULT '',
+  tid         TEXT NOT NULL DEFAULT '',
+  medal_name  TEXT NOT NULL DEFAULT '',
+  medal_level INTEGER NOT NULL DEFAULT 0,
   raw_json    TEXT,
   import_key  TEXT
 );
@@ -93,6 +143,16 @@ CREATE TABLE IF NOT EXISTS dynamics (
   text_trans  TEXT NOT NULL DEFAULT '',
   pics        TEXT NOT NULL DEFAULT '[]',
   jump_url    TEXT NOT NULL DEFAULT '',
+  comment_id  TEXT NOT NULL DEFAULT '',
+  comment_type INTEGER NOT NULL DEFAULT 0,
+  rid         TEXT NOT NULL DEFAULT '',
+  author_name TEXT NOT NULL DEFAULT '',
+  author_face TEXT NOT NULL DEFAULT '',
+  pub_action  TEXT NOT NULL DEFAULT '',
+  pub_location TEXT NOT NULL DEFAULT '',
+  official_desc TEXT NOT NULL DEFAULT '',
+  views_text  TEXT NOT NULL DEFAULT '',
+  orig        TEXT NOT NULL DEFAULT '',
   raw_json    TEXT NOT NULL DEFAULT '',
   fetched_at  INTEGER NOT NULL
 );
@@ -123,8 +183,66 @@ MIGRATIONS = {
     "danmaku": {"emote_url": "TEXT NOT NULL DEFAULT ''",
                 "emote_px": "INTEGER NOT NULL DEFAULT 20",
                 "emote_map": "TEXT NOT NULL DEFAULT '{}'",
-                "import_key": "TEXT"},
-    "room_event": {"import_key": "TEXT"},
+                "import_key": "TEXT",
+                "client_ts": "INTEGER NOT NULL DEFAULT 0",
+                "dm_mode": "INTEGER NOT NULL DEFAULT 0",
+                "font_size": "INTEGER NOT NULL DEFAULT 0",
+                "dm_color": "INTEGER NOT NULL DEFAULT 0",
+                "dm_type": "INTEGER NOT NULL DEFAULT 0",
+                "player_mode": "INTEGER NOT NULL DEFAULT 0",
+                "show_player_type": "INTEGER NOT NULL DEFAULT 0",
+                "send_from_me": "INTEGER NOT NULL DEFAULT 0",
+                "dm_id": "TEXT NOT NULL DEFAULT ''",
+                "user_hash": "TEXT NOT NULL DEFAULT ''",
+                "emoticon_unique": "TEXT NOT NULL DEFAULT ''",
+                "user_level": "TEXT NOT NULL DEFAULT ''",
+                "name_color": "TEXT NOT NULL DEFAULT ''",
+                "is_mystery": "INTEGER NOT NULL DEFAULT 0",
+                "medal_id": "INTEGER NOT NULL DEFAULT 0",
+                "medal_score": "INTEGER NOT NULL DEFAULT 0",
+                "title_id": "INTEGER NOT NULL DEFAULT 0",
+                "is_audited": "INTEGER NOT NULL DEFAULT 0",
+                "dm_score": "INTEGER NOT NULL DEFAULT 0",
+                "reply_mid": "INTEGER NOT NULL DEFAULT 0",
+                "reply_uname": "TEXT NOT NULL DEFAULT ''",
+                "reply_type": "INTEGER NOT NULL DEFAULT 0",
+                "animation": "TEXT NOT NULL DEFAULT ''",
+                "direction": "INTEGER NOT NULL DEFAULT 0",
+                "voice": "TEXT NOT NULL DEFAULT ''"},
+    "sc_message": {"gift_id": "INTEGER NOT NULL DEFAULT 0",
+                   "gift_name": "TEXT NOT NULL DEFAULT ''",
+                   "gift_num": "INTEGER NOT NULL DEFAULT 0",
+                   "face": "TEXT NOT NULL DEFAULT ''",
+                   "rate": "INTEGER NOT NULL DEFAULT 0",
+                   "dmscore": "INTEGER NOT NULL DEFAULT 0",
+                   "token": "TEXT NOT NULL DEFAULT ''",
+                   "duration": "INTEGER NOT NULL DEFAULT 0",
+                   "trans_mark": "INTEGER NOT NULL DEFAULT 0",
+                   "is_ranked": "INTEGER NOT NULL DEFAULT 0",
+                   "is_mystery": "INTEGER NOT NULL DEFAULT 0",
+                   "medal_color": "TEXT NOT NULL DEFAULT ''",
+                   "medal_special": "TEXT NOT NULL DEFAULT ''",
+                   "message_font_color": "TEXT NOT NULL DEFAULT ''",
+                   "background_color": "TEXT NOT NULL DEFAULT ''"},
+    "room_event": {"import_key": "TEXT",
+                   "gift_id": "INTEGER NOT NULL DEFAULT 0",
+                   "gift_name": "TEXT NOT NULL DEFAULT ''",
+                   "gift_num": "INTEGER NOT NULL DEFAULT 0",
+                   "price": "INTEGER NOT NULL DEFAULT 0",
+                   "coin_type": "TEXT NOT NULL DEFAULT ''",
+                   "tid": "TEXT NOT NULL DEFAULT ''",
+                   "medal_name": "TEXT NOT NULL DEFAULT ''",
+                   "medal_level": "INTEGER NOT NULL DEFAULT 0"},
+    "dynamics": {"comment_id": "TEXT NOT NULL DEFAULT ''",
+                 "comment_type": "INTEGER NOT NULL DEFAULT 0",
+                 "rid": "TEXT NOT NULL DEFAULT ''",
+                 "author_name": "TEXT NOT NULL DEFAULT ''",
+                 "author_face": "TEXT NOT NULL DEFAULT ''",
+                 "pub_action": "TEXT NOT NULL DEFAULT ''",
+                 "pub_location": "TEXT NOT NULL DEFAULT ''",
+                 "official_desc": "TEXT NOT NULL DEFAULT ''",
+                 "views_text": "TEXT NOT NULL DEFAULT ''",
+                 "orig": "TEXT NOT NULL DEFAULT ''"},
     # 多分片自动合并成单 FLV：状态与产物落库，进程重启不丢
     "recordings": {"merge_status": "TEXT NOT NULL DEFAULT ''",
                    "merged_path": "TEXT NOT NULL DEFAULT ''",
@@ -263,13 +381,21 @@ class Store:
         sql = """INSERT OR IGNORE INTO danmaku
             (run_id, room_id, uid, uname, text, event_time, received_at,
              medal_name, medal_level, guard_level, is_admin, is_emoticon,
-             emote_url, emote_px, emote_map, raw_json, import_key)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+             emote_url, emote_px, emote_map, raw_json, import_key,
+             client_ts, dm_mode, font_size, dm_color, dm_type, player_mode,
+             show_player_type, send_from_me, dm_id, user_hash, emoticon_unique,
+             user_level, name_color, is_mystery, medal_id, medal_score,
+             title_id, is_audited, dm_score, reply_mid, reply_uname, reply_type,
+             animation, direction, voice)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
         data = []
         for r in rows:
             emote_map = r.get("emote_map") or {}
             if not isinstance(emote_map, str):
                 emote_map = json.dumps(emote_map, ensure_ascii=False)
+            extra = raw_fields.extract("danmaku", r.get("_raw")) if r.get("_raw") else {}
+            extra.update({k: r[k] for k in raw_fields.DM_FIELDS if k in r})
             data.append((r.get("run_id"), r.get("room_id", 0), r.get("uid", 0),
                          r.get("uname", ""), str(r.get("text") or ""),
                          r.get("event_time", 0), r.get("received_at", 0),
@@ -277,7 +403,9 @@ class Store:
                          r.get("guard_level", 0), r.get("is_admin", 0),
                          r.get("is_emoticon", 0), r.get("emote_url", ""),
                          _as_int(r.get("emote_px"), 20), emote_map,
-                         r.get("raw_json", ""), r.get("import_key")))
+                         r.get("raw_json", ""), r.get("import_key"),
+                         *[extra.get(k, 0 if raw_fields.DM_FIELDS[k][1] == "int" else "")
+                           for k in raw_fields.DM_FIELDS]))
         with self.lock:
             before = self.db.total_changes
             self.db.executemany(sql, data)
@@ -296,16 +424,23 @@ class Store:
         sql = """INSERT INTO sc_message
             (sc_id, run_id, room_id, uid, uname, price, message, message_trans,
              start_time, end_time, received_at, guard_level, medal_name,
-             medal_level, deleted, raw_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             medal_level, deleted, raw_json, gift_id, gift_name, gift_num,
+             face, rate, dmscore, token, duration, trans_mark, is_ranked,
+             is_mystery, medal_color, medal_special, message_font_color,
+             background_color)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(sc_id) DO NOTHING"""
+        extra = raw_fields.extract("sc", row.get("_raw")) if row.get("_raw") else {}
+        extra.update({k: row[k] for k in raw_fields.SC_FIELDS if k in row})
         args = (str(row["sc_id"]), row.get("run_id"), row.get("room_id", 0),
                 row.get("uid", 0), row.get("uname", ""), row.get("price", 0),
                 row.get("message", ""), row.get("message_trans"),
                 row.get("start_time", 0), row.get("end_time", 0),
                 row.get("received_at", 0), row.get("guard_level", 0),
                 row.get("medal_name", ""), row.get("medal_level", 0),
-                row.get("deleted", 0), row.get("raw_json", ""))
+                row.get("deleted", 0), row.get("raw_json", ""),
+                *[extra.get(k, 0 if raw_fields.SC_FIELDS[k][1] == "int" else "")
+                  for k in raw_fields.SC_FIELDS])
         with self.lock:
             cur = self.db.execute(sql, args)
             self.db.commit()
@@ -329,12 +464,18 @@ class Store:
 
     def insert_event(self, row):
         sql = """INSERT OR IGNORE INTO room_event
-            (run_id, room_id, kind, uid, uname, detail, event_time, received_at, raw_json, import_key)
-            VALUES (?,?,?,?,?,?,?,?,?,?)"""
+            (run_id, room_id, kind, uid, uname, detail, event_time, received_at,
+             raw_json, import_key, gift_id, gift_name, gift_num, price, coin_type,
+             tid, medal_name, medal_level)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        extra = raw_fields.extract("events", row.get("_raw")) if row.get("_raw") else {}
+        extra.update({k: row[k] for k in raw_fields.EVENT_FIELDS if k in row})
         args = (row.get("run_id"), row.get("room_id", 0), row.get("kind", ""),
                 row.get("uid", 0), row.get("uname", ""), row.get("detail", ""),
                 row.get("event_time", 0), row.get("received_at", 0),
-                row.get("raw_json", ""), row.get("import_key"))
+                row.get("raw_json", ""), row.get("import_key"),
+                *[extra.get(k, 0 if raw_fields.EVENT_FIELDS[k][1] == "int" else "")
+                  for k in raw_fields.EVENT_FIELDS])
         with self.lock:
             cur = self.db.execute(sql, args)
             self.db.commit()
@@ -350,12 +491,20 @@ class Store:
         if not rows:
             return 0
         sql = """INSERT OR IGNORE INTO room_event
-            (run_id, room_id, kind, uid, uname, detail, event_time, received_at, raw_json, import_key)
-            VALUES (?,?,?,?,?,?,?,?,?,?)"""
-        data = [(r.get("run_id"), r.get("room_id", 0), r.get("kind", ""),
-                 r.get("uid", 0), r.get("uname", ""), r.get("detail", ""),
-                 r.get("event_time", 0), r.get("received_at", 0),
-                 r.get("raw_json", ""), r.get("import_key")) for r in rows]
+            (run_id, room_id, kind, uid, uname, detail, event_time, received_at,
+             raw_json, import_key, gift_id, gift_name, gift_num, price, coin_type,
+             tid, medal_name, medal_level)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        data = []
+        for r in rows:
+            extra = raw_fields.extract("events", r.get("_raw")) if r.get("_raw") else {}
+            extra.update({k: r[k] for k in raw_fields.EVENT_FIELDS if k in r})
+            data.append((r.get("run_id"), r.get("room_id", 0), r.get("kind", ""),
+                         r.get("uid", 0), r.get("uname", ""), r.get("detail", ""),
+                         r.get("event_time", 0), r.get("received_at", 0),
+                         r.get("raw_json", ""), r.get("import_key"),
+                         *[extra.get(k, 0 if raw_fields.EVENT_FIELDS[k][1] == "int" else "")
+                           for k in raw_fields.EVENT_FIELDS]))
         with self.lock:
             before = self.db.total_changes
             self.db.executemany(sql, data)
@@ -903,20 +1052,34 @@ class Store:
         if not rows:
             return 0
         sql = """INSERT INTO dynamics
-            (dyn_id, mid, pub_ts, dyn_type, text, pics, jump_url, raw_json, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
+            (dyn_id, mid, pub_ts, dyn_type, text, pics, jump_url, fetched_at,
+             comment_id, comment_type, rid, author_name, author_face,
+             pub_action, pub_location, official_desc, views_text, orig)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(dyn_id) DO UPDATE SET
               mid=excluded.mid, pub_ts=excluded.pub_ts, dyn_type=excluded.dyn_type,
               text=excluded.text, pics=excluded.pics, jump_url=excluded.jump_url,
-              raw_json=excluded.raw_json, fetched_at=excluded.fetched_at"""
-        data = [(str(r.get("id") or r.get("dyn_id") or ""),
-                 _as_int(r.get("mid")), _as_int(r.get("pub_ts")),
-                 str(r.get("type") or ""), str(r.get("text") or ""),
-                 json.dumps(r.get("pics") or [], ensure_ascii=False),
-                 str(r.get("jump_url") or ""),
-                 json.dumps(r.get("raw_json") or r, ensure_ascii=False)[:8000],
-                 int(time.time() * 1000))
-                for r in rows if (r.get("id") or r.get("dyn_id"))]
+              fetched_at=excluded.fetched_at,
+              comment_id=excluded.comment_id, comment_type=excluded.comment_type,
+              rid=excluded.rid, author_name=excluded.author_name,
+              author_face=excluded.author_face, pub_action=excluded.pub_action,
+              pub_location=excluded.pub_location,
+              official_desc=excluded.official_desc, views_text=excluded.views_text,
+              orig=excluded.orig"""
+        data = []
+        for r in rows:
+            if not (r.get("id") or r.get("dyn_id")):
+                continue
+            frame = r.get("raw_json") if isinstance(r.get("raw_json"), dict) else r
+            extra = raw_fields.extract("dynamics", frame)
+            extra.update({k: r[k] for k in raw_fields.DYN_FIELDS if k in r})
+            data.append((str(r.get("id") or r.get("dyn_id") or ""),
+                         _as_int(r.get("mid")), _as_int(r.get("pub_ts")),
+                         str(r.get("type") or ""), str(r.get("text") or ""),
+                         json.dumps(r.get("pics") or [], ensure_ascii=False),
+                         str(r.get("jump_url") or ""), int(time.time() * 1000),
+                         *[extra.get(k, 0 if raw_fields.DYN_FIELDS[k][1] == "int" else "")
+                           for k in raw_fields.DYN_FIELDS]))
         with self.lock:
             self.db.executemany(sql, data)
             self.db.commit()
@@ -1074,7 +1237,7 @@ class Store:
         """扫一遍 data/，按文件类型累计体积（几十个文件，毫秒级）。"""
         data_dir = os.path.dirname(os.path.abspath(self.path))
         buckets = {"mp4": 0, "flv": 0, "sqlite": 0,
-                   "wal": 0, "logs": 0, "config": 0, "other": 0}
+                   "wal": 0, "logs": 0, "config": 0, "raw": 0, "other": 0}
         for root, _dirs, files in os.walk(data_dir):
             for name in files:
                 path = os.path.join(root, name)
@@ -1093,6 +1256,8 @@ class Store:
                     buckets["wal"] += size
                 elif rel.startswith("logs/"):
                     buckets["logs"] += size
+                elif rel.startswith("cache/raw/"):
+                    buckets["raw"] += size
                 elif rel.startswith("accounts/") or rel in ("config.json", "rooms.json"):
                     buckets["config"] += size
                 else:
@@ -1105,6 +1270,8 @@ class Store:
             {"key": "mp4", "label": "MP4 定稿", "bytes": buckets["mp4"], "group": "video"},
             {"key": "flv", "label": "FLV 原片", "bytes": buckets["flv"], "group": "video"},
             {"key": "sqlite", "label": "SQLite 数据库", "bytes": buckets["sqlite"], "group": "data"},
+            {"key": "raw", "label": "原始报文缓存", "bytes": buckets["raw"],
+             "group": "data"},
             {"key": "other", "label": "WAL / 日志 / 配置",
              "bytes": buckets["wal"] + buckets["logs"] + buckets["config"] + buckets["other"],
              "group": "data"},
@@ -1115,6 +1282,7 @@ class Store:
                  ("mp4", "MP4 录像", "video"), ("flv", "FLV 原片", "video"),
                  ("sqlite", "SQLite 数据库", "data"), ("wal", "WAL 与共享内存", "data"),
                  ("logs", "日志", "data"), ("config", "配置与账号", "data"),
+                 ("raw", "原始报文缓存", "data"),
                  ("other", "其它文件", "data")) if buckets[k] > 0],
             key=lambda x: -x["bytes"])
         total = sum(buckets.values())
@@ -1146,15 +1314,12 @@ class Store:
                 pages[name] = nbytes
             tables = {n: b for n, b in pages.items() if kinds.get(n) == "table"}
             index_bytes = sum(b for n, b in pages.items() if kinds.get(n) == "index")
-            raw = self._q_fallback(
-                "SELECT COALESCE(SUM(LENGTH(CAST(raw_json AS BLOB))),0) "
-                "FROM danmaku").fetchone()[0]
             dm = tables.get("danmaku", 0)
             sqlite_detail = [
-                {"label": "弹幕原始报文 raw_json", "bytes": raw},
-                {"label": "弹幕其它字段与行开销", "bytes": max(0, dm - raw)},
+                {"label": "弹幕表", "bytes": dm},
                 {"label": "SC 表", "bytes": tables.get("sc_message", 0)},
                 {"label": "事件表", "bytes": tables.get("room_event", 0)},
+                {"label": "动态表", "bytes": tables.get("dynamics", 0)},
                 {"label": "索引", "bytes": index_bytes},
             ]
             accounted = sum(x["bytes"] for x in sqlite_detail)

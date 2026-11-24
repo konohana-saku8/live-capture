@@ -18,6 +18,7 @@ from images import EmoteProxy
 from rooms import RoomStore
 from store import Store
 import sysinfo
+import raw_fields
 
 from .scheduler import DynamicScheduler
 from .notifier import NotifierScheduler
@@ -369,4 +370,7 @@ class Runtime:
         self.dynamics.stop()
         self.recordings.stop()
         self.manager.stop_all()
+        # 采集线程是 daemon，join 在独立线程里做；这里直接把原始报文缓冲刷掉，
+        # 免得起停一次丢最后几十秒的报文。
+        raw_fields.flush_all()
         self.logs.close()

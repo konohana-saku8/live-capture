@@ -27,12 +27,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import raw_fields
+
 DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 
 # 抓动态真正用得上的几个 cookie；带上整包无关项反而容易被风控盯上。
 LOGIN_COOKIE_KEYS = ("SESSDATA", "DedeUserID", "DedeUserID__ckMd5",
                      "bili_jct", "buvid3", "buvid4", "sid")
+
+# B站自动生成的「直播了」开播卡片：开播已有独立提醒链路，动态侧是分钟级轮询，
+# 抓到时早已过时效，正文也拿不到（desc 为 null）。这类动态直接跳过，不入库也不推送。
+IGNORED_DYNAMIC_TYPES = frozenset({"DYNAMIC_TYPE_LIVE_RCMD"})
 
 # WBI mixin-key permutation (B站公开算法，固定不变)
 MIXIN_TAB = (
@@ -164,7 +170,9 @@ class DynamicsFetcher:
                 items, has_more = [], False
                 last_error = exc
             if items:
-                return items, has_more
+                # 按「过滤前」判定是否真的拉到了数据：整页都是开播卡片时也算
+                # 成功，不能当成接口空响应去重试（重试也只会拿到同样内容）。
+                return [x for x in items if x is not None], has_more
             if attempt == 0:
                 time.sleep(1.2)
         if last_error is not None:
@@ -202,6 +210,10 @@ class DynamicsFetcher:
                 "有" if self.logged_in else "匿名"))
         payload = data.get("data") or {}
         raw_items = payload.get("items") or []
+        # 存档在 normalize 之前：被过滤掉的开播卡片、解析失败的类型也留档。
+        now_ms = int(time.time() * 1000)
+        for frame in raw_items:
+            raw_fields.archive(now_ms, mid, "DYNAMIC", frame)
         return ([normalize(f, mid) for f in raw_items],
                 bool(payload.get("has_more")))
 
@@ -219,7 +231,13 @@ def _first_text(node):
 
 
 def normalize(frame, mid):
-    """Convert one feed frame into a flat, storage-ready dict."""
+    """Convert one feed frame into a flat, storage-ready dict.
+
+    Returns None for types in IGNORED_DYNAMIC_TYPES; callers drop them before
+    storing so neither the dynamic list nor push notifications see them.
+    """
+    if str(frame.get("type") or "") in IGNORED_DYNAMIC_TYPES:
+        return None
     modules = frame.get("modules") or {}
     author = modules.get("module_author") or {}
     dynamic = modules.get("module_dynamic") or {}

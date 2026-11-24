@@ -191,6 +191,53 @@ def main():
     check("动态解析：纯文字回退 desc",
           dynamics_mod.normalize(frame2, 9)["text"] == "纯文字动态")
 
+    # 11-24 00:24 的开播卡片：正文为 null，动态侧推送又晚于开播提醒，
+    # 直接从源头丢掉，不入库也不推送。
+    live_card = {"id_str": "1273941738723999745",
+                 "type": "DYNAMIC_TYPE_LIVE_RCMD",
+                 "modules": {"module_author": {"mid": 9, "pub_ts": 1795451075},
+                             "module_dynamic": {"desc": None, "major": {
+                                 "type": "MAJOR_TYPE_LIVE_RCMD"}}}}
+    check("动态解析：开播卡片类型直接跳过",
+          dynamics_mod.normalize(live_card, 9) is None)
+
+    # raw_json 字段展开：弹幕的 extra 是转义 JSON 字符串，必须解开后取值
+    raw_mod = __import__("raw_fields")
+    dm_raw = {"cmd": "DANMU_MSG", "info": [
+        [0, 1, 25, 16777215, 1795453333475, 0, 0, "83fb0427", 0, 0, 0,
+         "#fff", 0, "{}", "{}", {
+             "extra": '{"mode":1,"color":16777215,"id_str":"dm-1",'
+                      '"dm_score":5,"reply_mid":42,"reply_uname":"张三"}',
+             "user": {"base": {"is_mystery": 1}, "medal": {"id": 7}}}],
+        "测试弹幕", [123, "用户", 0], [], [0, 0, 0, ">50000", 0]]}
+    dm_ext = raw_mod.extract("danmaku", dm_raw)
+    check("raw 字段展开：弹幕 extra 解码 / 等级 / 勋章",
+          dm_ext["dm_id"] == "dm-1" and dm_ext["dm_score"] == 5 and
+          dm_ext["user_level"] == ">50000" and dm_ext["medal_id"] == 7 and
+          dm_ext["reply_uname"] == "张三", dm_ext)
+    sc_ext = raw_mod.extract("sc", {"gift": {"gift_id": 12000, "num": 1},
+                                    "time": 300, "rate": 1000,
+                                    "user_info": {"is_mystery": 1}})
+    check("raw 字段展开：SC 礼物 / 时长 / 是否匿名",
+          sc_ext["gift_id"] == 12000 and sc_ext["duration"] == 300 and
+          sc_ext["is_mystery"] == 1, sc_ext)
+    ev_ext = raw_mod.extract("events", {"giftId": 31164, "price": 100,
+                                        "coin_type": "gold", "tid": "t1"})
+    check("raw 字段展开：事件礼物金额与交易号",
+          ev_ext["price"] == 100 and ev_ext["coin_type"] == "gold" and
+          ev_ext["tid"] == "t1", ev_ext)
+
+    # 缓存写入：解析前落盘，按天分片，每行带时间/房间/cmd/原始报文
+    with tempfile.TemporaryDirectory() as td:
+        cache = raw_mod.RawCache(td, flush_every=1)
+        cache.write(1795453333, 22748536, "DANMU_MSG", dm_raw)
+        day = time.strftime("%Y-%m-%d", time.localtime(1795453333))
+        p = os.path.join(td, "cache", "raw", "raw-%s.jsonl" % day)
+        line = json.loads(open(p, encoding="utf-8").read().strip())
+        check("原始报文缓存：按天分片且保留完整报文",
+              line["r"] == 22748536 and line["c"] == "DANMU_MSG" and
+              line["m"]["info"][1] == "测试弹幕", line)
+
     # 动态抓取失败必须抛错，不能被吞成空结果——否则调度器当成功写
     # dyn_last_ts，一次抖动就变成整天不补抓（11-17 00:15 的真实事故）。
     _real_sleep = dynamics_mod.time.sleep
@@ -202,6 +249,17 @@ def main():
         f._fetch_json = lambda url, referer=None: {"code": 0, "data": {"items": []}}
         check("动态抓取：干净空结果返回空列表不抛错",
               f.fetch(9) == ([], False))
+
+        # 整页都是被忽略的开播卡片：过滤后为空，但接口确实返回了数据，
+        # 不能触发空结果重试，也不能被当成抓取失败。
+        calls = []
+        def _only_cards(url, referer=None):
+            calls.append(url)
+            return {"code": 0, "data": {"items": [live_card],
+                                        "has_more": False}}
+        f._fetch_json = _only_cards
+        check("动态抓取：整页开播卡片过滤后不重试",
+              f.fetch(9) == ([], False) and len(calls) == 1, len(calls))
 
         f._fetch_json = lambda url, referer=None: {
             "code": -412, "message": "请求被拦截"}
