@@ -29,7 +29,7 @@ B 站直播弹幕 / SC / 礼物 / 动态采集服务，运行在手机 Termux �
 
 数据家底：总共记录了多少场、多少条、每场平均多少条，按房间分列。数字只统计场次区间内的记录，场间灌进来的零散弹幕不算在内。
 
-同一页往下是存储构成：MP4 定稿 / FLV 原片 / SQLite / WAL 与日志各自的体积，SQLite 内部再按 `raw_json`、其它字段、SC、事件、索引拆开，最后是占用排行。手机空间吃紧时先看这一块。
+同一页往下是存储构成：MP4 定稿 / FLV 原片 / SQLite / WAL 与日志各自的体积，SQLite 内部再按 `raw_json`、其它字段、SC、事件、索引拆开，最后是占用排行。手机空间吃紧时先看这一块；真要腾地方，用 [pctools](../pctools/README.md) 把老录像拉到 PC 上重压、逐项校验后回传，手机端只负责收发字节。
 
 ### 数据（回放与查阅）
 
@@ -101,6 +101,7 @@ B 站直播弹幕 / SC / 礼物 / 动态采集服务，运行在手机 Termux �
 | [operations.md](operations.md) | 部署到手机、更新发布、SSH 接入、灭屏保活、故障恢复 |
 | [development.md](development.md) | 本地开发、三套测试、前端构建、改代码的约定 |
 | [pitfalls.md](pitfalls.md) | 踩坑积累：B 站接口怪癖、Android 限制、工具链坑、历史 bug 复盘 |
+| [pctools/README.md](../pctools/README.md) | PC 端重压录像：为什么走 HTTP 而不是 `adb pull`、编码参数、校验与回传 |
 
 ## 开播 / 动态推送
 
